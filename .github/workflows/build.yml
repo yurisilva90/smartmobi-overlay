@@ -23,8 +23,15 @@ jobs:
 
       - run: chmod +x gradlew
 
-      - name: Build APK and save log
-        run: ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/gradle.log; exit ${PIPESTATUS[0]}
+      - name: Show Gradle error in annotation
+        run: |
+          ./gradlew assembleDebug --no-daemon > /tmp/out.txt 2>&1 || true
+          ERRORS=$(grep -E "(error:|Error |FAILED|Exception|unresolved|cannot find)" /tmp/out.txt | head -10)
+          LAST=$(tail -30 /tmp/out.txt)
+          echo "::error::ERRORS: $ERRORS"
+          echo "::warning::LAST30: $LAST"
+          cat /tmp/out.txt | tail -80
+          exit 1
         env:
           ANDROID_HOME: /usr/local/lib/android/sdk
 
@@ -34,10 +41,3 @@ jobs:
           name: SmartMobi-v1.3.0
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 60
-
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: gradle-error-log
-          path: /tmp/gradle.log
-          retention-days: 7
