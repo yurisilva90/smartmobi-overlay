@@ -7,6 +7,8 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.KeyEvent
 import android.view.View
 import android.view.WindowManager
@@ -20,8 +22,11 @@ import androidx.core.content.ContextCompat
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
-    private lateinit var progress: ProgressBar
+    private lateinit var webProgress: ProgressBar
+    private lateinit var splashView: View
     private var fileCallback: ValueCallback<Array<Uri>>? = null
+    private var splashDone = false
+    private var webReady   = false
 
     companion object {
         const val URL      = "https://yurisilva90.github.io/smartmobi/"
@@ -29,32 +34,57 @@ class MainActivity : AppCompatActivity() {
         const val REQ_FILE = 101
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
                         WindowManager.LayoutParams.FLAG_FULLSCREEN)
         supportActionBar?.hide()
 
+        // Root container
         val root = FrameLayout(this)
-        webView  = WebView(this).also { root.addView(it, FrameLayout.LayoutParams(-1, -1)) }
-        progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).also {
-            it.max = 100; root.addView(it, FrameLayout.LayoutParams(-1, 6))
+
+        // WebView (atrás)
+        webView = WebView(this)
+        root.addView(webView, FrameLayout.LayoutParams(-1, -1))
+
+        // Progress bar fina no topo
+        webProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100; visibility = View.GONE
         }
+        root.addView(webProgress, FrameLayout.LayoutParams(-1, 5))
+
+        // Splash (na frente)
+        splashView = layoutInflater.inflate(R.layout.splash, root, false)
+        root.addView(splashView, FrameLayout.LayoutParams(-1, -1))
+
         setContentView(root)
-        requestPermissions()
+
+        requestAppPermissions()
         setupWebView()
         webView.loadUrl(URL)
+
+        // Splash mínimo de 2s
+        Handler(Looper.getMainLooper()).postDelayed({
+            splashDone = true
+            maybeHideSplash()
+        }, 2000)
     }
 
-    private fun requestPermissions() {
+    private fun maybeHideSplash() {
+        if (splashDone && webReady) {
+            splashView.animate().alpha(0f).setDuration(300).withEndAction {
+                splashView.visibility = View.GONE
+            }.start()
+        }
+    }
+
+    private fun requestAppPermissions() {
         val needed = mutableListOf<String>()
-        val perms  = arrayOf(
+        listOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
             Manifest.permission.ACCESS_COARSE_LOCATION,
             Manifest.permission.CAMERA
-        )
-        perms.forEach {
+        ).forEach {
             if (ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED)
                 needed.add(it)
         }
@@ -65,20 +95,22 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebView() {
         webView.settings.apply {
-            javaScriptEnabled               = true
-            domStorageEnabled               = true
-            databaseEnabled                 = true
-            cacheMode                       = WebSettings.LOAD_DEFAULT
+            javaScriptEnabled                = true
+            domStorageEnabled                = true
+            databaseEnabled                  = true
+            cacheMode                        = WebSettings.LOAD_DEFAULT
             setSupportZoom(false)
-            displayZoomControls             = false
-            builtInZoomControls             = false
-            useWideViewPort                 = true
-            loadWithOverviewMode            = true
-            allowFileAccess                 = true
+            displayZoomControls              = false
+            builtInZoomControls              = false
+            useWideViewPort                  = true
+            loadWithOverviewMode             = true
+            allowFileAccess                  = true
             setGeolocationEnabled(true)
             setGeolocationDatabasePath(filesDir.absolutePath)
+            mediaPlaybackRequiresUserGesture = false
         }
 
+        // Bridge nativa → JS
         webView.addJavascriptInterface(object {
             @JavascriptInterface fun isNativeApp() = true
             @JavascriptInterface fun getVersion()  = "1.3.0"
@@ -87,29 +119,29 @@ class MainActivity : AppCompatActivity() {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
                     startForegroundService(i) else startService(i)
             }
-            @JavascriptInterface fun stopGpsService() {
+            @JavascriptInterface fun stopGpsService() =
                 stopService(Intent(this@MainActivity, GpsService::class.java))
-            }
         }, "SmartMobiNative")
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView, p: Int) {
-                progress.progress = p
-                progress.visibility = if (p < 100) View.VISIBLE else View.GONE
+                webProgress.progress = p
+                webProgress.visibility = if (p < 100) View.VISIBLE else View.GONE
             }
-            // GPS no WebView
             override fun onGeolocationPermissionsShowPrompt(
                 origin: String, callback: GeolocationPermissions.Callback
-            ) { callback.invoke(origin, true, false) }
+            ) = callback.invoke(origin, true, false)
 
-            // Câmera e galeria
-            override fun onPermissionRequest(req: PermissionRequest) = req.grant(req.resources)
+            override fun onPermissionRequest(req: PermissionRequest) =
+                req.grant(req.resources)
+
             override fun onShowFileChooser(
                 view: WebView, cb: ValueCallback<Array<Uri>>,
                 params: FileChooserParams
             ): Boolean {
                 fileCallback = cb
-                startActivityForResult(params.createIntent(), REQ_FILE)
+                try { startActivityForResult(params.createIntent(), REQ_FILE) }
+                catch (e: Exception) { cb.onReceiveValue(arrayOf()); fileCallback = null }
                 return true
             }
         }
@@ -124,16 +156,18 @@ class MainActivity : AppCompatActivity() {
                 webView.evaluateJavascript(
                     "window._smartmobiNative=true;window._nativeVersion='1.3.0';" +
                     "if(typeof onNativeReady==='function')onNativeReady();", null)
+                webReady = true
+                maybeHideSplash()
             }
         }
     }
 
+    @Deprecated("Deprecated")
     override fun onActivityResult(req: Int, result: Int, data: Intent?) {
         super.onActivityResult(req, result, data)
         if (req == REQ_FILE) {
             fileCallback?.onReceiveValue(
-                if (data?.data != null) arrayOf(data.data!!) else arrayOf()
-            )
+                if (data?.data != null) arrayOf(data.data!!) else arrayOf())
             fileCallback = null
         }
     }
