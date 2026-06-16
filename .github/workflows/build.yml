@@ -3,22 +3,18 @@ on:
   push:
     branches: [ main ]
   workflow_dispatch:
-
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
           cache: gradle
-
       - name: Setup Android SDK
         run: |
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdtools.zip
@@ -26,29 +22,14 @@ jobs:
           unzip -q cmdtools.zip -d $HOME/android/cmdline-tools
           mv $HOME/android/cmdline-tools/cmdline-tools $HOME/android/cmdline-tools/latest
           echo "ANDROID_HOME=$HOME/android" >> $GITHUB_ENV
-          echo "$HOME/android/cmdline-tools/latest/bin" >> $GITHUB_PATH
           yes | $HOME/android/cmdline-tools/latest/bin/sdkmanager --sdk_root=$HOME/android "platforms;android-34" "build-tools;34.0.0" "platform-tools" 2>/dev/null
-
       - run: chmod +x gradlew
-
       - name: Build APK
-        run: |
-          ./gradlew assembleDebug --no-daemon --no-build-cache --stacktrace 2>&1 | tail -80
+        run: ./gradlew assembleDebug --no-daemon --no-build-cache --stacktrace
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
-
       - uses: actions/upload-artifact@v4
-        if: success()
         with:
           name: SmartMobi-v1.3.0
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 60
-
-      - name: Upload build log on failure
-        uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: build-log
-          path: |
-            app/build/reports/
-          retention-days: 7
