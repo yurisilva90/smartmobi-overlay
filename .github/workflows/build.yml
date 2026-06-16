@@ -28,12 +28,25 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x gradlew
 
+      - name: Get version name
+        id: version
+        run: |
+          VERSION=$(grep versionName app/build.gradle | grep -v suffix | sed "s/.*versionName \"//;s/\".*//")
+          echo "name=SmartMobi-Overlay-v$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
       - name: Build Debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Rename APK with version
+        run: |
+          VERSION=$(grep versionName app/build.gradle | grep -v suffix | sed "s/.*versionName \"//;s/\".*//")
+          cp app/build/outputs/apk/debug/app-debug.apk \
+             app/build/outputs/apk/debug/SmartMobi-Overlay-v${VERSION}.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: SmartMobi-Overlay-APK
-          path: app/build/outputs/apk/debug/app-debug.apk
-          retention-days: 30
+          name: ${{ steps.version.outputs.name }}
+          path: app/build/outputs/apk/debug/SmartMobi-Overlay-v*.apk
+          retention-days: 60
