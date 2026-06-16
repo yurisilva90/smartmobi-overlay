@@ -61,14 +61,16 @@ class MainActivity : AppCompatActivity() {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         val frame = FrameLayout(this).apply { setBackgroundColor(Color.parseColor("#0F172A")) }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
+
+        // Icone SM — usa construtor GradientDrawable (API 1+, nao setColors que e API 29+)
+        val iconBg = GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            intArrayOf(Color.parseColor("#22C55E"), Color.parseColor("#16A34A"))
+        ).apply { shape = GradientDrawable.RECTANGLE; cornerRadius = dp(24).toFloat() }
+
         val icon = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(dp(80), dp(80)).apply { bottomMargin = dp(20) }
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE; cornerRadius = dp(24).toFloat()
-                colors = intArrayOf(Color.parseColor("#22C55E"), Color.parseColor("#16A34A"))
-                gradientType = GradientDrawable.LINEAR_GRADIENT
-                orientation = GradientDrawable.Orientation.TL_BR
-            }
+            background = iconBg
         }
         icon.addView(TextView(this).apply {
             text = "SM"; textSize = 26f; typeface = Typeface.DEFAULT_BOLD
