@@ -9,48 +9,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Debug SDK paths
-        run: |
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          ls /usr/local/lib/android/sdk/platforms/ 2>/dev/null || echo "No platforms at default path"
-          ls /usr/local/lib/android/sdk/build-tools/ 2>/dev/null || echo "No build-tools"
-
-      - name: Accept licenses and install platform
+      - name: Setup SDK
         run: |
           SDK=/usr/local/lib/android/sdk
           yes | $SDK/cmdline-tools/latest/bin/sdkmanager --sdk_root=$SDK --licenses 2>/dev/null || true
           $SDK/cmdline-tools/latest/bin/sdkmanager --sdk_root=$SDK "platforms;android-34" "build-tools;34.0.0" 2>/dev/null
+          echo "sdk.dir=$SDK" > local.properties
 
       - run: chmod +x gradlew
 
-      - name: Build APK
-        run: ./gradlew assembleDebug --no-daemon --info 2>&1 | grep -E "(error|Error|FAIL|exception|SDK|platforms|build-tools)" | head -50
-        env:
-          ANDROID_HOME: /usr/local/lib/android/sdk
-        continue-on-error: true
-
-      - name: Check if APK exists
-        run: |
-          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
-            echo "APK EXISTS!"
-            ls -la app/build/outputs/apk/debug/
-          else
-            echo "NO APK - running full gradle for errors:"
-            ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tail -80
-          fi
+      - name: Build APK and save log
+        run: ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tee /tmp/gradle.log; exit ${PIPESTATUS[0]}
         env:
           ANDROID_HOME: /usr/local/lib/android/sdk
 
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: success()
         with:
           name: SmartMobi-v1.3.0
           path: app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: warn
+          retention-days: 60
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: gradle-error-log
+          path: /tmp/gradle.log
+          retention-days: 7
