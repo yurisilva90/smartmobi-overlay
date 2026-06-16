@@ -3,30 +3,17 @@ on:
   push:
     branches: [ main ]
   workflow_dispatch:
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: gradle
-      - name: Setup Android SDK
-        run: |
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdtools.zip
-          mkdir -p $HOME/android/cmdline-tools
-          unzip -q cmdtools.zip -d $HOME/android/cmdline-tools
-          mv $HOME/android/cmdline-tools/cmdline-tools $HOME/android/cmdline-tools/latest
-          echo "ANDROID_HOME=$HOME/android" >> $GITHUB_ENV
-          yes | $HOME/android/cmdline-tools/latest/bin/sdkmanager --sdk_root=$HOME/android "platforms;android-34" "build-tools;34.0.0" "platform-tools" 2>/dev/null
+        with: { java-version: '17', distribution: 'temurin' }
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v3
       - run: chmod +x gradlew
-      - run: ./gradlew assembleDebug --no-daemon --no-build-cache
-        env:
-          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+      - run: ./gradlew assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
         with:
           name: SmartMobi-v1.3.0
