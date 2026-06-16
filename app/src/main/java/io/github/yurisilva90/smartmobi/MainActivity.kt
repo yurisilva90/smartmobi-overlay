@@ -1,8 +1,11 @@
 package io.github.yurisilva90.smartmobi
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.View
@@ -11,37 +14,52 @@ import android.webkit.*
 import android.widget.FrameLayout
 import android.widget.ProgressBar
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private lateinit var progress: ProgressBar
+    private var fileCallback: ValueCallback<Array<Uri>>? = null
 
     companion object {
-        const val SMARTMOBI_URL = "https://yurisilva90.github.io/smartmobi/"
+        const val URL      = "https://yurisilva90.github.io/smartmobi/"
+        const val REQ_PERM = 100
+        const val REQ_FILE = 101
     }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // Tela cheia — sem action bar, sem status bar
-        window.setFlags(
-            WindowManager.LayoutParams.FLAG_FULLSCREEN,
-            WindowManager.LayoutParams.FLAG_FULLSCREEN
-        )
+        window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                        WindowManager.LayoutParams.FLAG_FULLSCREEN)
         supportActionBar?.hide()
 
         val root = FrameLayout(this)
         webView  = WebView(this).also { root.addView(it, FrameLayout.LayoutParams(-1, -1)) }
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).also {
-            it.max = 100
-            root.addView(it, FrameLayout.LayoutParams(-1, 6))
+            it.max = 100; root.addView(it, FrameLayout.LayoutParams(-1, 6))
         }
         setContentView(root)
-
+        requestPermissions()
         setupWebView()
-        webView.loadUrl(SMARTMOBI_URL)
+        webView.loadUrl(URL)
+    }
+
+    private fun requestPermissions() {
+        val needed = mutableListOf<String>()
+        val perms  = arrayOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.CAMERA
+        )
+        perms.forEach {
+            if (ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED)
+                needed.add(it)
+        }
+        if (needed.isNotEmpty())
+            ActivityCompat.requestPermissions(this, needed.toTypedArray(), REQ_PERM)
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -57,13 +75,21 @@ class MainActivity : AppCompatActivity() {
             useWideViewPort                 = true
             loadWithOverviewMode            = true
             allowFileAccess                 = true
-            mediaPlaybackRequiresUserGesture = false
+            setGeolocationEnabled(true)
+            setGeolocationDatabasePath(filesDir.absolutePath)
         }
 
-        // Bridge mínima — app detecta que está rodando nativo
         webView.addJavascriptInterface(object {
             @JavascriptInterface fun isNativeApp() = true
-            @JavascriptInterface fun getVersion()  = "1.2.0-webview"
+            @JavascriptInterface fun getVersion()  = "1.3.0"
+            @JavascriptInterface fun startGpsService() {
+                val i = Intent(this@MainActivity, GpsService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                    startForegroundService(i) else startService(i)
+            }
+            @JavascriptInterface fun stopGpsService() {
+                stopService(Intent(this@MainActivity, GpsService::class.java))
+            }
         }, "SmartMobiNative")
 
         webView.webChromeClient = object : WebChromeClient() {
@@ -71,39 +97,40 @@ class MainActivity : AppCompatActivity() {
                 progress.progress = p
                 progress.visibility = if (p < 100) View.VISIBLE else View.GONE
             }
-            // Permite câmera para o import por foto
+            // GPS no WebView
+            override fun onGeolocationPermissionsShowPrompt(
+                origin: String, callback: GeolocationPermissions.Callback
+            ) { callback.invoke(origin, true, false) }
+
+            // Câmera e galeria
             override fun onPermissionRequest(req: PermissionRequest) = req.grant(req.resources)
-            // Permite seleção de arquivo (galeria/câmera)
             override fun onShowFileChooser(
-                view: WebView, callback: ValueCallback<Array<Uri>>,
+                view: WebView, cb: ValueCallback<Array<Uri>>,
                 params: FileChooserParams
             ): Boolean {
-                startActivityForResult(params.createIntent(), 1001)
-                fileCallback = callback
+                fileCallback = cb
+                startActivityForResult(params.createIntent(), REQ_FILE)
                 return true
             }
         }
 
         webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView, req: WebResourceRequest): Boolean {
-                val url = req.url.toString()
+            override fun shouldOverrideUrlLoading(v: WebView, r: WebResourceRequest): Boolean {
+                val url = r.url.toString()
                 return if (url.startsWith("https://yurisilva90.github.io")) false
                 else { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))); true }
             }
             override fun onPageFinished(view: WebView, url: String) {
-                // Sinaliza que está rodando como app nativo
                 webView.evaluateJavascript(
-                    "window._smartmobiNative=true;" +
+                    "window._smartmobiNative=true;window._nativeVersion='1.3.0';" +
                     "if(typeof onNativeReady==='function')onNativeReady();", null)
             }
         }
     }
 
-    private var fileCallback: ValueCallback<Array<Uri>>? = null
-
     override fun onActivityResult(req: Int, result: Int, data: Intent?) {
         super.onActivityResult(req, result, data)
-        if (req == 1001) {
+        if (req == REQ_FILE) {
             fileCallback?.onReceiveValue(
                 if (data?.data != null) arrayOf(data.data!!) else arrayOf()
             )
@@ -111,11 +138,9 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onKeyDown(key: Int, event: KeyEvent): Boolean {
-        if (key == KeyEvent.KEYCODE_BACK && webView.canGoBack()) {
-            webView.goBack(); return true
-        }
-        return super.onKeyDown(key, event)
+    override fun onKeyDown(k: Int, e: KeyEvent): Boolean {
+        if (k == KeyEvent.KEYCODE_BACK && webView.canGoBack()) { webView.goBack(); return true }
+        return super.onKeyDown(k, e)
     }
 
     override fun onResume()  { super.onResume();  webView.onResume() }
