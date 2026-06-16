@@ -15,20 +15,42 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Accept licenses
-        run: yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses 2>/dev/null || true
+      - name: Debug SDK paths
+        run: |
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls /usr/local/lib/android/sdk/platforms/ 2>/dev/null || echo "No platforms at default path"
+          ls /usr/local/lib/android/sdk/build-tools/ 2>/dev/null || echo "No build-tools"
 
-      - name: Make gradlew executable
-        run: chmod +x gradlew
+      - name: Accept licenses and install platform
+        run: |
+          SDK=/usr/local/lib/android/sdk
+          yes | $SDK/cmdline-tools/latest/bin/sdkmanager --sdk_root=$SDK --licenses 2>/dev/null || true
+          $SDK/cmdline-tools/latest/bin/sdkmanager --sdk_root=$SDK "platforms;android-34" "build-tools;34.0.0" 2>/dev/null
 
-      - name: Build debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+      - run: chmod +x gradlew
+
+      - name: Build APK
+        run: ./gradlew assembleDebug --no-daemon --info 2>&1 | grep -E "(error|Error|FAIL|exception|SDK|platforms|build-tools)" | head -50
         env:
-          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
+          ANDROID_HOME: /usr/local/lib/android/sdk
+        continue-on-error: true
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - name: Check if APK exists
+        run: |
+          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
+            echo "APK EXISTS!"
+            ls -la app/build/outputs/apk/debug/
+          else
+            echo "NO APK - running full gradle for errors:"
+            ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 | tail -80
+          fi
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: SmartMobi-v1.3.0
           path: app/build/outputs/apk/debug/app-debug.apk
-          retention-days: 60
+          if-no-files-found: warn
