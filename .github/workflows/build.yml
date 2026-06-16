@@ -24,35 +24,11 @@ jobs:
           echo "ANDROID_HOME=$HOME/android" >> $GITHUB_ENV
           yes | $HOME/android/cmdline-tools/latest/bin/sdkmanager --sdk_root=$HOME/android "platforms;android-34" "build-tools;34.0.0" "platform-tools" 2>/dev/null
       - run: chmod +x gradlew
-      - name: Build APK
-        id: build
-        run: |
-          ./gradlew assembleDebug --no-daemon --no-build-cache --stacktrace 2>&1 | tee /tmp/build.log
-          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+      - run: ./gradlew assembleDebug --no-daemon --no-build-cache
         env:
           ANDROID_HOME: ${{ env.ANDROID_HOME }}
-        continue-on-error: true
-      - name: Show last errors
-        if: always()
-        run: |
-          echo "=== LAST 150 LINES ==="
-          tail -150 /tmp/build.log
-          echo "=== ERRORS ==="
-          grep -E "(error:|Error|FAILED|Exception|cannot find)" /tmp/build.log | head -30 || true
-      - name: Upload log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
-          path: /tmp/build.log
-          retention-days: 3
-      - name: Upload APK if success
-        if: success()
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: SmartMobi-v1.3.0
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 60
-      - name: Fail if build failed
-        if: steps.build.outputs.exit_code != '0'
-        run: exit 1
