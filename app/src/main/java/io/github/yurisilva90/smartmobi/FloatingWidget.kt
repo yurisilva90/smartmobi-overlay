@@ -62,15 +62,31 @@ class FloatingWidget(private val context: Context) {
                 "stopped" -> "#EF4444"
                 else      -> "#22C55E"
             }
-            val statusChar = when(status) {
-                "running" -> "● Online"
-                "paused"  -> "⏸ Pausado"
-                "stopped" -> "■ Offline"
-                else      -> "● Online"
+            val label = when(status) {
+                "running" -> "Online"
+                "paused"  -> "Pausado"
+                "stopped" -> "Offline"
+                else      -> "Online"
             }
-            container?.findViewWithTag<android.widget.TextView>("status_tv")?.apply {
-                text = statusChar
-                setTextColor(android.graphics.Color.parseColor(color))
+            val c = Color.parseColor(color)
+
+            // Texto do status
+            container?.findViewWithTag<TextView>("status_tv")?.apply {
+                text = label
+                setTextColor(c)
+            }
+            // Bolinha de status
+            container?.findViewWithTag<FrameLayout>("status_dot")?.apply {
+                background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(c) }
+            }
+            // KM acompanha a cor do status
+            tvKm?.setTextColor(c)
+            // Contorno do card acompanha o status
+            container?.background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = (20 * context.resources.displayMetrics.density)
+                setColor(Color.parseColor("#0F172A"))
+                setStroke((2 * context.resources.displayMetrics.density).toInt(), c)
             }
         }
     }
@@ -105,16 +121,21 @@ class FloatingWidget(private val context: Context) {
             elevation = dp(8).toFloat()
         }
 
-        // Dot verde + "SM"
+        // Bolinha de status + texto "Online"
         val header = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
+        val statusDot = FrameLayout(context).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(7), dp(7)).apply { rightMargin = dp(5) }
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.parseColor("#22C55E")) }
+            tag = "status_dot"
+        }
+        header.addView(statusDot)
         val statusTv = TextView(context).apply {
-            text = "● Online"; textSize = 10f
+            text = "Online"; textSize = 10f
             setTextColor(Color.parseColor("#22C55E"))
             setTypeface(null, Typeface.BOLD)
-            setPadding(0, 0, dp(6), 0)
             tag = "status_tv"
         }
         header.addView(statusTv)
