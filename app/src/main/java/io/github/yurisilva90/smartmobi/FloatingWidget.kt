@@ -54,6 +54,27 @@ class FloatingWidget(private val context: Context) {
 
     fun updateKm(newKm: Double) { km = newKm; updateDisplay() }
 
+    fun updateStatus(status: String) {
+        handler.post {
+            val color = when(status) {
+                "running" -> "#22C55E"
+                "paused"  -> "#94A3B8"
+                "stopped" -> "#EF4444"
+                else      -> "#22C55E"
+            }
+            val statusChar = when(status) {
+                "running" -> "● SM"
+                "paused"  -> "⏸ SM"
+                "stopped" -> "■ SM"
+                else      -> "● SM"
+            }
+            container?.findViewWithTag<android.widget.TextView>("status_tv")?.apply {
+                text = statusChar
+                setTextColor(android.graphics.Color.parseColor(color))
+            }
+        }
+    }
+
     fun hide() {
         handler.removeCallbacks(tickRunnable)
         handler.post {
@@ -89,12 +110,14 @@ class FloatingWidget(private val context: Context) {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        header.addView(TextView(context).apply {
+        val statusTv = TextView(context).apply {
             text = "● SM"; textSize = 10f
             setTextColor(Color.parseColor("#22C55E"))
             setTypeface(null, Typeface.BOLD)
             setPadding(0, 0, dp(6), 0)
-        })
+            tag = "status_tv"
+        }
+        header.addView(statusTv)
         card.addView(header)
 
         // Cronômetro

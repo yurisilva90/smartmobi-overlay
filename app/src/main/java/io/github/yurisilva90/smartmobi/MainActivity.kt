@@ -140,7 +140,7 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("smartmobi_session", android.content.Context.MODE_PRIVATE)
         webView.addJavascriptInterface(object {
             @JavascriptInterface fun isNativeApp() = true
-            @JavascriptInterface fun getVersion()  = "1.4.1"
+            @JavascriptInterface fun getVersion()  = "1.4.2"
             @JavascriptInterface fun hasOverlay()  = Settings.canDrawOverlays(this@MainActivity)
             @JavascriptInterface fun saveSession(json: String) {
                 prefs.edit().putString("session", json).apply()
@@ -157,6 +157,9 @@ class MainActivity : AppCompatActivity() {
             }
             @JavascriptInterface fun updateFloating(km: Double) {
                 floatingWidget?.updateKm(km)
+            }
+            @JavascriptInterface fun updateFloatingStatus(status: String) {
+                floatingWidget?.updateStatus(status)
             }
             @JavascriptInterface fun stopFloating() {
                 floatingWidget?.hide()
