@@ -140,7 +140,7 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("smartmobi_session", android.content.Context.MODE_PRIVATE)
         webView.addJavascriptInterface(object {
             @JavascriptInterface fun isNativeApp() = true
-            @JavascriptInterface fun getVersion()  = "1.4.2"
+            @JavascriptInterface fun getVersion()  = "1.4.3"
             @JavascriptInterface fun hasOverlay()  = Settings.canDrawOverlays(this@MainActivity)
             @JavascriptInterface fun saveSession(json: String) {
                 prefs.edit().putString("session", json).apply()
@@ -166,9 +166,24 @@ class MainActivity : AppCompatActivity() {
                 floatingWidget = null
                 stopGpsService()
             }
+            // GPS nativo — rastreia km em background
+            @JavascriptInterface fun getGpsKm(): Double = GpsService.totalKm
+            @JavascriptInterface fun getGpsStartTime(): Long = GpsService.startTimeMs
+            @JavascriptInterface fun getGpsPausedMs(): Long = GpsService.pausedMs
+            @JavascriptInterface fun isGpsRunning(): Boolean = GpsService.isRunning
+
             @JavascriptInterface fun startGpsService() {
+                GpsService.totalKm = 0.0
                 val i = Intent(this@MainActivity, GpsService::class.java)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
+            }
+            @JavascriptInterface fun pauseGpsService() {
+                val i = Intent(this@MainActivity, GpsService::class.java).apply { action = "PAUSE" }
+                startService(i)
+            }
+            @JavascriptInterface fun resumeGpsService() {
+                val i = Intent(this@MainActivity, GpsService::class.java).apply { action = "RESUME" }
+                startService(i)
             }
             @JavascriptInterface fun stopGpsService() =
                 stopService(Intent(this@MainActivity, GpsService::class.java))
@@ -216,7 +231,20 @@ class MainActivity : AppCompatActivity() {
         if (k == KeyEvent.KEYCODE_BACK && webView.canGoBack()) { webView.goBack(); return true }
         return super.onKeyDown(k, e)
     }
-    override fun onResume()  { super.onResume();  instance = this; webView.onResume() }
+    override fun onResume() {
+        super.onResume()
+        instance = this
+        webView.onResume()
+        // Sincroniza KM nativo com o web app ao voltar ao foreground
+        if (GpsService.isRunning) {
+            val km = GpsService.totalKm
+            val startMs = GpsService.startTimeMs
+            val pausedMs = GpsService.pausedMs
+            webView.evaluateJavascript(
+                "if(typeof nativeSyncGps==='function') nativeSyncGps($km, $startMs, $pausedMs);", null
+            )
+        }
+    }
     override fun onPause()   { webView.onPause(); super.onPause() }
     override fun onDestroy() { instance = null; webView.destroy(); super.onDestroy() }
 }
