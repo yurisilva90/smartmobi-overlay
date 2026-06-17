@@ -63,10 +63,10 @@ class FloatingWidget(private val context: Context) {
                 else      -> "#22C55E"
             }
             val statusChar = when(status) {
-                "running" -> "● SM"
-                "paused"  -> "⏸ SM"
-                "stopped" -> "■ SM"
-                else      -> "● SM"
+                "running" -> "● Online"
+                "paused"  -> "⏸ Pausado"
+                "stopped" -> "■ Offline"
+                else      -> "● Online"
             }
             container?.findViewWithTag<android.widget.TextView>("status_tv")?.apply {
                 text = statusChar
@@ -111,7 +111,7 @@ class FloatingWidget(private val context: Context) {
             gravity = Gravity.CENTER_VERTICAL
         }
         val statusTv = TextView(context).apply {
-            text = "● SM"; textSize = 10f
+            text = "● Online"; textSize = 10f
             setTextColor(Color.parseColor("#22C55E"))
             setTypeface(null, Typeface.BOLD)
             setPadding(0, 0, dp(6), 0)
