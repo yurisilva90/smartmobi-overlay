@@ -162,7 +162,7 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("smartmobi_session", android.content.Context.MODE_PRIVATE)
         webView.addJavascriptInterface(object {
             @JavascriptInterface fun isNativeApp() = true
-            @JavascriptInterface fun getVersion()  = "1.4.5"
+            @JavascriptInterface fun getVersion()  = "1.4.6"
             @JavascriptInterface fun hasOverlay()  = Settings.canDrawOverlays(this@MainActivity)
             @JavascriptInterface fun saveSession(json: String) {
                 prefs.edit().putString("session", json).apply()
@@ -232,7 +232,7 @@ class MainActivity : AppCompatActivity() {
             }
             override fun onPageFinished(v: WebView, url: String) {
                 webView.evaluateJavascript(
-                    "window._smartmobiNative=true;window._nativeVersion='1.4.5';" +
+                    "window._smartmobiNative=true;window._nativeVersion='1.4.6';" +
                     "if(typeof onNativeReady==='function')onNativeReady();", null)
                 webReady = true; maybeHideSplash()
                 // Pequeno atraso pra dar tempo do login assincrono (Supabase) resolver
