@@ -23,6 +23,9 @@ class FloatingWidget(private val context: Context) {
     private var tvTime: TextView? = null
     private var tvKm:   TextView? = null
     private var startMs = 0L
+    private var pausedMs = 0L
+    private var pauseStartMs = 0L
+    private var isPaused = false
     private var km      = 0.0
     private var isExpanded = false
 
@@ -44,6 +47,7 @@ class FloatingWidget(private val context: Context) {
     fun show(startTimestamp: Long, currentKm: Double) {
         startMs = startTimestamp
         km = currentKm
+        pausedMs = 0L; pauseStartMs = 0L; isPaused = false
         if (container != null) { updateDisplay(); return }
         handler.post {
             container = buildWidget()
@@ -56,6 +60,11 @@ class FloatingWidget(private val context: Context) {
 
     fun updateStatus(status: String) {
         handler.post {
+            if (status == "paused" && !isPaused) {
+                isPaused = true; pauseStartMs = System.currentTimeMillis()
+            } else if (status == "running" && isPaused) {
+                pausedMs += System.currentTimeMillis() - pauseStartMs; isPaused = false
+            }
             val color = when(status) {
                 "running" -> "#22C55E"
                 "paused"  -> "#94A3B8"
@@ -100,7 +109,8 @@ class FloatingWidget(private val context: Context) {
     }
 
     private fun updateDisplay() {
-        val elapsed = if (startMs > 0) (System.currentTimeMillis() - startMs) / 1000 else 0L
+        val pausedTotal = pausedMs + (if (isPaused) System.currentTimeMillis() - pauseStartMs else 0L)
+        val elapsed = if (startMs > 0) (System.currentTimeMillis() - startMs - pausedTotal) / 1000 else 0L
         val h = elapsed / 3600; val m = (elapsed % 3600) / 60
         tvTime?.text = "${"%02d".format(h)}:${"%02d".format(m)}"
         tvKm?.text   = "%.1f km".format(km)
