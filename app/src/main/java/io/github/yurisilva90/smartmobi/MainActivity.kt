@@ -149,6 +149,7 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebView() {
+        webView.clearCache(true)
         webView.settings.apply {
             javaScriptEnabled = true; domStorageEnabled = true; databaseEnabled = true
             cacheMode = WebSettings.LOAD_NO_CACHE; setSupportZoom(false)
