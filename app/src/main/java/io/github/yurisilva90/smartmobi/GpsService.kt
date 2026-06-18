@@ -83,14 +83,14 @@ class GpsService : Service(), LocationListener {
         if (isPaused) return
         // Fix de baixa precisão (túnel, garagem, prédios altos) — ignora totalmente,
         // não usa como referência pra não distorcer a próxima medição.
-        if (location.accuracy > 35f) return
+        if (location.accuracy > 25f) return
 
         val prev = lastLocation
         if (prev != null) {
             val dist = prev.distanceTo(location) / 1000.0 // km
             val distM = dist * 1000.0
             // Piso de ruído: GPS "tremido" parado ou no trânsito não pode contar como deslocamento.
-            val noiseFloorM = maxOf(8.0, location.accuracy.toDouble())
+            val noiseFloorM = maxOf(10.0, location.accuracy.toDouble())
             if (distM >= noiseFloorM) {
                 // Rejeita saltos com velocidade implausível (glitch/teleporte de GPS)
                 val now = System.currentTimeMillis()
