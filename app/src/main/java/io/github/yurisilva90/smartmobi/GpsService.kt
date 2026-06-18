@@ -31,12 +31,13 @@ class GpsService : Service(), LocationListener {
 
     private lateinit var locationManager: LocationManager
     private var lastLocation: Location? = null
+    private var lastFixTime: Long = 0L
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             "PAUSE"  -> { isPaused = true;  pauseStartMs = System.currentTimeMillis(); updateNotif("Pausado"); return START_STICKY }
             "RESUME" -> { isPaused = false; pausedMs += System.currentTimeMillis() - pauseStartMs; updateNotif("GPS ativo"); return START_STICKY }
-            "RESET"  -> { totalKm = 0.0; startTimeMs = System.currentTimeMillis(); pausedMs = 0; lastLocation = null }
+            "RESET"  -> { totalKm = 0.0; startTimeMs = System.currentTimeMillis(); pausedMs = 0; lastLocation = null; lastFixTime = 0L }
         }
 
         createChannel()
@@ -80,19 +81,37 @@ class GpsService : Service(), LocationListener {
 
     override fun onLocationChanged(location: Location) {
         if (isPaused) return
+        // Fix de baixa precisão (túnel, garagem, prédios altos) — ignora totalmente,
+        // não usa como referência pra não distorcer a próxima medição.
+        if (location.accuracy > 35f) return
 
-        lastLocation?.let { prev ->
-            val dist = prev.distanceTo(location) / 1000.0
-            // Filtra leituras ruins (velocidade absurda ou precisão ruim)
-            if (dist < 0.5 && location.accuracy < 50f) {
-                totalKm += dist
-                // Atualiza floating widget em tempo real
-                MainActivity.floatingWidget?.updateKm(totalKm)
-                // Atualiza notificação
-                updateNotif("GPS ativo — ${"%.1f".format(totalKm)} km")
+        val prev = lastLocation
+        if (prev != null) {
+            val dist = prev.distanceTo(location) / 1000.0 // km
+            val distM = dist * 1000.0
+            // Piso de ruído: GPS "tremido" parado ou no trânsito não pode contar como deslocamento.
+            val noiseFloorM = maxOf(8.0, location.accuracy.toDouble())
+            if (distM >= noiseFloorM) {
+                // Rejeita saltos com velocidade implausível (glitch/teleporte de GPS)
+                val now = System.currentTimeMillis()
+                val dtH = if (lastFixTime > 0) (now - lastFixTime) / 3600000.0 else -1.0
+                val speedKmh = if (dtH > 0) dist / dtH else 0.0
+                if (dtH <= 0 || speedKmh < 180) {
+                    totalKm += dist
+                    // Atualiza floating widget em tempo real
+                    MainActivity.floatingWidget?.updateKm(totalKm)
+                    // Atualiza notificação
+                    updateNotif("GPS ativo — ${"%.1f".format(totalKm)} km")
+                }
+                // Só avança a referência quando o movimento foi validado — assim deslocamento
+                // lento (trânsito parado andando aos poucos) ainda acumula corretamente.
+                lastLocation = location
+                lastFixTime = now
             }
+        } else {
+            lastLocation = location
+            lastFixTime = System.currentTimeMillis()
         }
-        lastLocation = location
     }
 
     private fun updateNotif(text: String) {
