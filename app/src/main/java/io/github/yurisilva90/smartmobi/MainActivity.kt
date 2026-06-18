@@ -95,7 +95,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun buildSplash(): FrameLayout {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
-        val frame = FrameLayout(this).apply { setBackgroundColor(Color.parseColor("#0F172A")) }
+        val frame = FrameLayout(this).apply { setBackgroundColor(Color.parseColor("#FFFFFF")) }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
         val iconBg = GradientDrawable(GradientDrawable.Orientation.TL_BR,
             intArrayOf(Color.parseColor("#22C55E"), Color.parseColor("#16A34A"))
@@ -112,7 +112,7 @@ class MainActivity : AppCompatActivity() {
         col.addView(icon)
         col.addView(TextView(this).apply {
             text = "SmartMobi"; textSize = 28f; typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            setTextColor(Color.parseColor("#0F172A")); gravity = Gravity.CENTER
         })
         col.addView(TextView(this).apply {
             text = "Gestao para motoristas"; textSize = 13f
@@ -151,7 +151,7 @@ class MainActivity : AppCompatActivity() {
     private fun setupWebView() {
         webView.settings.apply {
             javaScriptEnabled = true; domStorageEnabled = true; databaseEnabled = true
-            cacheMode = WebSettings.LOAD_DEFAULT; setSupportZoom(false)
+            cacheMode = WebSettings.LOAD_NO_CACHE; setSupportZoom(false)
             displayZoomControls = false; builtInZoomControls = false
             useWideViewPort = true; loadWithOverviewMode = true; allowFileAccess = true
             setGeolocationEnabled(true); setGeolocationDatabasePath(filesDir.absolutePath)
