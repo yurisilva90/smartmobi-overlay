@@ -31,6 +31,7 @@ class MainActivity : AppCompatActivity() {
     private var fileCallback: ValueCallback<Array<Uri>>? = null
     private var splashDone = false
     private var webReady   = false
+    private var pendingScreen: String? = null
 
     companion object {
         const val URL      = "https://yurisilva90.github.io/smartmobi/"
@@ -43,6 +44,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         instance = this
+        pendingScreen = intent.getStringExtra("open_screen")
         window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN)
         supportActionBar?.hide()
 
@@ -63,6 +65,25 @@ class MainActivity : AppCompatActivity() {
         setupWebView()
         webView.loadUrl(URL)
         Handler(Looper.getMainLooper()).postDelayed({ splashDone = true; maybeHideSplash() }, 2000)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val screen = intent.getStringExtra("open_screen")
+        if (screen != null) {
+            pendingScreen = screen
+            maybeOpenPendingScreen()
+        }
+    }
+
+    private fun maybeOpenPendingScreen() {
+        val screen = pendingScreen
+        if (screen != null && webReady) {
+            webView.evaluateJavascript(
+                "if(typeof navTo==='function') navTo('$screen');", null)
+            pendingScreen = null
+        }
     }
 
     private fun requestOverlayPermission() {
@@ -213,6 +234,9 @@ class MainActivity : AppCompatActivity() {
                     "window._smartmobiNative=true;window._nativeVersion='1.4.5';" +
                     "if(typeof onNativeReady==='function')onNativeReady();", null)
                 webReady = true; maybeHideSplash()
+                // Pequeno atraso pra dar tempo do login assincrono (Supabase) resolver
+                // antes de navegar — senão a navegacao pode disparar ainda na tela de login.
+                Handler(Looper.getMainLooper()).postDelayed({ maybeOpenPendingScreen() }, 900)
             }
         }
     }
@@ -235,6 +259,7 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         instance = this
         webView.onResume()
+        maybeOpenPendingScreen()
         // Sincroniza KM nativo com o web app ao voltar ao foreground
         if (GpsService.isRunning) {
             val km = GpsService.totalKm

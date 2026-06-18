@@ -169,9 +169,10 @@ class FloatingWidget(private val context: Context) {
                 }
                 MotionEvent.ACTION_UP -> {
                     if (!moved) {
-                        // Tap: abre o SmartMobi
+                        // Tap: abre o SmartMobi direto na tela Jornada
                         val intent = Intent(context, MainActivity::class.java).apply {
                             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                            putExtra("open_screen", "jornada")
                         }
                         context.startActivity(intent)
                     }
