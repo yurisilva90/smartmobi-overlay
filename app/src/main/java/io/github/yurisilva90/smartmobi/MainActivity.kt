@@ -6,7 +6,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -97,31 +96,15 @@ class MainActivity : AppCompatActivity() {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
         val frame = FrameLayout(this).apply { setBackgroundColor(Color.parseColor("#FFFFFF")) }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
-        val iconBg = GradientDrawable(GradientDrawable.Orientation.TL_BR,
-            intArrayOf(Color.parseColor("#22C55E"), Color.parseColor("#16A34A"))
-        ).apply { shape = GradientDrawable.RECTANGLE; cornerRadius = dp(24).toFloat() }
-        val icon = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(80), dp(80)).apply { bottomMargin = dp(20) }
-            background = iconBg
+        val icon = ImageView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(140), dp(140)).apply { bottomMargin = dp(8) }
+            setImageResource(R.mipmap.ic_launcher)
+            scaleType = ImageView.ScaleType.FIT_CENTER
         }
-        icon.addView(TextView(this).apply {
-            text = "SM"; textSize = 26f; typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE); gravity = Gravity.CENTER
-            layoutParams = FrameLayout.LayoutParams(-1, -1)
-        })
         col.addView(icon)
-        col.addView(TextView(this).apply {
-            text = "SmartMobi"; textSize = 28f; typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#0F172A")); gravity = Gravity.CENTER
-        })
-        col.addView(TextView(this).apply {
-            text = "Gestao para motoristas"; textSize = 13f
-            setTextColor(Color.parseColor("#64748B")); gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(6) }
-        })
         col.addView(ProgressBar(this).apply {
             indeterminateTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#22C55E"))
-            layoutParams = LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(36) }
+            layoutParams = LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(28) }
         })
         frame.addView(col, FrameLayout.LayoutParams(-2, -2).apply { gravity = Gravity.CENTER })
         return frame
@@ -162,7 +145,7 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("smartmobi_session", android.content.Context.MODE_PRIVATE)
         webView.addJavascriptInterface(object {
             @JavascriptInterface fun isNativeApp() = true
-            @JavascriptInterface fun getVersion()  = "1.4.6"
+            @JavascriptInterface fun getVersion()  = "1.4.7"
             @JavascriptInterface fun hasOverlay()  = Settings.canDrawOverlays(this@MainActivity)
             @JavascriptInterface fun saveSession(json: String) {
                 prefs.edit().putString("session", json).apply()
@@ -232,7 +215,7 @@ class MainActivity : AppCompatActivity() {
             }
             override fun onPageFinished(v: WebView, url: String) {
                 webView.evaluateJavascript(
-                    "window._smartmobiNative=true;window._nativeVersion='1.4.6';" +
+                    "window._smartmobiNative=true;window._nativeVersion='1.4.7';" +
                     "if(typeof onNativeReady==='function')onNativeReady();", null)
                 webReady = true; maybeHideSplash()
                 // Pequeno atraso pra dar tempo do login assincrono (Supabase) resolver
