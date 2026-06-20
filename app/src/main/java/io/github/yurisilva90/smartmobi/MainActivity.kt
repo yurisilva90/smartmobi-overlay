@@ -53,7 +53,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(webView, FrameLayout.LayoutParams(-1, -1))
         webProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100
-            progressTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#22C55E"))
+            progressTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#0EA5E9"))
         }
         root.addView(webProgress, FrameLayout.LayoutParams(-1, 6))
         splashView = buildSplash()
@@ -120,7 +120,7 @@ class MainActivity : AppCompatActivity() {
         }
         col.addView(icon)
         col.addView(ProgressBar(this).apply {
-            indeterminateTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#22C55E"))
+            indeterminateTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#0EA5E9"))
             layoutParams = LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(28) }
         })
         frame.addView(col, FrameLayout.LayoutParams(-2, -2).apply { gravity = Gravity.CENTER })
