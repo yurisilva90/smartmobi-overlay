@@ -41,10 +41,18 @@ class GpsService : Service(), LocationListener {
         }
 
         createChannel()
-        startTimeMs = System.currentTimeMillis()
+        // IMPORTANTE: só zera km/tempo quando o serviço ainda não estava rodando.
+        // startFloating() (chamado a cada retomada do app) dispara um Intent sem action
+        // pra "garantir" que o GPS continua ativo — sem essa guarda, isso reiniciava a
+        // contagem da jornada em andamento todo santo retomada, perdendo quilometragem real.
+        if (!isRunning) {
+            startTimeMs = System.currentTimeMillis()
+            totalKm = 0.0
+            pausedMs = 0
+            lastLocation = null
+            lastFixTime = 0L
+        }
         isRunning = true
-        totalKm = 0.0
-        pausedMs = 0
 
         val pi = PendingIntent.getActivity(
             this, 0,

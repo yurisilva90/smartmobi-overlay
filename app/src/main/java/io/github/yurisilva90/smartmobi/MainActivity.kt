@@ -185,7 +185,6 @@ class MainActivity : AppCompatActivity() {
             @JavascriptInterface fun isGpsRunning(): Boolean = GpsService.isRunning
 
             @JavascriptInterface fun startGpsService() {
-                GpsService.totalKm = 0.0
                 val i = Intent(this@MainActivity, GpsService::class.java)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
             }
@@ -232,10 +231,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun startGpsService() {
-        val i = Intent(this, GpsService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
-    }
     private fun stopGpsService() = stopService(Intent(this, GpsService::class.java))
 
     @Deprecated("") override fun onActivityResult(req: Int, result: Int, data: Intent?) {
