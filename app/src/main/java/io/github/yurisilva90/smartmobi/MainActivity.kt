@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.Settings
 import android.view.Gravity
 import android.view.KeyEvent
@@ -61,6 +62,7 @@ class MainActivity : AppCompatActivity() {
 
         requestAppPermissions()
         requestOverlayPermission()
+        requestBatteryOptimizationExemption()
         setupWebView()
         webView.loadUrl(URL)
         Handler(Looper.getMainLooper()).postDelayed({ splashDone = true; maybeHideSplash() }, 2000)
@@ -89,6 +91,21 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
             startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                 Uri.parse("package:$packageName")))
+        }
+    }
+
+    // Sem isso, fabricantes como Xiaomi/Samsung/Motorola podem matar o app em segundo
+    // plano por economia de bateria mesmo com o GpsService em foreground — interrompendo
+    // o rastreamento de km no meio da jornada sem o usuário perceber.
+    private fun requestBatteryOptimizationExemption() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val pm = getSystemService(POWER_SERVICE) as PowerManager
+            if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                try {
+                    startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.parse("package:$packageName")))
+                } catch (e: Exception) { e.printStackTrace() }
+            }
         }
     }
 
