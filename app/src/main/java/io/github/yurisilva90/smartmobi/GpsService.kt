@@ -27,6 +27,7 @@ class GpsService : Service(), LocationListener {
         var isPaused   = false
         var pausedMs   = 0L
         var pauseStartMs = 0L
+        var lastGpsFixTime = 0L
     }
 
     private lateinit var locationManager: LocationManager
@@ -37,7 +38,7 @@ class GpsService : Service(), LocationListener {
         when (intent?.action) {
             "PAUSE"  -> { isPaused = true;  pauseStartMs = System.currentTimeMillis(); updateNotif("Pausado"); return START_STICKY }
             "RESUME" -> { isPaused = false; pausedMs += System.currentTimeMillis() - pauseStartMs; updateNotif("GPS ativo"); return START_STICKY }
-            "RESET"  -> { totalKm = 0.0; startTimeMs = System.currentTimeMillis(); pausedMs = 0; lastLocation = null; lastFixTime = 0L }
+            "RESET"  -> { totalKm = 0.0; startTimeMs = System.currentTimeMillis(); pausedMs = 0; lastLocation = null; lastFixTime = 0L; lastGpsFixTime = 0L }
         }
 
         createChannel()
@@ -51,6 +52,7 @@ class GpsService : Service(), LocationListener {
             pausedMs = 0
             lastLocation = null
             lastFixTime = 0L
+            lastGpsFixTime = 0L
         }
         isRunning = true
 
@@ -93,6 +95,17 @@ class GpsService : Service(), LocationListener {
         // não usa como referência pra não distorcer a próxima medição.
         if (location.accuracy > 25f) return
 
+        val now = System.currentTimeMillis()
+        val isGps = location.provider == LocationManager.GPS_PROVIDER
+        if (isGps) lastGpsFixTime = now
+        // So aceita fix de Rede (Wi-Fi/torre) se o GPS de verdade estiver sem responder
+        // ha mais de 45s — caso contrario ignora completamente. Antes os dois provedores
+        // eram tratados como o mesmo rastro continuo, e GPS x Rede tem precisao/viés bem
+        // diferentes: a cada troca entre eles, a distancia entre os dois "pulava" um pouco,
+        // mesmo passando pelo filtro de precisao — somado ao longo de uma corrida inteira,
+        // isso inflava bastante o km total.
+        if (!isGps && (lastGpsFixTime == 0L || now - lastGpsFixTime < 45000)) return
+
         val prev = lastLocation
         if (prev != null) {
             val dist = prev.distanceTo(location) / 1000.0 // km
@@ -101,7 +114,6 @@ class GpsService : Service(), LocationListener {
             val noiseFloorM = maxOf(10.0, location.accuracy.toDouble())
             if (distM >= noiseFloorM) {
                 // Rejeita saltos com velocidade implausível (glitch/teleporte de GPS)
-                val now = System.currentTimeMillis()
                 val dtH = if (lastFixTime > 0) (now - lastFixTime) / 3600000.0 else -1.0
                 val speedKmh = if (dtH > 0) dist / dtH else 0.0
                 if (dtH <= 0 || speedKmh < 180) {
