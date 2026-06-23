@@ -132,44 +132,52 @@ class GpsService : Service(), LocationListener {
         }
     }
 
+    // ── Ciclo de tipos de pergunta ────────────────────────────────────────────
+    private var cicloTipo = 0  // 0=transito, 1=demanda, 2=dinamico
+
     // ── Verifica Supabase e dispara alerta se não tiver informes recentes ─────
     private fun verificarEDispararAlerta(location: Location) {
         try {
-            // Não perturba mais de 1x a cada 10 min
             if (System.currentTimeMillis() - lastAlertTime < ALERT_INTERVAL_MS) return
 
-            // Geocodificação reversa via Nominatim → descobre o bairro atual
-            val nomeBairro = geocodificarBairro(location.latitude, location.longitude) ?: return
+            // Geocodificação reversa → RUA, não bairro
+            val nomeRua = geocodificarRua(location.latitude, location.longitude) ?: return
 
-            // Verifica se há informes de trânsito nos últimos 30 min para esse bairro
-            val temInforme = verificarInformes(nomeBairro)
+            // Verifica o param_type do ciclo atual
+            val paramTipo = when (cicloTipo % 3) { 0 -> "transito"; 1 -> "demanda"; else -> "dinamico" }
+
+            val temInforme = verificarInformes(nomeRua, paramTipo)
             if (!temInforme) {
-                dispararAlertaReporte(nomeBairro, location.latitude, location.longitude)
+                dispararAlertaReporte(nomeRua, location.latitude, location.longitude, cicloTipo % 3)
                 lastAlertTime = System.currentTimeMillis()
+                cicloTipo++
             }
         } catch (e: Exception) { e.printStackTrace() }
     }
 
-    private fun geocodificarBairro(lat: Double, lon: Double): String? {
+    private fun geocodificarRua(lat: Double, lon: Double): String? {
         return try {
-            val url = URL("https://nominatim.openstreetmap.org/reverse?lat=$lat&lon=$lon&zoom=14&format=json&accept-language=pt")
+            // zoom=16 para pegar a rua, não o bairro
+            val url = URL("https://nominatim.openstreetmap.org/reverse?lat=$lat&lon=$lon&zoom=16&format=json&accept-language=pt")
             val conn = url.openConnection() as HttpURLConnection
             conn.setRequestProperty("User-Agent", "SmartMobi/1.0")
-            conn.connectTimeout = 5000
+            conn.connectTimeout = 6000
             val json = JSONObject(conn.inputStream.bufferedReader().readText())
             val addr = json.optJSONObject("address")
-            addr?.optString("suburb")
+            // Preferir nome da rua, cair no bairro só se não tiver rua
+            addr?.optString("road")?.takeIf { it.isNotBlank() }
+                ?: addr?.optString("pedestrian")?.takeIf { it.isNotBlank() }
+                ?: addr?.optString("suburb")
                 ?: addr?.optString("neighbourhood")
-                ?: addr?.optString("city_district")
         } catch (e: Exception) { null }
     }
 
-    private fun verificarInformes(nomeBairro: String): Boolean {
+    private fun verificarInformes(nomeRua: String, paramTipo: String = "transito"): Boolean {
         return try {
             val expiry = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
                 .format(Date(System.currentTimeMillis() - 30 * 60 * 1000))
-            val encodedNome = nomeBairro.replace(" ", "%20")
-            val url = URL("$SUPABASE_URL/rest/v1/informes?location_name=eq.$encodedNome&is_active=eq.true&expires_at=gt.$expiry&select=id&limit=1")
+            val encodedNome = nomeRua.replace(" ", "%20")
+            val url = URL("$SUPABASE_URL/rest/v1/informes?location_name=eq.$encodedNome&param_type=eq.$paramTipo&is_active=eq.true&expires_at=gt.$expiry&select=id&limit=1")
             val conn = url.openConnection() as HttpURLConnection
             conn.setRequestProperty("apikey", SUPABASE_ANON)
             conn.setRequestProperty("Authorization", "Bearer $SUPABASE_ANON")
@@ -179,13 +187,13 @@ class GpsService : Service(), LocationListener {
         } catch (e: Exception) { true } // em caso de erro, não incomoda o motorista
     }
 
-    private fun dispararAlertaReporte(nomeBairro: String, lat: Double, lon: Double) {
+    private fun dispararAlertaReporte(nomeRua: String, lat: Double, lon: Double, tipo: Int) {
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
 
-        // Ação 1: Fluindo (abre app com parâmetros na query)
-        fun makeAction(label: String, valor: String, code: Int): NotificationCompat.Action {
+        fun makeAction(label: String, paramType: String, valor: String, code: Int): NotificationCompat.Action {
             val i = Intent(this, ReporteQuickReceiver::class.java).apply {
-                putExtra("location_name", nomeBairro)
+                putExtra("location_name", nomeRua)
+                putExtra("param_type", paramType)
                 putExtra("param_value", valor)
                 putExtra("lat", lat)
                 putExtra("lon", lon)
@@ -194,21 +202,47 @@ class GpsService : Service(), LocationListener {
             return NotificationCompat.Action.Builder(0, label, pi).build()
         }
 
+        val (titulo, subtitulo, a1, a2, a3) = when (tipo) {
+            0 -> listOf(
+                "Trânsito em $nomeRua?",
+                "Escala 0 (parado) a 5 (fluindo) — ajuda os colegas",
+                makeAction("5 — Fluindo",    "transito", "Fluindo", 101),
+                makeAction("2 — Lento",      "transito", "Lento",   102),
+                makeAction("0 — Parado",     "transito", "Parado",  103)
+            )
+            1 -> listOf(
+                "Demanda em $nomeRua?",
+                "Como estão os chamados agora?",
+                makeAction("📲 Tocando bem",  "demanda", "Tocando bem",     201),
+                makeAction("💤 Esporádico",   "demanda", "Esporádico",      202),
+                makeAction("❌ Não toca",     "demanda", "Não toca nada",   203)
+            )
+            else -> listOf(
+                "Dinâmico em $nomeRua?",
+                "Qual o valor do dinâmico agora?",
+                makeAction("⚡ +R\$10",       "dinamico", "+R\$10", 301),
+                makeAction("⚡ +R\$5",        "dinamico", "+R\$5",  302),
+                makeAction("⚡ R\$ 0",        "dinamico", "R\$ 0",  303)
+            )
+        }
+
         val notif = NotificationCompat.Builder(this, CHANNEL_ALERT_ID)
-            .setContentTitle("Como está o trânsito em $nomeBairro?")
-            .setContentText("Toque para informar — ajuda outros motoristas agora")
+            .setContentTitle(titulo as String)
+            .setContentText(subtitulo as String)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_REMINDER)
             .setAutoCancel(true)
-            .setTimeoutAfter(10_000) // some após 10s
-            .addAction(makeAction("🟢 Fluindo", "Fluindo", 101))
-            .addAction(makeAction("🟡 Lento",   "Lento",   102))
-            .addAction(makeAction("🔴 Parado",  "Parado",  103))
+            .setTimeoutAfter(12_000)
+            .addAction(a1 as NotificationCompat.Action)
+            .addAction(a2 as NotificationCompat.Action)
+            .addAction(a3 as NotificationCompat.Action)
             .setContentIntent(
-                PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java)
-                    .putExtra("open_informes", true)
-                    .putExtra("location", nomeBairro), PendingIntent.FLAG_IMMUTABLE)
+                PendingIntent.getActivity(this, 0,
+                    Intent(this, MainActivity::class.java)
+                        .putExtra("open_informes", true)
+                        .putExtra("location", nomeRua),
+                    PendingIntent.FLAG_IMMUTABLE)
             )
             .build()
 
@@ -285,7 +319,7 @@ class ReporteQuickReceiver : BroadcastReceiver() {
                     put("location_lat", lat)
                     put("location_lng", lon)
                     put("city", "rio")
-                    put("param_type", "transito")
+                    put("param_type", intent.getStringExtra("param_type") ?: "transito")
                     put("param_value", valor)
                     put("expires_at", expiresAt)
                     put("votes_up", 1)
