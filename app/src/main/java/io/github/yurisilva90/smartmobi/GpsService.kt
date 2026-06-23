@@ -33,6 +33,41 @@ class GpsService : Service(), LocationListener {
         const val SUPABASE_URL     = "https://jlsrpptslwfhmkvelaro.supabase.co"
         const val SUPABASE_ANON    = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impsc3JwcHRzbHdmaG1rdmVsYXJvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4NjYxNzIsImV4cCI6MjA4OTQ0MjE3Mn0.4gD4dKx05QaOAAkY1gAx2HuH_CN31Xg3kkDMdvZ4kh0"
 
+        // Locais especiais: lat, lon, raio(m), tipo ("aero"/"term"/"tur")
+        val LOCAIS_ESPECIAIS = listOf(
+            doubleArrayOf(-22.8100, -43.2506, 800.0, 0.0),  // GIG (aero=0)
+            doubleArrayOf(-22.9104, -43.1636, 400.0, 0.0),  // SDU (aero=0)
+            doubleArrayOf(-22.8970, -43.1889, 300.0, 1.0),  // Rodoviária (term=1)
+            doubleArrayOf(-22.9519, -43.1661, 200.0, 2.0),  // Pão de Açúcar (tur=2)
+            doubleArrayOf(-22.9519, -43.2105, 200.0, 2.0),  // Cristo Redentor (tur=2)
+            doubleArrayOf(-22.8037, -43.2499, 200.0, 2.0),  // Quinta da Boa Vista (tur=2)
+            doubleArrayOf(-22.9013, -43.1761, 150.0, 2.0),  // Museu do Amanhã (tur=2)
+            doubleArrayOf(-22.9691, -43.1742, 100.0, 2.0),  // Jardim Botânico (tur=2)
+            doubleArrayOf(-22.9122, -43.2302, 500.0, 2.0),  // Maracanã (tur=2)
+            doubleArrayOf(-22.9146, -43.1765, 300.0, 2.0)   // Lapa/Arcos (tur=2)
+        )
+        // tipo 0=aero, 1=term, 2=tur, -1=rua comum
+
+        fun detectarLocalEspecial(lat: Double, lon: Double): Int {
+            for (local in LOCAIS_ESPECIAIS) {
+                val dlat = Math.toRadians(local[0] - lat)
+                val dlon = Math.toRadians(local[1] - lon)
+                val a = Math.sin(dlat/2).let { it*it } +
+                    Math.cos(Math.toRadians(lat)) * Math.cos(Math.toRadians(local[0])) *
+                    Math.sin(dlon/2).let { it*it }
+                val distM = 6371000 * 2 * Math.asin(Math.sqrt(a))
+                if (distM <= local[2]) return local[3].toInt()
+            }
+            return -1  // rua comum
+        }
+
+        // Converte número 0-5 → texto param_value consistente com o app
+        fun escalaParaValor(n: Int) = when(n) {
+            0 -> "Parado"; 1 -> "Parado"; 2 -> "Lento"
+            3 -> "Lento";  4 -> "Fluindo"; 5 -> "Fluindo"
+            else -> "Fluindo"
+        }
+
         // Estado compartilhado com MainActivity/FloatingWidget
         var totalKm      = 0.0
         var startTimeMs  = 0L
@@ -140,15 +175,35 @@ class GpsService : Service(), LocationListener {
         try {
             if (System.currentTimeMillis() - lastAlertTime < ALERT_INTERVAL_MS) return
 
-            // Geocodificação reversa → RUA, não bairro
-            val nomeRua = geocodificarRua(location.latitude, location.longitude) ?: return
+            val lat = location.latitude; val lon = location.longitude
+            val tipoLocal = detectarLocalEspecial(lat, lon)
 
-            // Verifica o param_type do ciclo atual
-            val paramTipo = when (cicloTipo % 3) { 0 -> "transito"; 1 -> "demanda"; else -> "dinamico" }
+            // Para locais especiais, nome do local; para ruas, nome da rua via Nominatim
+            val nomeLoc = geocodificarRua(lat, lon) ?: return
 
-            val temInforme = verificarInformes(nomeRua, paramTipo)
+            // Lógica de pergunta por tipo de local:
+            // aero/term (0,1): SEMPRE fiscalização (ciclo entre fisc e fila)
+            // tur (2): trânsito obrigatório + fiscalização opcional (alterna)
+            // rua (-1): ciclo transito→demanda→dinamico
+            val (paramTipo, modalTipo) = when {
+                tipoLocal == 0 || tipoLocal == 1 -> {
+                    // Aeroporto/Terminal: alterna fiscal e fila
+                    if (cicloTipo % 2 == 0) Pair("fiscalizacao", 10) else Pair("fila", 11)
+                }
+                tipoLocal == 2 -> {
+                    // Turístico: trânsito sempre, fiscal no ciclo par
+                    if (cicloTipo % 2 == 0) Pair("transito", 20) else Pair("fiscalizacao", 21)
+                }
+                else -> when (cicloTipo % 3) {
+                    0 -> Pair("transito", 0)
+                    1 -> Pair("demanda", 1)
+                    else -> Pair("dinamico", 2)
+                }
+            }
+
+            val temInforme = verificarInformes(nomeLoc, paramTipo)
             if (!temInforme) {
-                dispararAlertaReporte(nomeRua, location.latitude, location.longitude, cicloTipo % 3)
+                dispararAlertaReporte(nomeLoc, lat, lon, modalTipo)
                 lastAlertTime = System.currentTimeMillis()
                 cicloTipo++
             }
@@ -203,26 +258,54 @@ class GpsService : Service(), LocationListener {
         }
 
         val (titulo, subtitulo, a1, a2, a3) = when (tipo) {
-            0 -> listOf(
+            0 -> listOf( // trânsito rua: 3 pontos da escala
                 "Trânsito em $nomeRua?",
-                "Escala 0 (parado) a 5 (fluindo) — ajuda os colegas",
-                makeAction("5 — Fluindo",    "transito", "Fluindo", 101),
-                makeAction("2 — Lento",      "transito", "Lento",   102),
-                makeAction("0 — Parado",     "transito", "Parado",  103)
+                "0 = parado  ·  5 = fluindo",
+                makeAction("0 🔴", "transito", "Parado",  101),
+                makeAction("2 🟠", "transito", "Lento",   102),
+                makeAction("5 🟢", "transito", "Fluindo", 103)
             )
-            1 -> listOf(
+            1 -> listOf( // demanda
                 "Demanda em $nomeRua?",
                 "Como estão os chamados agora?",
-                makeAction("📲 Tocando bem",  "demanda", "Tocando bem",     201),
-                makeAction("💤 Esporádico",   "demanda", "Esporádico",      202),
-                makeAction("❌ Não toca",     "demanda", "Não toca nada",   203)
+                makeAction("📲 Tocando",    "demanda", "Tocando bem",   201),
+                makeAction("💤 Esporádico", "demanda", "Esporádico",    202),
+                makeAction("❌ Não toca",   "demanda", "Não toca nada", 203)
             )
-            else -> listOf(
+            2 -> listOf( // dinâmico
                 "Dinâmico em $nomeRua?",
-                "Qual o valor do dinâmico agora?",
-                makeAction("⚡ +R\$10",       "dinamico", "+R\$10", 301),
-                makeAction("⚡ +R\$5",        "dinamico", "+R\$5",  302),
-                makeAction("⚡ R\$ 0",        "dinamico", "R\$ 0",  303)
+                "Qual o valor agora?",
+                makeAction("⚡ +R\$10+", "dinamico", "+R\$15", 301),
+                makeAction("⚡ +R\$5",   "dinamico", "+R\$5",  302),
+                makeAction("⚡ R\$ 0",   "dinamico", "R\$ 0",  303)
+            )
+            10 -> listOf( // aeroporto/term: fiscalização
+                "Fiscalização no terminal?",
+                "Há alguma abordagem agora?",
+                makeAction("🚔 PM",       "fiscalizacao", "PM",       401),
+                makeAction("🚔 GM",       "fiscalizacao", "GM",       402),
+                makeAction("🚫 Nenhuma",  "fiscalizacao", "Ausente",  403)
+            )
+            11 -> listOf( // aeroporto/term: fila
+                "Como está a fila?",
+                "No desembarque/terminal agora",
+                makeAction("✅ Vazia",   "fila", "Vazia",   501),
+                makeAction("⚠️ Média",   "fila", "Média",   502),
+                makeAction("🔴 Grande",  "fila", "Grande",  503)
+            )
+            20 -> listOf( // turístico: trânsito
+                "Trânsito em $nomeRua?",
+                "0 = parado  ·  5 = fluindo",
+                makeAction("0 🔴", "transito", "Parado",  601),
+                makeAction("2 🟠", "transito", "Lento",   602),
+                makeAction("5 🟢", "transito", "Fluindo", 603)
+            )
+            else -> listOf( // turístico: fiscal
+                "Fiscalização no local?",
+                "Há abordagem aqui agora?",
+                makeAction("🚔 PM",      "fiscalizacao", "PM",      701),
+                makeAction("🚫 Lei Seca","fiscalizacao", "Lei Seca",702),
+                makeAction("✅ Nenhuma", "fiscalizacao", "Ausente", 703)
             )
         }
 
