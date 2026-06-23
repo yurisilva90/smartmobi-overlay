@@ -162,7 +162,7 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("smartmobi_session", android.content.Context.MODE_PRIVATE)
         webView.addJavascriptInterface(object {
             @JavascriptInterface fun isNativeApp() = true
-            @JavascriptInterface fun getVersion()  = "1.4.9"
+            @JavascriptInterface fun getVersion()  = "1.5.0"
             @JavascriptInterface fun hasOverlay()  = Settings.canDrawOverlays(this@MainActivity)
             @JavascriptInterface fun saveSession(json: String) {
                 prefs.edit().putString("session", json).apply()
@@ -200,6 +200,11 @@ class MainActivity : AppCompatActivity() {
             @JavascriptInterface fun getGpsStartTime(): Long = GpsService.startTimeMs
             @JavascriptInterface fun getGpsPausedMs(): Long = GpsService.pausedMs
             @JavascriptInterface fun isGpsRunning(): Boolean = GpsService.isRunning
+            @JavascriptInterface fun saveUserToken(userId: String, accessToken: String) {
+                // Armazena credenciais para o GpsService usar nas notificações de reporte rápido
+                GpsService.saveUserCredentials(this@MainActivity, userId, accessToken)
+            }
+
 
             @JavascriptInterface fun startGpsService() {
                 val i = Intent(this@MainActivity, GpsService::class.java)
@@ -276,3 +281,4 @@ class MainActivity : AppCompatActivity() {
     override fun onPause()   { webView.onPause(); super.onPause() }
     override fun onDestroy() { instance = null; webView.destroy(); super.onDestroy() }
 }
+
