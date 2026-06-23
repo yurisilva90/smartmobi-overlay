@@ -17,17 +17,12 @@ import android.widget.TextView
 
 class FloatingWidget(private val context: Context) {
 
-    private val wm     = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    private val wm      = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val handler = Handler(Looper.getMainLooper())
     private var container: LinearLayout? = null
     private var tvTime: TextView? = null
     private var tvKm:   TextView? = null
-    private var startMs = 0L
-    private var pausedMs = 0L
-    private var pauseStartMs = 0L
-    private var isPaused = false
-    private var km      = 0.0
-    private var isExpanded = false
+    private var km = 0.0
 
     private val params = WindowManager.LayoutParams(
         WindowManager.LayoutParams.WRAP_CONTENT,
@@ -37,17 +32,20 @@ class FloatingWidget(private val context: Context) {
         PixelFormat.TRANSLUCENT
     ).apply { gravity = Gravity.TOP or Gravity.END; x = 16; y = 180 }
 
+    // Tick a cada segundo — para automaticamente quando pausado
     private val tickRunnable = object : Runnable {
         override fun run() {
             updateDisplay()
-            handler.postDelayed(this, 1000)
+            // Se pausado, re-agendar com intervalo maior (economiza bateria)
+            val delay = if (GpsService.isPaused) 5000L else 1000L
+            handler.postDelayed(this, delay)
         }
     }
 
     fun show(startTimestamp: Long, currentKm: Double) {
-        startMs = startTimestamp
+        // Atualiza o km; NÃO reseta estado de pausa (lido direto do GpsService)
+        if (startTimestamp > 0) GpsService.startTimeMs = startTimestamp
         km = currentKm
-        pausedMs = 0L; pauseStartMs = 0L; isPaused = false
         if (container != null) { updateDisplay(); return }
         handler.post {
             container = buildWidget()
@@ -59,12 +57,8 @@ class FloatingWidget(private val context: Context) {
     fun updateKm(newKm: Double) { km = newKm; updateDisplay() }
 
     fun updateStatus(status: String) {
+        // Apenas atualiza cores/labels — o estado de pausa real está no GpsService
         handler.post {
-            if (status == "paused" && !isPaused) {
-                isPaused = true; pauseStartMs = System.currentTimeMillis()
-            } else if (status == "running" && isPaused) {
-                pausedMs += System.currentTimeMillis() - pauseStartMs; isPaused = false
-            }
             val color = when(status) {
                 "running" -> "#22C55E"
                 "paused"  -> "#94A3B8"
@@ -78,25 +72,18 @@ class FloatingWidget(private val context: Context) {
                 else      -> "Online"
             }
             val c = Color.parseColor(color)
-
-            // Texto do status
-            container?.findViewWithTag<TextView>("status_tv")?.apply {
-                text = label
-                setTextColor(c)
-            }
-            // Bolinha de status
+            container?.findViewWithTag<TextView>("status_tv")?.apply { text = label; setTextColor(c) }
             container?.findViewWithTag<FrameLayout>("status_dot")?.apply {
                 background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(c) }
             }
-            // KM acompanha a cor do status
             tvKm?.setTextColor(c)
-            // Contorno do card acompanha o status
             container?.background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = (20 * context.resources.displayMetrics.density)
                 setColor(Color.parseColor("#0F172A"))
                 setStroke((2 * context.resources.displayMetrics.density).toInt(), c)
             }
+            updateDisplay()
         }
     }
 
@@ -109,10 +96,30 @@ class FloatingWidget(private val context: Context) {
     }
 
     private fun updateDisplay() {
-        val pausedTotal = pausedMs + (if (isPaused) System.currentTimeMillis() - pauseStartMs else 0L)
-        val elapsed = if (startMs > 0) (System.currentTimeMillis() - startMs - pausedTotal) / 1000 else 0L
-        val h = elapsed / 3600; val m = (elapsed % 3600) / 60
-        tvTime?.text = "${"%02d".format(h)}:${"%02d".format(m)}"
+        // ── FONTE AUTORITATIVA: lê sempre do GpsService companion ──────────
+        // Nunca usa cópias locais — assim a bolinha nunca fica dessincronizada
+        // com o estado real da jornada, mesmo após recriações do widget.
+        val gStart      = GpsService.startTimeMs
+        val gPausedMs   = GpsService.pausedMs
+        val gIsPaused   = GpsService.isPaused
+        val gPauseStart = GpsService.pauseStartMs
+
+        if (gStart <= 0L) { tvTime?.text = "00:00"; tvKm?.text = "0.0 km"; return }
+
+        // Tempo total acumulado em pausa (inclui a pausa atual se ainda ativa)
+        val pausedTotal = gPausedMs + (if (gIsPaused) System.currentTimeMillis() - gPauseStart else 0L)
+
+        // Elapsed: se pausado congela no momento em que pausou
+        val elapsedMs = if (gIsPaused)
+            (gPauseStart - gStart - gPausedMs).coerceAtLeast(0L)
+        else
+            (System.currentTimeMillis() - gStart - pausedTotal).coerceAtLeast(0L)
+
+        val totalSec = elapsedMs / 1000
+        val h = totalSec / 3600
+        val m = (totalSec % 3600) / 60
+
+        tvTime?.text = "%02d:%02d".format(h, m)
         tvKm?.text   = "%.1f km".format(km)
     }
 
@@ -131,10 +138,8 @@ class FloatingWidget(private val context: Context) {
             elevation = dp(8).toFloat()
         }
 
-        // Bolinha de status + texto "Online"
         val header = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
         }
         val statusDot = FrameLayout(context).apply {
             layoutParams = LinearLayout.LayoutParams(dp(7), dp(7)).apply { rightMargin = dp(5) }
@@ -145,20 +150,17 @@ class FloatingWidget(private val context: Context) {
         val statusTv = TextView(context).apply {
             text = "Online"; textSize = 10f
             setTextColor(Color.parseColor("#22C55E"))
-            setTypeface(null, Typeface.BOLD)
-            tag = "status_tv"
+            setTypeface(null, Typeface.BOLD); tag = "status_tv"
         }
         header.addView(statusTv)
         card.addView(header)
 
-        // Cronômetro
         tvTime = TextView(context).apply {
             text = "00:00"; textSize = 20f
             setTextColor(Color.WHITE); setTypeface(null, Typeface.BOLD)
         }
         card.addView(tvTime)
 
-        // KM
         tvKm = TextView(context).apply {
             text = "0.0 km"; textSize = 13f
             setTextColor(Color.parseColor("#22C55E")); setTypeface(null, Typeface.BOLD)
@@ -169,22 +171,20 @@ class FloatingWidget(private val context: Context) {
         var dX = 0f; var dY = 0f; var moved = false
         card.setOnTouchListener { _, ev ->
             when (ev.action) {
-                MotionEvent.ACTION_DOWN -> { dX = params.x - ev.rawX; dY = params.y - ev.rawY; moved = false; true }
-                MotionEvent.ACTION_MOVE -> {
+                MotionEvent.ACTION_DOWN  -> { dX = params.x - ev.rawX; dY = params.y - ev.rawY; moved = false; true }
+                MotionEvent.ACTION_MOVE  -> {
                     val nx = (ev.rawX + dX).toInt(); val ny = (ev.rawY + dY).toInt()
                     if (Math.abs(nx - params.x) > 5 || Math.abs(ny - params.y) > 5) moved = true
                     params.x = nx; params.y = ny
                     try { wm.updateViewLayout(card, params) } catch (e: Exception) {}
                     true
                 }
-                MotionEvent.ACTION_UP -> {
+                MotionEvent.ACTION_UP    -> {
                     if (!moved) {
-                        // Tap: abre o SmartMobi direto na tela Jornada
-                        val intent = Intent(context, MainActivity::class.java).apply {
+                        context.startActivity(Intent(context, MainActivity::class.java).apply {
                             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
                             putExtra("open_screen", "jornada")
-                        }
-                        context.startActivity(intent)
+                        })
                     }
                     true
                 }
