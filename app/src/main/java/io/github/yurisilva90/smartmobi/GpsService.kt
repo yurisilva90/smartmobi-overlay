@@ -127,6 +127,16 @@ class GpsService : Service(), LocationListener {
             }
         }
 
+
+        // ── Estado compartilhado com FloatingWidget/MainActivity ──────
+        var totalKm      = 0.0
+        var startTimeMs  = 0L
+        var isRunning    = false
+        var isPaused     = false
+        var pausedMs     = 0L
+        var pauseStartMs = 0L
+        var lastGpsFixTime = 0L
+
         fun saveUserCredentials(ctx: Context, userId: String, accessToken: String) {
             ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
                 .putString(KEY_USER_ID, userId).putString(KEY_ACCESS_TOKEN, accessToken).apply()
@@ -341,16 +351,7 @@ class GpsService : Service(), LocationListener {
     override fun onProviderEnabled(p: String) {}
     override fun onProviderDisabled(p: String) {}
 
-    // Companion state (compartilhado com FloatingWidget/MainActivity)
-    companion object {
-        var totalKm     = 0.0
-        var startTimeMs = 0L
-        var isRunning   = false
-        var isPaused    = false
-        var pausedMs    = 0L
-        var pauseStartMs = 0L
-        var lastGpsFixTime = 0L
-    }
+
 }
 
 // ══════════════════════════════════════════════════════════════════
