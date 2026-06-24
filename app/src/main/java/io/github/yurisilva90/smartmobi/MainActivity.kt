@@ -64,6 +64,7 @@ class MainActivity : AppCompatActivity() {
         requestOverlayPermission()
         requestBatteryOptimizationExemption()
         setupWebView()
+        webView.setBackgroundColor(Color.parseColor("#0F172A"))
         webView.loadUrl(URL)
         Handler(Looper.getMainLooper()).postDelayed({ splashDone = true; maybeHideSplash() }, 2000)
     }
@@ -111,7 +112,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun buildSplash(): FrameLayout {
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
-        val frame = FrameLayout(this).apply { setBackgroundColor(Color.parseColor("#FFFFFF")) }
+        val frame = FrameLayout(this).apply { setBackgroundColor(Color.parseColor("#0F172A")) }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER }
         val icon = ImageView(this).apply {
             layoutParams = LinearLayout.LayoutParams(dp(140), dp(140)).apply { bottomMargin = dp(8) }
@@ -281,4 +282,5 @@ class MainActivity : AppCompatActivity() {
     override fun onPause()   { webView.onPause(); super.onPause() }
     override fun onDestroy() { instance = null; webView.destroy(); super.onDestroy() }
 }
+
 
