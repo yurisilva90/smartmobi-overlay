@@ -1,16 +1,1 @@
-<resources>
-    <string name="app_name">SmartMobi Overlay</string>
-    <string name="accessibility_label">SmartMobi — Leitura de corridas</string>
-    <string name="accessibility_description">Lê a tela do Uber e 99 para capturar corridas automaticamente e exibir métricas em tempo real.</string>
-    <string name="overlay_channel_name">SmartMobi Overlay</string>
-    <string name="overlay_channel_desc">Exibe métricas das corridas sobre outros aplicativos</string>
-    <string name="notif_title">SmartMobi ativo</string>
-    <string name="notif_text">Monitorando Uber e 99 em segundo plano</string>
-    <string name="btn_enable_accessibility">Ativar serviço de acessibilidade</string>
-    <string name="btn_enable_overlay">Permitir sobreposição</string>
-    <string name="btn_open_smartmobi">Abrir SmartMobi</string>
-    <string name="setup_title">Configurar SmartMobi Overlay</string>
-    <string name="setup_step1">1. Permitir sobreposição sobre outros apps</string>
-    <string name="setup_step2">2. Ativar o serviço de acessibilidade</string>
-    <string name="setup_done">✓ Tudo configurado! Abra o Uber ou 99 para começar.</string>
-</resources>
+<?xml version="1.0" encoding="utf-8"?><resources><string name="app_name">MōB</string></resources>
