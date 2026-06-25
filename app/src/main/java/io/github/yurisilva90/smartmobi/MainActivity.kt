@@ -34,7 +34,7 @@ class MainActivity : AppCompatActivity() {
     private var pendingScreen: String? = null
 
     companion object {
-        const val URL      = "https://yurisilva90.github.io/smartmobi/"
+        const val URL      = "https://yurisilva90.github.io/mob/"
         const val REQ_PERM = 100
         const val REQ_FILE = 101
         var floatingWidget: FloatingWidget? = null
