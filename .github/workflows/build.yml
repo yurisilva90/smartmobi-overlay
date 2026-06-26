@@ -32,6 +32,12 @@ jobs:
           CODE=$(grep -oP 'versionCode\s+\K\d+' app/build.gradle)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          # Renomear o run para ficar igual ao artifact name
+          curl -s -X PATCH \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            -d "{\"display_title\":\"MoB-v${VERSION}-c${CODE}\"}"
       - run: chmod +x gradlew
       - run: ./gradlew assembleDebug --no-daemon
         env:
