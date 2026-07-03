@@ -238,9 +238,11 @@ class MainActivity : AppCompatActivity() {
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(v: WebView, r: WebResourceRequest): Boolean {
-                val url = r.url.toString()
-                return if (url.startsWith("https://yurisilva90.github.io")) false
-                else { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))); true }
+                // Valida o HOST exato (não startsWith na URL, que aceitaria
+                // yurisilva90.github.io.evil.com como se fosse interno).
+                val internal = r.url.scheme == "https" && r.url.host == "yurisilva90.github.io"
+                return if (internal) false
+                else { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(r.url.toString()))); true }
             }
             override fun onPageFinished(v: WebView, url: String) {
                 webView.evaluateJavascript(
