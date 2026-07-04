@@ -37,6 +37,25 @@ class GpsService : Service(), LocationListener {
         const val KEY_ACCESS_TOKEN = "access_token"
         const val KEY_USER_ID      = "user_id"
         // Estado pendente da 1ª pergunta (aguardando 2ª)
+        // Estado persistido da sessão GPS — sobrevive ao kill do processo
+        // pelo Android (START_STICKY reinicia o serviço, mas o companion
+        // object volta zerado; estas chaves permitem retomar a jornada).
+        const val KEY_GPS_RUNNING  = "gps_running"
+        const val KEY_GPS_START    = "gps_start_ms"
+        const val KEY_GPS_KM       = "gps_total_km"
+        const val KEY_GPS_PAUSED   = "gps_paused_ms"
+        const val KEY_GPS_SAVED_AT = "gps_saved_at"
+
+        // Limpa o estado salvo — chamado quando a jornada é encerrada de
+        // verdade (stopFloating) ou resetada (RESET). Sem isso, uma jornada
+        // NOVA herdaria km/start da anterior no restart do serviço.
+        fun clearSavedState(ctx: Context) {
+            ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+                .putBoolean(KEY_GPS_RUNNING, false)
+                .remove(KEY_GPS_START).remove(KEY_GPS_KM)
+                .remove(KEY_GPS_PAUSED).remove(KEY_GPS_SAVED_AT).apply()
+        }
+
         const val KEY_PENDING_LOC  = "pending_loc"
         const val KEY_PENDING_TYPE = "pending_type"
         const val KEY_PENDING_VAL  = "pending_val"
@@ -143,6 +162,18 @@ class GpsService : Service(), LocationListener {
         }
     }
 
+    // Persiste o estado atual da sessão — barato (apply é assíncrono),
+    // chamado a cada fix válido e nas transições de pausa.
+    private fun saveState() {
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_GPS_RUNNING, isRunning)
+            .putLong(KEY_GPS_START, startTimeMs)
+            .putLong(KEY_GPS_KM, java.lang.Double.doubleToRawLongBits(totalKm))
+            .putLong(KEY_GPS_PAUSED, pausedMs)
+            .putLong(KEY_GPS_SAVED_AT, System.currentTimeMillis())
+            .apply()
+    }
+
     private lateinit var locationManager: LocationManager
     private var lastLocation: Location? = null
     private var lastFixTime = 0L
@@ -170,16 +201,64 @@ class GpsService : Service(), LocationListener {
     // ── Lifecycle ───────────────────────────────────────────────────────
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            "PAUSE"  -> { isPaused = true;  pauseStartMs = System.currentTimeMillis(); updateNotif("Pausado"); return START_STICKY }
-            "RESUME" -> { isPaused = false; pausedMs += System.currentTimeMillis() - pauseStartMs; updateNotif("GPS ativo"); return START_STICKY }
-            "RESET"  -> { totalKm = 0.0; startTimeMs = System.currentTimeMillis(); pausedMs = 0; lastLocation = null; lastFixTime = 0L; lastGpsFixTime = 0L }
+            "PAUSE"  -> { isPaused = true;  pauseStartMs = System.currentTimeMillis(); updateNotif("Pausado"); saveState(); return START_STICKY }
+            "RESUME" -> { isPaused = false; pausedMs += System.currentTimeMillis() - pauseStartMs; updateNotif("GPS ativo"); saveState(); return START_STICKY }
+            "RESET"  -> { totalKm = 0.0; startTimeMs = System.currentTimeMillis(); pausedMs = 0; lastLocation = null; lastFixTime = 0L; lastGpsFixTime = 0L; clearSavedState(this) }
         }
         createChannels()
+        // O JS pode semear a sessão via extras (reanexar jornada em aberto):
+        // startFloating(startMs, km) → EXTRA_START_MS / EXTRA_KM_BITS.
+        val seedStart = intent?.getLongExtra("EXTRA_START_MS", 0L) ?: 0L
+        val seedKmRaw = intent?.getLongExtra("EXTRA_KM_BITS", -1L) ?: -1L
+        val seedKm = if (seedKmRaw >= 0) java.lang.Double.longBitsToDouble(seedKmRaw) else -1.0
+        if (isRunning && seedStart > 0) {
+            if (seedStart < startTimeMs - 60_000L) {
+                // O serviço foi morto/reiniciado e está rodando com start novo,
+                // mas o JS conhece o início REAL da jornada — readota, mantendo
+                // o maior km conhecido.
+                startTimeMs = seedStart
+                if (seedKm >= 0 && seedKm > totalKm) totalKm = seedKm
+            } else if (seedStart > startTimeMs + 60_000L) {
+                // JS está iniciando jornada NOVA com o serviço ainda vivo de uma
+                // anterior — zera o estado herdado (evita km órfão).
+                startTimeMs = seedStart; totalKm = if (seedKm >= 0) seedKm else 0.0
+                pausedMs = 0; lastLocation = null; lastFixTime = 0L
+            } else if (seedKm >= 0 && seedKm > totalKm) {
+                totalKm = seedKm
+            }
+            MainActivity.floatingWidget?.updateKm(totalKm)
+            saveState()
+        }
         if (!isRunning) {
-            startTimeMs = System.currentTimeMillis(); totalKm = 0.0; pausedMs = 0
+            val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val savedRunning = prefs.getBoolean(KEY_GPS_RUNNING, false)
+            val savedStart   = prefs.getLong(KEY_GPS_START, 0L)
+            val savedKm      = java.lang.Double.longBitsToDouble(prefs.getLong(KEY_GPS_KM, java.lang.Double.doubleToRawLongBits(0.0)))
+            val savedPaused  = prefs.getLong(KEY_GPS_PAUSED, 0L)
+            val savedAt      = prefs.getLong(KEY_GPS_SAVED_AT, 0L)
+            val savedFresh   = savedRunning && savedStart > 0 &&
+                               (System.currentTimeMillis() - savedAt) < 16 * 3600 * 1000L
+            if (seedStart > 0) {
+                // Semente explícita do JS. Se o estado salvo pertence à MESMA
+                // jornada (starts a menos de 5 min de distância), preserva o
+                // maior km — o serviço pode ter andado mais que o JS sabia.
+                startTimeMs = seedStart
+                totalKm = if (savedFresh && Math.abs(savedStart - seedStart) < 5 * 60 * 1000L)
+                              maxOf(if (seedKm >= 0) seedKm else 0.0, savedKm)
+                          else (if (seedKm >= 0) seedKm else 0.0)
+                pausedMs = if (savedFresh && Math.abs(savedStart - seedStart) < 5 * 60 * 1000L) savedPaused else 0L
+            } else if (savedFresh) {
+                // Restart do Android (START_STICKY, intent nulo) com jornada em
+                // aberto — RETOMA em vez de zerar. Este era o bug que resetava
+                // o km depois de horas de uso.
+                startTimeMs = savedStart; totalKm = savedKm; pausedMs = savedPaused
+            } else {
+                startTimeMs = System.currentTimeMillis(); totalKm = 0.0; pausedMs = 0
+            }
             lastLocation = null; lastFixTime = 0L; lastGpsFixTime = 0L
         }
         isRunning = true
+        saveState()
         val pi = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         startForeground(NOTIF_ID, buildNotif("GPS ativo — 0.0 km", pi))
         locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
@@ -214,6 +293,7 @@ class GpsService : Service(), LocationListener {
                     totalKm += dist
                     MainActivity.floatingWidget?.updateKm(totalKm)
                     updateNotif("GPS ativo — ${"%.1f".format(totalKm)} km")
+                    saveState()
                 }
                 lastSpeedKmh = if (dtH > 0) speedKmh else lastSpeedKmh
                 lastLocation = location; lastFixTime = now
@@ -343,6 +423,10 @@ class GpsService : Service(), LocationListener {
 
     override fun onBind(intent: Intent?): IBinder? = null
     override fun onDestroy() {
+        // NÃO limpa o estado salvo aqui: onDestroy também roda quando o sistema
+        // recicla o serviço. O encerramento real limpa via clearSavedState()
+        // (chamado no stopGpsService do MainActivity). isRunning permanece true
+        // nas prefs para o restart do START_STICKY retomar a jornada.
         isRunning = false; alertHandler.removeCallbacks(checkRunnable)
         try { locationManager.removeUpdates(this) } catch (e: Exception) {}
         super.onDestroy()

@@ -176,7 +176,13 @@ class MainActivity : AppCompatActivity() {
                 if (!Settings.canDrawOverlays(this@MainActivity)) return
                 if (floatingWidget == null) floatingWidget = FloatingWidget(applicationContext)
                 floatingWidget?.show(startMs, km)
-                startGpsService()
+                // Semeia o serviço com o start/km que o JS conhece — permite
+                // reanexar uma jornada em aberto depois do Android matar o serviço
+                val i = Intent(this@MainActivity, GpsService::class.java).apply {
+                    putExtra("EXTRA_START_MS", startMs)
+                    putExtra("EXTRA_KM_BITS", java.lang.Double.doubleToRawLongBits(km))
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
             }
             @JavascriptInterface fun updateFloating(km: Double) {
                 floatingWidget?.updateKm(km)
@@ -219,8 +225,10 @@ class MainActivity : AppCompatActivity() {
                 val i = Intent(this@MainActivity, GpsService::class.java).apply { action = "RESUME" }
                 startService(i)
             }
-            @JavascriptInterface fun stopGpsService() =
+            @JavascriptInterface fun stopGpsService() {
+                GpsService.clearSavedState(this@MainActivity)
                 stopService(Intent(this@MainActivity, GpsService::class.java))
+            }
         }, "SmartMobiNative")
 
         webView.webChromeClient = object : WebChromeClient() {
@@ -256,7 +264,10 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun stopGpsService() = stopService(Intent(this, GpsService::class.java))
+    private fun stopGpsService() {
+        GpsService.clearSavedState(this)
+        stopService(Intent(this, GpsService::class.java))
+    }
 
     @Deprecated("") override fun onActivityResult(req: Int, result: Int, data: Intent?) {
         super.onActivityResult(req, result, data)
