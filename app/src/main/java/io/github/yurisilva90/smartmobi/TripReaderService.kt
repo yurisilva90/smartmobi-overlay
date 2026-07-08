@@ -61,7 +61,8 @@ class TripReaderService : AccessibilityService() {
             packageNames = (UBER_PKGS + NN_PKGS).toTypedArray()
             notificationTimeout = 300
             flags = AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
-                    AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+                    AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
+                    AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
         }
         serviceInfo = info
         toast("MōB leitor ativo (modo teste)")
@@ -82,17 +83,30 @@ class TripReaderService : AccessibilityService() {
         val now = System.currentTimeMillis()
         if (now - lastLogMs < 700) return
 
-        // Tela INTEIRA (não só o widget que mudou) — event.source em eventos
-        // de "conteúdo mudou" costuma trazer só o nó específico que mudou
-        // (ex.: um contador piscando), o que esvazia a captura. Usamos
-        // rootInActiveWindow pra pegar a árvore completa, mas validamos que
-        // o pacote da janela ativa bate com o do evento — é isso que evita
-        // ler o app errado numa troca rápida (o bug que a 1.0.9 tentou corrigir).
-        val root = rootInActiveWindow ?: return
-        if (root.packageName?.toString() != pkg) return   // trocou de tela no meio do caminho — descarta
-
+        // Cards de oferta costumam aparecer como CAMADA SOBRE o mapa, sem
+        // roubar o foco de "janela ativa" — por isso rootInActiveWindow
+        // sozinho perdia o card e só via o mapa por baixo. Agora varremos
+        // TODAS as janelas visíveis do app e juntamos o texto de cada uma
+        // que pertence ao pacote esperado (mapa + overlay do card, se houver).
         val texts = ArrayList<String>()
-        collectTexts(root, texts)
+        var matched = false
+        try {
+            for (w in windows) {
+                val r = w.root ?: continue
+                if (r.packageName?.toString() == pkg) {
+                    matched = true
+                    collectTexts(r, texts)
+                }
+            }
+        } catch (_: Exception) {}
+
+        if (!matched) {
+            // Fallback: se por algum motivo `windows` vier vazio, cai pra
+            // janela ativa com a mesma validação de pacote de antes.
+            val root = rootInActiveWindow ?: return
+            if (root.packageName?.toString() != pkg) return
+            collectTexts(root, texts)
+        }
         if (texts.isEmpty()) return
 
         val sig = plat + "|" + texts.take(8).joinToString("|")
