@@ -34,5 +34,16 @@
             android:foregroundServiceType="location"/>
         <!-- Receiver para botões de ação rápida nas notificações de reporte -->
         <receiver android:name=".ReporteQuickReceiver" android:exported="false"/>
+        <!-- PROVA DE CONCEITO: leitor de tela Uber/99 (só leitura) -->
+        <service android:name=".TripReaderService"
+            android:exported="false"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/trip_reader_config"/>
+        </service>
     </application>
 </manifest>
