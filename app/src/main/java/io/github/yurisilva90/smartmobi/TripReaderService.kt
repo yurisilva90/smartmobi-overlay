@@ -82,7 +82,12 @@ class TripReaderService : AccessibilityService() {
         val now = System.currentTimeMillis()
         if (now - lastLogMs < 700) return
 
-        val root = rootInActiveWindow ?: return
+        // Amarra a leitura à janela do próprio evento — evita ler a tela
+        // errada quando o foco troca de app entre o evento disparar e a
+        // gente processar (ex.: MōB → 99 rápido demais, pegava o MōB).
+        val root = event.source ?: rootInActiveWindow ?: return
+        if (root.packageName?.toString() != pkg) return   // trocou de tela no meio do caminho — descarta
+
         val texts = ArrayList<String>()
         collectTexts(root, texts)
         if (texts.isEmpty()) return
