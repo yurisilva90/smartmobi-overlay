@@ -2,14 +2,21 @@ package io.github.yurisilva90.smartmobi
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Toast
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlin.concurrent.thread
 
 // ══════════════════════════════════════════════════════════════════
 // PROVA DE CONCEITO — SÓ LEITURA (não toca em nada, não age)
@@ -36,6 +43,8 @@ class TripReaderService : AccessibilityService() {
             "com.taxis99.driver"       // fallback improvável, inofensivo
         )
         const val LOG_FILE = "trip_reader_log.txt"
+        const val SUPABASE_URL  = "https://jlsrpptslwfhmkvelaro.supabase.co"
+        const val SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impsc3JwcHRzbHdmaG1rdmVsYXJvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4NjYxNzIsImV4cCI6MjA4OTQ0MjE3Mn0.4gD4dKx05QaOAAkY1gAx2HuH_CN31Xg3kkDMdvZ4kh0"
         private var lastSig = ""
         private var lastLogMs = 0L
         private var lastState = "?"
@@ -105,6 +114,10 @@ class TripReaderService : AccessibilityService() {
         sb.append("   window=${event.className}\n")
         texts.forEachIndexed { i, t -> sb.append("   [$i] $t\n") }
         log(sb.toString())
+
+        // Espelha no Supabase pra validação remota (não bloqueia a thread principal)
+        sendToCloud(plat, pkg, event.className?.toString() ?: "",
+                    state, money, km, min, texts)
     }
 
     // ── Máquina de estados (heurística por palavras-chave) ──
@@ -185,6 +198,55 @@ class TripReaderService : AccessibilityService() {
             val f = File(getExternalFilesDir(null), LOG_FILE)
             f.appendText(msg + "\n")
         } catch (_: Exception) {}
+    }
+
+    // Envia cada captura pra tabela trip_reader_log no Supabase.
+    // A tabela só aceita INSERT anônimo; leitura é bloqueada (só eu leio pelo painel).
+    private fun sendToCloud(
+        plat: String, pkg: String, screenClass: String,
+        state: String, money: List<String>, km: String?, min: String?,
+        texts: List<String>
+    ) {
+        thread(isDaemon = true) {
+            try {
+                val prefs = getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
+                val userId = prefs.getString(GpsService.KEY_USER_ID, null)
+                val deviceId = try {
+                    Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+                } catch (_: Exception) { "unknown" }
+
+                val body = JSONObject().apply {
+                    put("device_id", deviceId)
+                    if (userId != null) put("user_id", userId)
+                    put("platform", plat)
+                    put("package", pkg)
+                    put("screen_class", screenClass)
+                    put("texts", JSONObject().apply {
+                        put("state", state)
+                        put("money", JSONArray(money))
+                        put("km", km ?: JSONObject.NULL)
+                        put("min", min ?: JSONObject.NULL)
+                        put("raw", JSONArray(texts))
+                    })
+                }
+
+                val url = URL("$SUPABASE_URL/rest/v1/trip_reader_log")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.connectTimeout = 8000
+                conn.readTimeout = 8000
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("apikey", SUPABASE_ANON)
+                conn.setRequestProperty("Authorization", "Bearer $SUPABASE_ANON")
+                conn.setRequestProperty("Prefer", "return=minimal")
+                conn.outputStream.use { it.write(body.toString().toByteArray()) }
+                conn.responseCode   // dispara o envio
+                conn.disconnect()
+            } catch (_: Exception) {
+                // silencioso — o log local é o backup; falha de rede não pode travar nada
+            }
+        }
     }
 
     private fun toast(msg: String) {
