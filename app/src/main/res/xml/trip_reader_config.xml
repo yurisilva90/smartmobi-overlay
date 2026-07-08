@@ -8,5 +8,5 @@
     android:accessibilityFlags="flagIncludeNotImportantViews|flagReportViewIds"
     android:canRetrieveWindowContent="true"
     android:notificationTimeout="300"
-    android:packageNames="com.ubercab.driver,com.ubercab,com.taxis99.driver,com.taxis99,br.com.easytaxi"
+    android:packageNames="com.ubercab.driver,com.ubercab,com.app99.driver,com.taxis99.driver"
     android:description="@string/trip_reader_desc" />
