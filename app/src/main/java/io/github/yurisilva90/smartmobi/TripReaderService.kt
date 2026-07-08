@@ -82,10 +82,13 @@ class TripReaderService : AccessibilityService() {
         val now = System.currentTimeMillis()
         if (now - lastLogMs < 700) return
 
-        // Amarra a leitura à janela do próprio evento — evita ler a tela
-        // errada quando o foco troca de app entre o evento disparar e a
-        // gente processar (ex.: MōB → 99 rápido demais, pegava o MōB).
-        val root = event.source ?: rootInActiveWindow ?: return
+        // Tela INTEIRA (não só o widget que mudou) — event.source em eventos
+        // de "conteúdo mudou" costuma trazer só o nó específico que mudou
+        // (ex.: um contador piscando), o que esvazia a captura. Usamos
+        // rootInActiveWindow pra pegar a árvore completa, mas validamos que
+        // o pacote da janela ativa bate com o do evento — é isso que evita
+        // ler o app errado numa troca rápida (o bug que a 1.0.9 tentou corrigir).
+        val root = rootInActiveWindow ?: return
         if (root.packageName?.toString() != pkg) return   // trocou de tela no meio do caminho — descarta
 
         val texts = ArrayList<String>()
