@@ -42,6 +42,11 @@ class TripReaderService : AccessibilityService() {
             "com.app99.driver",        // 99 Motorista e Entregador (confirmado na Play Store)
             "com.taxis99.driver"       // fallback improvável, inofensivo
         )
+        // POC: capturar também o Gigu pra descobrir o gatilho/técnica dele.
+        val GIGU_PKGS = setOf("co.gigu.app")
+        // Só estes pacotes são GRAVADOS. Qualquer outro app é ignorado e
+        // nada dele sai do aparelho (privacidade — ver onAccessibilityEvent).
+        val CAPTURE_PKGS = UBER_PKGS + NN_PKGS + GIGU_PKGS
         const val LOG_FILE = "trip_reader_log.txt"
         const val SUPABASE_URL  = "https://jlsrpptslwfhmkvelaro.supabase.co"
         const val SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impsc3JwcHRzbHdmaG1rdmVsYXJvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4NjYxNzIsImV4cCI6MjA4OTQ0MjE3Mn0.4gD4dKx05QaOAAkY1gAx2HuH_CN31Xg3kkDMdvZ4kh0"
@@ -58,7 +63,9 @@ class TripReaderService : AccessibilityService() {
             eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
                          AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-            packageNames = (UBER_PKGS + NN_PKGS).toTypedArray()
+            // POC: sem filtro de packageNames — precisamos "ver" o overlay do
+            // Gigu, que desenha por cima da 99. A GRAVAÇÃO continua restrita a
+            // CAPTURE_PKGS (99/Uber/Gigu); os demais apps são descartados.
             notificationTimeout = 300
             flags = AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
                     AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
@@ -74,27 +81,32 @@ class TripReaderService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         event ?: return
         val pkg = event.packageName?.toString() ?: return
+        // Só gravamos apps de interesse. Qualquer outro (WhatsApp, banco, etc.)
+        // é ignorado aqui e NADA dele sai do aparelho.
+        if (!CAPTURE_PKGS.contains(pkg)) return
         val plat = when {
             UBER_PKGS.contains(pkg) -> "UBER"
             NN_PKGS.contains(pkg)   -> "99"
+            GIGU_PKGS.contains(pkg) -> "GIGU"
             else -> return
         }
 
         val now = System.currentTimeMillis()
         if (now - lastLogMs < 700) return
 
-        // Cards de oferta costumam aparecer como CAMADA SOBRE o mapa, sem
-        // roubar o foco de "janela ativa" — por isso rootInActiveWindow
-        // sozinho perdia o card e só via o mapa por baixo. Agora varremos
-        // TODAS as janelas visíveis do app e juntamos o texto de cada uma
-        // que pertence ao pacote esperado (mapa + overlay do card, se houver).
+        // Varre TODAS as janelas visíveis e junta o texto das que pertencem a
+        // qualquer app de interesse. Isso é o que permite capturar o overlay
+        // do Gigu mesmo quando ele aparece por cima da tela da 99.
         val texts = ArrayList<String>()
         var matched = false
+        val seenPkgs = HashSet<String>()
         try {
             for (w in windows) {
                 val r = w.root ?: continue
-                if (r.packageName?.toString() == pkg) {
+                val wp = r.packageName?.toString() ?: continue
+                if (CAPTURE_PKGS.contains(wp)) {
                     matched = true
+                    seenPkgs.add(wp)
                     collectTexts(r, texts)
                 }
             }
@@ -137,8 +149,11 @@ class TripReaderService : AccessibilityService() {
         texts.forEachIndexed { i, t -> sb.append("   [$i] $t\n") }
         log(sb.toString())
 
-        // Espelha no Supabase pra validação remota (não bloqueia a thread principal)
-        sendToCloud(plat, pkg, event.className?.toString() ?: "",
+        // Espelha no Supabase pra validação remota (não bloqueia a thread principal).
+        // Anexa quais apps de interesse estavam visíveis juntos — é isso que
+        // revela o gatilho do Gigu (ex.: "GIGU+99" na mesma captura).
+        val winTag = "${event.className ?: ""} :: seen=${seenPkgs.sorted().joinToString("+")}"
+        sendToCloud(plat, pkg, winTag,
                     state, money, km, min, texts)
     }
 
