@@ -98,16 +98,16 @@ class TripReaderService : AccessibilityService() {
     }
 
     private fun pollForeground() {
-        var nnFg = false
+        var fgPlat: String? = null
         try {
             for (w in windows) {
                 val wp = w.root?.packageName?.toString() ?: continue
-                if (NN_PKGS.contains(wp) && w.type == AccessibilityWindowInfo.TYPE_APPLICATION && w.isActive) {
-                    nnFg = true; break
-                }
+                if (w.type != AccessibilityWindowInfo.TYPE_APPLICATION || !w.isActive) continue
+                if (NN_PKGS.contains(wp)) { fgPlat = "99"; break }
+                if (UBER_PKGS.contains(wp)) { fgPlat = "UBER"; break }
             }
         } catch (_: Exception) {}
-        if (nnFg) requestOcrPass()
+        if (fgPlat != null) requestOcrPass(fgPlat)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -246,7 +246,7 @@ class TripReaderService : AccessibilityService() {
     private var lastOcrMs = 0L
     private var lastOcrLogMs = 0L
     private var lastOcrMissMs = 0L
-    private fun requestOcrPass() {
+    private fun requestOcrPass(plat: String) {
         val svc = ScreenOcrService.instance
         if (svc == null || !ScreenOcrService.isActive) {
             // Sem isso não dá pra saber se o problema é permissão ou parser —
@@ -254,7 +254,7 @@ class TripReaderService : AccessibilityService() {
             val now = System.currentTimeMillis()
             if (now - lastOcrMissMs > 5000) {
                 lastOcrMissMs = now
-                sendToCloud("99", "ocr", "OCR_INATIVO", "OCR_SEM_PERMISSAO", emptyList(), null, null, emptyList())
+                sendToCloud(plat, "ocr", "OCR_INATIVO", "OCR_SEM_PERMISSAO", emptyList(), null, null, emptyList())
             }
             return
         }
@@ -265,7 +265,7 @@ class TripReaderService : AccessibilityService() {
             if (lines.isEmpty()) {
                 if (System.currentTimeMillis() - lastOcrLogMs > 1500) {
                     lastOcrLogMs = System.currentTimeMillis()
-                    sendToCloud("99", "ocr", "OCR_VAZIO", "OCR_SEM_LINHAS", emptyList(), null, null, emptyList())
+                    sendToCloud(plat, "ocr", "OCR_VAZIO", "OCR_SEM_LINHAS", emptyList(), null, null, emptyList())
                 }
                 return@captureAndRecognize
             }
@@ -277,15 +277,15 @@ class TripReaderService : AccessibilityService() {
             // continuar chutando. Throttle 1.5s pra não inundar o Supabase.
             if (System.currentTimeMillis() - lastOcrLogMs > 1500) {
                 lastOcrLogMs = System.currentTimeMillis()
-                sendToCloud("99", "ocr", if (isOffer) "OCR_OFERTA" else "OCR_TELA_NORMAL",
+                sendToCloud(plat, "ocr", if (isOffer) "OCR_OFERTA" else "OCR_TELA_NORMAL",
                     if (isOffer) "OFERTA_OCR" else "OCR_SEM_OFERTA",
                     extractMoney(joined), extractKm(low), extractMin(low), lines)
             }
-            if (isOffer) processRealOffer("99", lines)
+            if (isOffer) processRealOffer(plat, lines)
         }, { err ->
             if (System.currentTimeMillis() - lastOcrLogMs > 1500) {
                 lastOcrLogMs = System.currentTimeMillis()
-                sendToCloud("99", "ocr", "OCR_ERRO: $err", "OCR_ERRO", emptyList(), null, null, emptyList())
+                sendToCloud(plat, "ocr", "OCR_ERRO: $err", "OCR_ERRO", emptyList(), null, null, emptyList())
             }
         })
     }
