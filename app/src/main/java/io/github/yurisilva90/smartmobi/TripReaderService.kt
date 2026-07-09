@@ -22,41 +22,43 @@ import kotlin.concurrent.thread
 // Leitor de tela Uber/99 — só leitura (não toca em nada, não age).
 //
 // Três objetivos:
-//  1. Inferir o ESTADO da jornada (oferta / aceite / a caminho / a bordo /
-//     finalizada / cancelada) a partir dos textos da tela.
+//  1. Inferir o ESTADO da jornada a partir dos textos da tela.
 //  2. Quando o estado é OFERTA, extrair valor/km/min do PRÓPRIO app
 //     (99 ou Uber — nunca do overlay do Gigu) e mostrar o MōB Flash com
-//     a nota real da corrida (R$/km, R$/h, margem sobre o custo do
-//     veículo configurado em Financeiro).
+//     as métricas que o usuário escolheu na tela de configuração,
+//     cada uma com sua própria faixa vermelho/amarelo/verde.
 //  3. Continuar capturando o Gigu lado a lado (fins de estudo / log),
-//     sem nunca usar os números dele para decidir a nota do MōB Flash.
+//     sem nunca usar os números dele pra decidir a nota do MōB Flash.
 //
-// Nada é enviado pra lugar nenhum além do Supabase (log) e nenhum gesto
-// é executado. Log local: /Android/data/<pkg>/files/trip_reader_log.txt
+// Log local: /Android/data/<pkg>/files/trip_reader_log.txt
 // ══════════════════════════════════════════════════════════════════
 class TripReaderService : AccessibilityService() {
 
     companion object {
-        val UBER_PKGS = setOf(
-            "com.ubercab.driver",      // Uber Driver
-            "com.ubercab"              // fallback (app único em algumas versões)
-        )
-        val NN_PKGS = setOf(
-            "com.app99.driver",        // 99 Motorista e Entregador (confirmado na Play Store)
-            "com.taxis99.driver"       // fallback improvável, inofensivo
-        )
-        // Também capturamos o Gigu — só pra log/estudo, nunca pra gerar a nota real.
+        val UBER_PKGS = setOf("com.ubercab.driver", "com.ubercab")
+        val NN_PKGS = setOf("com.app99.driver", "com.taxis99.driver")
         val GIGU_PKGS = setOf("co.gigu.app")
         val CAPTURE_PKGS = UBER_PKGS + NN_PKGS + GIGU_PKGS
         const val LOG_FILE = "trip_reader_log.txt"
         const val SUPABASE_URL  = "https://jlsrpptslwfhmkvelaro.supabase.co"
         const val SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impsc3JwcHRzbHdmaG1rdmVsYXJvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4NjYxNzIsImV4cCI6MjA4OTQ0MjE3Mn0.4gD4dKx05QaOAAkY1gAx2HuH_CN31Xg3kkDMdvZ4kh0"
 
-        // ── Config do MōB Flash — lida do SharedPreferences (escrito pelo JS via bridge) ──
-        const val KEY_FLASH_ENABLED    = "flash_enabled"     // Boolean, default true
-        const val KEY_FLASH_CUSTO_KM   = "flash_custo_km"    // Float, R$/km de custo do veículo. 0 = não configurado
-        const val KEY_FLASH_META_BOA   = "flash_meta_boa"    // Float, % margem pra nota verde. default 40
-        const val KEY_FLASH_META_ACEIT = "flash_meta_aceit"  // Float, % margem pra nota amarela. default 15
+        // Config do MōB Flash — um único JSON no SharedPreferences, escrito
+        // pelo JS via bridge (saveFlashConfig). Formato:
+        // {"enabled":true,"custoPorKm":1.84,"kpis":{
+        //   "rkm":{"enabled":true,"red":1.2,"green":2.0}, "rhora":{...},
+        //   "rmin":{...}, "nota":{...}, "margem":{...}, "lucro":{...}}}
+        const val KEY_FLASH_CONFIG_JSON = "flash_config_json"
+
+        // Ordem/labels fixos de exibição no card
+        val KPI_ORDER = listOf(
+            "rkm"    to "R$/KM",
+            "rhora"  to "R$/HORA",
+            "rmin"   to "R$/MIN",
+            "nota"   to "NOTA",
+            "margem" to "% LUCRO",
+            "lucro"  to "R$ LUCRO"
+        )
 
         private var lastSig = ""
         private var lastLogMs = 0L
@@ -74,9 +76,6 @@ class TripReaderService : AccessibilityService() {
             eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
                          AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-            // Sem filtro de packageNames — precisamos "ver" o overlay do Gigu,
-            // que desenha por cima da 99. A GRAVAÇÃO continua restrita a
-            // CAPTURE_PKGS (99/Uber/Gigu); os demais apps são descartados.
             notificationTimeout = 300
             flags = AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
                     AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
@@ -84,8 +83,6 @@ class TripReaderService : AccessibilityService() {
         }
         serviceInfo = info
         log("\n═══════════════ SERVIÇO CONECTADO ${fmt.format(Date())} ═══════════════")
-        log("   Uber pkgs: $UBER_PKGS")
-        log("   99   pkgs: $NN_PKGS")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -95,10 +92,6 @@ class TripReaderService : AccessibilityService() {
 
         val now = System.currentTimeMillis()
 
-        // ── Varre TODAS as janelas visíveis, mas guarda o texto SEPARADO por
-        // pacote. Isso é o que permite: (a) capturar o overlay do Gigu mesmo
-        // quando ele aparece por cima da tela da 99, sem (b) misturar o texto
-        // dele com o da 99/Uber na hora de calcular a nota real. ──
         val textsByPkg = LinkedHashMap<String, ArrayList<String>>()
         try {
             for (w in windows) {
@@ -121,8 +114,6 @@ class TripReaderService : AccessibilityService() {
         }
         if (textsByPkg.isEmpty()) return
 
-        // ── Texto do app real (99/Uber) — nunca inclui o Gigu. É esta a
-        // fonte usada pro MōB Flash. ──
         val realPkg = textsByPkg.keys.firstOrNull { UBER_PKGS.contains(it) || NN_PKGS.contains(it) }
         val realPlat = when {
             realPkg != null && UBER_PKGS.contains(realPkg) -> "UBER"
@@ -134,12 +125,10 @@ class TripReaderService : AccessibilityService() {
         if (realPlat != null && realTexts.isNotEmpty()) {
             processRealOffer(realPlat, realTexts)
         } else if (realPlat == null) {
-            // Saiu do app real (só sobrou Gigu ou nada) — some com o card.
             hideFlashIfActive()
         }
 
-        // ── Log combinado (todos os pacotes visíveis) — só pra estudo do
-        // Gigu / depuração. Não influencia a nota do MōB Flash. ──
+        // ── Log combinado — só pra estudo do Gigu / depuração ──
         if (now - lastLogMs < 700) return
         val plat = when {
             UBER_PKGS.contains(pkg) -> "UBER"
@@ -165,14 +154,12 @@ class TripReaderService : AccessibilityService() {
         if (state != "?") lastState = state
 
         val sb = StringBuilder()
-        sb.append("\n───── [$plat] ${fmt.format(Date())} ")
-        sb.append("estado=$state")
+        sb.append("\n───── [$plat] ${fmt.format(Date())} estado=$state")
         if (stateChanged && state != "?") sb.append("  ⟵ MUDOU")
         sb.append("\n")
         if (money.isNotEmpty()) sb.append("   R\$: ${money.joinToString(", ")}\n")
         if (km != null)  sb.append("   km: $km\n")
         if (min != null) sb.append("   min: $min\n")
-        sb.append("   window=${event.className}\n")
         allTexts.forEachIndexed { i, t -> sb.append("   [$i] $t\n") }
         log(sb.toString())
 
@@ -182,9 +169,8 @@ class TripReaderService : AccessibilityService() {
 
     // ── MōB Flash real: só usa o texto do próprio app (99/Uber) ──
     private fun processRealOffer(plat: String, texts: List<String>) {
-        val prefs = getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
-        val enabled = prefs.getBoolean(KEY_FLASH_ENABLED, true)
-        if (!enabled) { hideFlashIfActive(); return }
+        val cfg = loadFlashConfig()
+        if (!cfg.optBoolean("enabled", true)) { hideFlashIfActive(); return }
 
         val joined = texts.joinToString("  ")
         val low = joined.lowercase(Locale.getDefault())
@@ -203,61 +189,98 @@ class TripReaderService : AccessibilityService() {
         val valor = moneyRaw.firstOrNull()?.let { moneyToDouble(it) }
         val km = kmRaw?.let { kmToDouble(it) }
         val min = minRaw?.toIntOrNull()
+        val nota = extractNota(texts)
 
-        // Sem valor OU sem km não dá pra montar uma nota confiável —
-        // não mostra card pela metade (era essa a origem do card "vazio").
+        // Sem valor OU sem km não dá pra montar nenhuma métrica confiável —
+        // não mostra card pela metade.
         if (valor == null || valor <= 0.0 || km == null || km <= 0.0) return
 
-        val sig = "$plat|$valor|$km|$min"
+        val sig = "$plat|$valor|$km|$min|$nota"
         if (sig == lastFlashSig) return
         lastFlashSig = sig
 
-        val custoPorKm = prefs.getFloat(KEY_FLASH_CUSTO_KM, 0f).toDouble()
-        val metaBoa = prefs.getFloat(KEY_FLASH_META_BOA, 40f).toDouble()
-        val metaAceit = prefs.getFloat(KEY_FLASH_META_ACEIT, 15f).toDouble()
+        val custoPorKm = cfg.optDouble("custoPorKm", 0.0)
+        val kpisCfg = cfg.optJSONObject("kpis") ?: JSONObject()
 
         val rkm = valor / km
         val rhora = if (min != null && min > 0) valor / (min / 60.0) else null
         val rmin = if (min != null && min > 0) valor / min else null
-
         val custoConfigurado = custoPorKm > 0.0
-        val grade: String
-        val margemPct: Double?
-        if (custoConfigurado) {
-            val lucro = valor - custoPorKm * km
-            margemPct = (lucro / valor) * 100.0
-            grade = when {
-                margemPct >= metaBoa   -> "g"
-                margemPct >= metaAceit -> "a"
-                else                   -> "r"
-            }
-        } else {
-            // Sem custo configurado no Financeiro — usa faixa fixa de R$/km
-            // como aproximação (assumido; ajustável quando o custo for
-            // cadastrado no assistente de custo do veículo).
-            margemPct = null
-            grade = when {
-                rkm >= 2.0 -> "g"
-                rkm >= 1.2 -> "a"
-                else       -> "r"
-            }
-        }
+        val lucro = if (custoConfigurado) valor - custoPorKm * km else null
+        val margemPct = if (custoConfigurado && valor > 0) (lucro!! / valor) * 100.0 else null
+
+        val values = mapOf(
+            "rkm" to rkm,
+            "rhora" to rhora,
+            "rmin" to rmin,
+            "nota" to nota,
+            "margem" to margemPct,
+            "lucro" to lucro
+        )
 
         val metrics = ArrayList<FlashCard.Metric>()
-        metrics.add(FlashCard.Metric("R$/KM", fmtBr(rkm), grade))
-        if (rhora != null) metrics.add(FlashCard.Metric("R$/HORA", fmtBr(rhora), grade))
-        if (margemPct != null) metrics.add(FlashCard.Metric("MARGEM", "${margemPct.toInt()}%", grade))
-        else if (rmin != null) metrics.add(FlashCard.Metric("R$/MIN", fmtBr(rmin), grade))
+        val grades = ArrayList<String>()
+        for ((key, label) in KPI_ORDER) {
+            val kCfg = kpisCfg.optJSONObject(key) ?: continue
+            if (!kCfg.optBoolean("enabled", false)) continue
+            val v = values[key] ?: continue
+            val red = kCfg.optDouble("red", Double.NaN)
+            val green = kCfg.optDouble("green", Double.NaN)
+            if (red.isNaN() || green.isNaN()) continue
+            val grade = when {
+                v < red   -> "r"
+                v >= green -> "g"
+                else       -> "a"
+            }
+            grades.add(grade)
+            val fmtVal = when (key) {
+                "margem" -> "${v.toInt()}%"
+                "lucro"  -> "R$${v.toInt()}"
+                "rhora"  -> v.toInt().toString()
+                "nota"   -> fmtBr(v)
+                else     -> fmtBr(v)
+            }
+            metrics.add(FlashCard.Metric(label, fmtVal, grade))
+        }
+
+        if (metrics.isEmpty()) return // nenhum KPI configurado tinha dado suficiente
+
+        val overallGrade = when {
+            grades.contains("r") -> "r"
+            grades.contains("a") -> "a"
+            else -> "g"
+        }
 
         main.post {
             flashCard.show(
                 platform = plat,
-                overallGrade = grade,
+                overallGrade = overallGrade,
                 metrics = metrics,
                 totalMin = min ?: 0,
                 totalKm = km,
                 autoHideMs = 15000L
             )
+        }
+    }
+
+    private fun loadFlashConfig(): JSONObject {
+        val prefs = getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
+        val raw = prefs.getString(KEY_FLASH_CONFIG_JSON, null) ?: return defaultFlashConfig()
+        return try { JSONObject(raw) } catch (_: Exception) { defaultFlashConfig() }
+    }
+
+    private fun defaultFlashConfig(): JSONObject {
+        return JSONObject().apply {
+            put("enabled", true)
+            put("custoPorKm", 0.0)
+            put("kpis", JSONObject().apply {
+                put("rkm", JSONObject().apply { put("enabled", true); put("red", 1.2); put("green", 2.0) })
+                put("rhora", JSONObject().apply { put("enabled", true); put("red", 25.0); put("green", 45.0) })
+                put("rmin", JSONObject().apply { put("enabled", false); put("red", 0.6); put("green", 1.0) })
+                put("nota", JSONObject().apply { put("enabled", false); put("red", 4.5); put("green", 4.8) })
+                put("margem", JSONObject().apply { put("enabled", true); put("red", 15.0); put("green", 40.0) })
+                put("lucro", JSONObject().apply { put("enabled", true); put("red", 5.0); put("green", 15.0) })
+            })
         }
     }
 
@@ -280,7 +303,19 @@ class TripReaderService : AccessibilityService() {
 
     private fun kmToDouble(raw: String): Double? = raw.replace(",", ".").toDoubleOrNull()
 
-    // ── Máquina de estados (heurística por palavras-chave) ──
+    // Nota do passageiro — EXPERIMENTAL. Procura um número tipo "4,92"/"4.92"
+    // (1 a 5, 2 casas) que não faça parte de um valor em R$, km ou min.
+    private fun extractNota(texts: List<String>): Double? {
+        val re = Regex("""^[1-5][.,]\d{2}$""")
+        for (t in texts) {
+            val tt = t.trim()
+            if (re.matches(tt)) {
+                return tt.replace(",", ".").toDoubleOrNull()
+            }
+        }
+        return null
+    }
+
     private fun inferState(low: String): String {
         return when {
             (low.contains("aceitar") || low.contains("accept")) &&
