@@ -153,12 +153,15 @@ class TripReaderService : AccessibilityService() {
             hideFlashIfActive()
         }
 
-        // ── DIAGNÓSTICO: se a janela da 99 existe mas veio VAZIA de texto,
-        //    loga isso (indício de canvas/Flutter sem nós de acessibilidade) ──
-        val winSig = winMeta.sorted().joinToString(";")
-        if (nnWindowSeen && nnNodeCount == 0 && winSig != lastWinSig) {
-            lastWinSig = winSig
-            sendToCloud("DIAG", evPkg, "99-window-sem-texto", "DIAG_EMPTY", emptyList(), null, null, winMeta)
+        // ── DIAGNÓSTICO + OCR: janela da 99 visível mas VAZIA de texto
+        //    (canvas/Flutter). O caminho real é a imagem → captura + OCR. ──
+        if (nnWindowSeen && nnNodeCount == 0) {
+            requestOcrPass()
+            val winSig = winMeta.sorted().joinToString(";")
+            if (winSig != lastWinSig) {
+                lastWinSig = winSig
+                sendToCloud("DIAG", evPkg, "99-window-sem-texto", "DIAG_EMPTY", emptyList(), null, null, winMeta)
+            }
         }
 
         // ── Log combinado (throttle + dedup) ──
@@ -204,6 +207,32 @@ class TripReaderService : AccessibilityService() {
         AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY -> "A11Y_OVR"
         AccessibilityWindowInfo.TYPE_SPLIT_SCREEN_DIVIDER -> "SPLIT"
         else -> "T$t"
+    }
+
+    // ── OCR: a 99 desenha a oferta como imagem. Captura a tela (se o
+    //    usuário autorizou a gravação) e roda o mesmo parser sobre as
+    //    linhas reconhecidas. Throttle de 900ms, e descartado se um OCR
+    //    já está rodando (velocidade > completude). ──
+    private var lastOcrMs = 0L
+    private var lastOcrLogMs = 0L
+    private fun requestOcrPass() {
+        val svc = ScreenOcrService.instance ?: return
+        if (!ScreenOcrService.isActive) return
+        val now = System.currentTimeMillis()
+        if (now - lastOcrMs < 900) return
+        lastOcrMs = now
+        svc.captureAndRecognize { lines ->
+            if (lines.isEmpty()) return@captureAndRecognize
+            val joined = lines.joinToString("  ")
+            val low = joined.lowercase(Locale.getDefault())
+            // Loga amostras de OCR quando parecem oferta (auditoria do parser)
+            if (isOfferScreen(low) && System.currentTimeMillis() - lastOcrLogMs > 3000) {
+                lastOcrLogMs = System.currentTimeMillis()
+                sendToCloud("99", "ocr", "OCR_OFERTA", "OFERTA_OCR",
+                    extractMoney(joined), extractKm(low), extractMin(low), lines)
+            }
+            processRealOffer("99", lines)
+        }
     }
 
     // ── Notificação da 99/Uber: extrai título/texto e tenta oferta ──
