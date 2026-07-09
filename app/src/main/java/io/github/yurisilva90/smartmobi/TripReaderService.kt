@@ -181,19 +181,6 @@ class TripReaderService : AccessibilityService() {
             hideFlashIfActive()
         }
 
-        // ── OCR só quando a 99 está REALMENTE em primeiro plano (janela de
-        //    aplicativo ativa), não em qualquer tela. O gatilho antigo
-        //    disparava em todo app (launcher, ajustes, teclado) porque
-        //    checava só "janela da 99 existe", e ela pode existir em 2º plano. ──
-        if (nnIsForeground && nnNodeCount == 0) {
-            requestOcrPass()
-            val winSig = winMeta.sorted().joinToString(";")
-            if (winSig != lastWinSig) {
-                lastWinSig = winSig
-                sendToCloud("DIAG", evPkg, "99-fg-sem-texto", "DIAG_EMPTY", emptyList(), null, null, winMeta)
-            }
-        }
-
         // ── Log combinado (throttle + dedup) ──
         if (now - lastLogMs < 700) return
         val plat = when {
