@@ -274,6 +274,17 @@ class MainActivity : AppCompatActivity() {
                     .putString(TripReaderService.KEY_FLASH_CONFIG_JSON, configJson)
                     .apply()
             }
+
+            // Captura de tela pro OCR do MōB Flash (a oferta da 99 é imagem)
+            @JavascriptInterface fun requestScreenCapture() {
+                runOnUiThread {
+                    try {
+                        val mpm = getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+                        startActivityForResult(mpm.createScreenCaptureIntent(), 7301)
+                    } catch (_: Exception) {}
+                }
+            }
+            @JavascriptInterface fun isScreenCaptureActive(): Boolean = ScreenOcrService.isActive
         }, "SmartMobiNative")
 
         webView.webChromeClient = object : WebChromeClient() {
@@ -317,6 +328,15 @@ class MainActivity : AppCompatActivity() {
     @Deprecated("") override fun onActivityResult(req: Int, result: Int, data: Intent?) {
         super.onActivityResult(req, result, data)
         if (req == REQ_FILE) { fileCallback?.onReceiveValue(if (data?.data != null) arrayOf(data.data!!) else arrayOf()); fileCallback = null }
+        if (req == 7301) {
+            if (result == RESULT_OK && data != null) {
+                ScreenOcrService.pendingResultCode = result
+                ScreenOcrService.pendingResultData = data
+                val it = Intent(this, ScreenOcrService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(it) else startService(it)
+            }
+            webView.evaluateJavascript("try{renderFlashPerms&&renderFlashPerms()}catch(e){}", null)
+        }
     }
     override fun onKeyDown(k: Int, e: KeyEvent): Boolean {
         if (k == KeyEvent.KEYCODE_BACK && webView.canGoBack()) { webView.goBack(); return true }
