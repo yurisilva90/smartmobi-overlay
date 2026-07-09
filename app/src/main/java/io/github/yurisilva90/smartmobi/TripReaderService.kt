@@ -2,12 +2,14 @@ package io.github.yurisilva90.smartmobi
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.app.Notification
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import android.widget.Toast
 import org.json.JSONArray
 import org.json.JSONObject
@@ -21,16 +23,18 @@ import kotlin.concurrent.thread
 // ══════════════════════════════════════════════════════════════════
 // Leitor de tela Uber/99 — só leitura (não toca em nada, não age).
 //
-// Três objetivos:
-//  1. Inferir o ESTADO da jornada a partir dos textos da tela.
-//  2. Quando o estado é OFERTA, extrair valor/km/min do PRÓPRIO app
-//     (99 ou Uber — nunca do overlay do Gigu) e mostrar o MōB Flash com
-//     as métricas que o usuário escolheu na tela de configuração,
-//     cada uma com sua própria faixa vermelho/amarelo/verde.
-//  3. Continuar capturando o Gigu lado a lado (fins de estudo / log),
-//     sem nunca usar os números dele pra decidir a nota do MōB Flash.
-//
-// Log local: /Android/data/<pkg>/files/trip_reader_log.txt
+// v1.0.17 — diagnóstico + detecção real de oferta:
+//  • A tela de oferta da 99 NÃO tem "Recusar" com texto; tem "Aceitar por
+//    R$X,XX". Detecção reescrita com base em prints reais.
+//  • Eventos deixam de ser filtrados pelo pacote do EVENTO (a oferta pode
+//    ser desenhada como janela sobreposta enquanto outro app está na
+//    frente). Agora toda varredura olha as JANELAS visíveis.
+//  • Captura notificações (TYPE_NOTIFICATION_STATE_CHANGED) da 99/Uber —
+//    a oferta pode chegar por aí com o valor no texto.
+//  • Loga metadados das janelas (tipo/camada/pacote) pra descobrir por
+//    qual caminho a informação da oferta realmente chega. Se o card for
+//    desenhado sem nós de texto (Flutter/canvas), saberemos e partimos
+//    pra outra estratégia (OCR).
 // ══════════════════════════════════════════════════════════════════
 class TripReaderService : AccessibilityService() {
 
@@ -43,14 +47,8 @@ class TripReaderService : AccessibilityService() {
         const val SUPABASE_URL  = "https://jlsrpptslwfhmkvelaro.supabase.co"
         const val SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impsc3JwcHRzbHdmaG1rdmVsYXJvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4NjYxNzIsImV4cCI6MjA4OTQ0MjE3Mn0.4gD4dKx05QaOAAkY1gAx2HuH_CN31Xg3kkDMdvZ4kh0"
 
-        // Config do MōB Flash — um único JSON no SharedPreferences, escrito
-        // pelo JS via bridge (saveFlashConfig). Formato:
-        // {"enabled":true,"custoPorKm":1.84,"kpis":{
-        //   "rkm":{"enabled":true,"red":1.2,"green":2.0}, "rhora":{...},
-        //   "rmin":{...}, "nota":{...}, "margem":{...}, "lucro":{...}}}
         const val KEY_FLASH_CONFIG_JSON = "flash_config_json"
 
-        // Ordem/labels fixos de exibição no card
         val KPI_ORDER = listOf(
             "rkm"    to "R$/KM",
             "rhora"  to "R$/HORA",
@@ -62,7 +60,9 @@ class TripReaderService : AccessibilityService() {
 
         private var lastSig = ""
         private var lastLogMs = 0L
+        private var lastScanMs = 0L
         private var lastState = "?"
+        private var lastWinSig = ""
     }
 
     private val fmt = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
@@ -74,43 +74,68 @@ class TripReaderService : AccessibilityService() {
     override fun onServiceConnected() {
         val info = AccessibilityServiceInfo().apply {
             eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
-                         AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+                         AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
+                         AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-            notificationTimeout = 300
+            notificationTimeout = 100   // o mais rápido possível — oferta expira em segundos
             flags = AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
                     AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
                     AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
         }
         serviceInfo = info
-        log("\n═══════════════ SERVIÇO CONECTADO ${fmt.format(Date())} ═══════════════")
+        log("\n═══════════════ SERVIÇO CONECTADO v17 ${fmt.format(Date())} ═══════════════")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         event ?: return
-        val pkg = event.packageName?.toString() ?: return
-        if (!CAPTURE_PKGS.contains(pkg)) return
+        val evPkg = event.packageName?.toString() ?: ""
+
+        // ── Notificações da 99/Uber: a oferta pode chegar por aqui com valor ──
+        if (event.eventType == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED) {
+            if (CAPTURE_PKGS.contains(evPkg) && !GIGU_PKGS.contains(evPkg)) {
+                handleNotification(evPkg, event)
+            }
+            return
+        }
 
         val now = System.currentTimeMillis()
+        // Se o evento veio de um dos apps capturados, varre sempre.
+        // Se veio de QUALQUER outro app, ainda varre (a oferta pode ser janela
+        // da 99 desenhada por cima de outro app) — mas no máx. 1x por segundo.
+        val fromCaptured = CAPTURE_PKGS.contains(evPkg)
+        if (!fromCaptured && now - lastScanMs < 1000) return
+        lastScanMs = now
 
+        // ── Varre TODAS as janelas visíveis, texto separado por pacote,
+        //    e coleta metadados das janelas pra diagnóstico ──
         val textsByPkg = LinkedHashMap<String, ArrayList<String>>()
+        val winMeta = ArrayList<String>()
+        var nnWindowSeen = false
+        var nnNodeCount = 0
         try {
             for (w in windows) {
-                val r = w.root ?: continue
-                val wp = r.packageName?.toString() ?: continue
+                val r = w.root
+                val wp = r?.packageName?.toString()
+                val meta = "type=${winTypeName(w.type)} layer=${w.layer} pkg=${wp ?: "null"} active=${w.isActive} focus=${w.isFocused}"
+                winMeta.add(meta)
+                if (r == null || wp == null) continue
                 if (CAPTURE_PKGS.contains(wp)) {
                     val lst = textsByPkg.getOrPut(wp) { ArrayList() }
+                    val before = lst.size
                     collectTexts(r, lst)
+                    if (NN_PKGS.contains(wp)) { nnWindowSeen = true; nnNodeCount += (lst.size - before) }
                 }
             }
         } catch (_: Exception) {}
 
-        if (textsByPkg.isEmpty()) {
-            val root = rootInActiveWindow ?: return
-            val rp = root.packageName?.toString() ?: return
-            if (rp != pkg) return
-            val lst = ArrayList<String>()
-            collectTexts(root, lst)
-            textsByPkg[rp] = lst
+        if (textsByPkg.isEmpty() && fromCaptured) {
+            val root = rootInActiveWindow
+            val rp = root?.packageName?.toString()
+            if (root != null && rp != null && CAPTURE_PKGS.contains(rp)) {
+                val lst = ArrayList<String>()
+                collectTexts(root, lst)
+                textsByPkg[rp] = lst
+            }
         }
         if (textsByPkg.isEmpty()) return
 
@@ -128,13 +153,22 @@ class TripReaderService : AccessibilityService() {
             hideFlashIfActive()
         }
 
-        // ── Log combinado — só pra estudo do Gigu / depuração ──
+        // ── DIAGNÓSTICO: se a janela da 99 existe mas veio VAZIA de texto,
+        //    loga isso (indício de canvas/Flutter sem nós de acessibilidade) ──
+        val winSig = winMeta.sorted().joinToString(";")
+        if (nnWindowSeen && nnNodeCount == 0 && winSig != lastWinSig) {
+            lastWinSig = winSig
+            sendToCloud("DIAG", evPkg, "99-window-sem-texto", "DIAG_EMPTY", emptyList(), null, null, winMeta)
+        }
+
+        // ── Log combinado (throttle + dedup) ──
         if (now - lastLogMs < 700) return
         val plat = when {
-            UBER_PKGS.contains(pkg) -> "UBER"
-            NN_PKGS.contains(pkg)   -> "99"
-            GIGU_PKGS.contains(pkg) -> "GIGU"
-            else -> return
+            UBER_PKGS.contains(evPkg) -> "UBER"
+            NN_PKGS.contains(evPkg)   -> "99"
+            GIGU_PKGS.contains(evPkg) -> "GIGU"
+            realPlat != null -> realPlat
+            else -> "OUTRO"
         }
         val allTexts = ArrayList<String>()
         textsByPkg.values.forEach { allTexts.addAll(it) }
@@ -150,21 +184,114 @@ class TripReaderService : AccessibilityService() {
         val money = extractMoney(joined)
         val km = extractKm(low)
         val min = extractMin(low)
-        val stateChanged = state != lastState
         if (state != "?") lastState = state
 
         val sb = StringBuilder()
-        sb.append("\n───── [$plat] ${fmt.format(Date())} estado=$state")
-        if (stateChanged && state != "?") sb.append("  ⟵ MUDOU")
-        sb.append("\n")
+        sb.append("\n───── [$plat] ${fmt.format(Date())} estado=$state ev=$evPkg\n")
         if (money.isNotEmpty()) sb.append("   R\$: ${money.joinToString(", ")}\n")
-        if (km != null)  sb.append("   km: $km\n")
-        if (min != null) sb.append("   min: $min\n")
+        winMeta.forEach { sb.append("   WIN $it\n") }
         allTexts.forEachIndexed { i, t -> sb.append("   [$i] $t\n") }
         log(sb.toString())
 
-        val winTag = "${event.className ?: ""} :: seen=${textsByPkg.keys.sorted().joinToString("+")}"
-        sendToCloud(plat, pkg, winTag, state, money, km, min, allTexts)
+        val winTag = "${event.className ?: ""} :: ev=$evPkg :: wins=${winMeta.joinToString(" || ")}"
+        sendToCloud(plat, evPkg, winTag, state, money, km, min, allTexts)
+    }
+
+    private fun winTypeName(t: Int) = when (t) {
+        AccessibilityWindowInfo.TYPE_APPLICATION -> "APP"
+        AccessibilityWindowInfo.TYPE_INPUT_METHOD -> "IME"
+        AccessibilityWindowInfo.TYPE_SYSTEM -> "SYS"
+        AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY -> "A11Y_OVR"
+        AccessibilityWindowInfo.TYPE_SPLIT_SCREEN_DIVIDER -> "SPLIT"
+        else -> "T$t"
+    }
+
+    // ── Notificação da 99/Uber: extrai título/texto e tenta oferta ──
+    private fun handleNotification(pkg: String, event: AccessibilityEvent) {
+        val texts = ArrayList<String>()
+        try { event.text?.forEach { if (!it.isNullOrBlank()) texts.add(it.toString()) } } catch (_: Exception) {}
+        try {
+            val n = event.parcelableData as? Notification
+            if (n != null) {
+                n.extras?.getCharSequence(Notification.EXTRA_TITLE)?.let { texts.add("(title) $it") }
+                n.extras?.getCharSequence(Notification.EXTRA_TEXT)?.let { texts.add("(text) $it") }
+                n.extras?.getCharSequence(Notification.EXTRA_BIG_TEXT)?.let { texts.add("(big) $it") }
+            }
+        } catch (_: Exception) {}
+        if (texts.isEmpty()) return
+        val plat = if (UBER_PKGS.contains(pkg)) "UBER" else "99"
+        log("\n───── [NOTIF $plat] ${fmt.format(Date())}\n" + texts.joinToString("\n") { "   $it" })
+        sendToCloud(plat, pkg, "NOTIFICATION", "NOTIF", extractMoney(texts.joinToString("  ")), null, null, texts)
+        // Se a notificação tiver dado suficiente, tenta o card por ela também
+        processRealOffer(plat, texts)
+    }
+
+    // ── Parser de oferta com base nos prints reais da 99 ──
+    private data class Offer(
+        val valor: Double?, val km: Double?, val min: Int?,
+        val rkmDirect: Double?, val nota: Double?
+    )
+
+    private fun parseOffer(texts: List<String>): Offer {
+        val joined = texts.joinToString("  ")
+        val low = joined.lowercase(Locale.getDefault())
+
+        // valor: "Aceitar por R$12,06" é a âncora mais confiável
+        var valor: Double? = null
+        Regex("""aceitar por\s*r\$\s*([\d.]+,\d{2})""").find(low)?.let {
+            valor = moneyToDouble(it.groupValues[1])
+        }
+
+        // R$/km direto: "R$3,55/km"
+        val rkmDirect = Regex("""r\$\s*([\d.]+,\d{2})\s*/\s*km""").find(low)?.let {
+            moneyToDouble(it.groupValues[1])
+        }
+
+        // pernas: "4min (925m)" + "8min (2,5km)" → soma
+        var totMin = 0; var totKm = 0.0; var legs = 0
+        Regex("""(\d{1,3})\s*min\s*\((\d+(?:[.,]\d+)?)\s*(m|km)\)""").findAll(low).forEach { m ->
+            val mins = m.groupValues[1].toIntOrNull() ?: 0
+            val dist = m.groupValues[2].replace(",", ".").toDoubleOrNull() ?: 0.0
+            val unit = m.groupValues[3]
+            totMin += mins
+            totKm += if (unit == "m") dist / 1000.0 else dist
+            legs++
+        }
+        var km: Double? = if (legs > 0 && totKm > 0) totKm else null
+        val min: Int? = if (legs > 0 && totMin > 0) totMin else extractMin(low)?.toIntOrNull()
+
+        // fallback de valor: se não achou "aceitar por", pega o R$ que for
+        // consistente com rkm direto × km (evita pegar ganhos do dia)
+        if (valor == null) {
+            val monies = extractMoney(joined).mapNotNull { moneyToDouble(it) }
+            valor = if (rkmDirect != null && km != null) {
+                monies.firstOrNull { it > 0 && kotlin.math.abs(it / km!! - rkmDirect) / rkmDirect < 0.35 }
+            } else monies.firstOrNull()
+        }
+
+        // fallback de km: valor / rkm direto
+        if (km == null && valor != null && rkmDirect != null && rkmDirect > 0) {
+            km = valor!! / rkmDirect
+        }
+
+        // nota: "5,00 • 176 corridas" — número 1..5 com 2 casas perto de "corridas"
+        var nota: Double? = null
+        if (low.contains("corrida")) {
+            Regex("""\b([1-5][.,]\d{2})\b""").find(joined)?.let {
+                nota = it.groupValues[1].replace(",", ".").toDoubleOrNull()
+            }
+        }
+
+        return Offer(valor, km, min, rkmDirect, nota)
+    }
+
+    private fun isOfferScreen(low: String): Boolean {
+        // 99: "Aceitar por R$..." é a assinatura; ou taxa de serviço + pernas min(km)
+        if (low.contains("aceitar por")) return true
+        if (low.contains("taxa de serviço") && Regex("""\d+\s*min\s*\(""").containsMatchIn(low)) return true
+        // Uber e fallback genérico: aceitar + recusar/combinar
+        if (low.contains("aceitar") && (low.contains("recusar") || low.contains("combinar") || low.contains("dispensar"))) return true
+        return false
     }
 
     // ── MōB Flash real: só usa o texto do próprio app (99/Uber) ──
@@ -174,35 +301,30 @@ class TripReaderService : AccessibilityService() {
 
         val joined = texts.joinToString("  ")
         val low = joined.lowercase(Locale.getDefault())
-        val state = inferState(low)
 
-        if (state != "OFERTA") {
-            if (lastRealState == "OFERTA") hideFlashIfActive()
-            lastRealState = state
+        if (!isOfferScreen(low)) {
+            val state = inferState(low)
+            if (state != "?" && state != "OFERTA" && lastRealState == "OFERTA") hideFlashIfActive()
+            if (state != "?") lastRealState = state
             return
         }
-        lastRealState = state
+        lastRealState = "OFERTA"
 
-        val moneyRaw = extractMoney(joined)
-        val kmRaw = extractKm(low)
-        val minRaw = extractMin(low)
-        val valor = moneyRaw.firstOrNull()?.let { moneyToDouble(it) }
-        val km = kmRaw?.let { kmToDouble(it) }
-        val min = minRaw?.toIntOrNull()
-        val nota = extractNota(texts)
+        val offer = parseOffer(texts)
+        val valor = offer.valor
+        val km = offer.km
+        val min = offer.min
 
-        // Sem valor OU sem km não dá pra montar nenhuma métrica confiável —
-        // não mostra card pela metade.
         if (valor == null || valor <= 0.0 || km == null || km <= 0.0) return
 
-        val sig = "$plat|$valor|$km|$min|$nota"
+        val sig = "$plat|$valor|$km|$min|${offer.nota}"
         if (sig == lastFlashSig) return
         lastFlashSig = sig
 
         val custoPorKm = cfg.optDouble("custoPorKm", 0.0)
         val kpisCfg = cfg.optJSONObject("kpis") ?: JSONObject()
 
-        val rkm = valor / km
+        val rkm = offer.rkmDirect ?: (valor / km)
         val rhora = if (min != null && min > 0) valor / (min / 60.0) else null
         val rmin = if (min != null && min > 0) valor / min else null
         val custoConfigurado = custoPorKm > 0.0
@@ -210,12 +332,8 @@ class TripReaderService : AccessibilityService() {
         val margemPct = if (custoConfigurado && valor > 0) (lucro!! / valor) * 100.0 else null
 
         val values = mapOf(
-            "rkm" to rkm,
-            "rhora" to rhora,
-            "rmin" to rmin,
-            "nota" to nota,
-            "margem" to margemPct,
-            "lucro" to lucro
+            "rkm" to rkm, "rhora" to rhora, "rmin" to rmin,
+            "nota" to offer.nota, "margem" to margemPct, "lucro" to lucro
         )
 
         val metrics = ArrayList<FlashCard.Metric>()
@@ -228,7 +346,7 @@ class TripReaderService : AccessibilityService() {
             val green = kCfg.optDouble("green", Double.NaN)
             if (red.isNaN() || green.isNaN()) continue
             val grade = when {
-                v < red   -> "r"
+                v < red    -> "r"
                 v >= green -> "g"
                 else       -> "a"
             }
@@ -237,19 +355,21 @@ class TripReaderService : AccessibilityService() {
                 "margem" -> "${v.toInt()}%"
                 "lucro"  -> "R$${v.toInt()}"
                 "rhora"  -> v.toInt().toString()
-                "nota"   -> fmtBr(v)
                 else     -> fmtBr(v)
             }
             metrics.add(FlashCard.Metric(label, fmtVal, grade))
         }
-
-        if (metrics.isEmpty()) return // nenhum KPI configurado tinha dado suficiente
+        if (metrics.isEmpty()) return
 
         val overallGrade = when {
             grades.contains("r") -> "r"
             grades.contains("a") -> "a"
             else -> "g"
         }
+
+        // Loga a oferta detectada (pra auditoria da precisão do parser)
+        sendToCloud(plat, "offer-parser", "OFERTA_DETECTADA v=$valor km=$km min=$min rkm=$rkm nota=${offer.nota}",
+            "OFERTA", extractMoney(joined), km.toString(), min?.toString(), texts)
 
         main.post {
             flashCard.show(
@@ -301,26 +421,9 @@ class TripReaderService : AccessibilityService() {
         return clean.toDoubleOrNull()
     }
 
-    private fun kmToDouble(raw: String): Double? = raw.replace(",", ".").toDoubleOrNull()
-
-    // Nota do passageiro — EXPERIMENTAL. Procura um número tipo "4,92"/"4.92"
-    // (1 a 5, 2 casas) que não faça parte de um valor em R$, km ou min.
-    private fun extractNota(texts: List<String>): Double? {
-        val re = Regex("""^[1-5][.,]\d{2}$""")
-        for (t in texts) {
-            val tt = t.trim()
-            if (re.matches(tt)) {
-                return tt.replace(",", ".").toDoubleOrNull()
-            }
-        }
-        return null
-    }
-
     private fun inferState(low: String): String {
         return when {
-            (low.contains("aceitar") || low.contains("accept")) &&
-            (low.contains("recusar") || low.contains("ignorar") || low.contains("decline") ||
-             low.contains("dispensar")) -> "OFERTA"
+            isOfferScreen(low) -> "OFERTA"
 
             low.contains("a caminho") || low.contains("buscar passageiro") ||
             low.contains("indo até") || low.contains("navegar até o ponto de embarque") ||
