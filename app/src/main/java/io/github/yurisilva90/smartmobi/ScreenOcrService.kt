@@ -126,15 +126,15 @@ class ScreenOcrService : Service() {
 
     // Captura 1 frame e devolve as LINHAS de texto reconhecidas (thread-safe,
     // descarta pedidos enquanto um OCR está em andamento — velocidade > tudo).
-    fun captureAndRecognize(onResult: (List<String>) -> Unit) {
+    fun captureAndRecognize(onResult: (List<String>) -> Unit, onError: ((String) -> Unit)? = null) {
         if (busy) return
-        val reader = imageReader ?: return
+        val reader = imageReader ?: run { onError?.invoke("sem imageReader"); return }
         busy = true
         main.post {
             var bmp: Bitmap? = null
             try {
                 val img = reader.acquireLatestImage()
-                if (img == null) { busy = false; return@post }
+                if (img == null) { busy = false; onError?.invoke("sem frame disponivel"); return@post }
                 val plane = img.planes[0]
                 val rowStride = plane.rowStride
                 val pixelStride = plane.pixelStride
@@ -146,6 +146,7 @@ class ScreenOcrService : Service() {
                 img.close()
             } catch (e: Exception) {
                 busy = false
+                onError?.invoke("captura: ${e.message}")
                 return@post
             }
             val input = InputImage.fromBitmap(bmp!!, 0)
@@ -161,7 +162,7 @@ class ScreenOcrService : Service() {
                     busy = false
                     onResult(lines)
                 }
-                .addOnFailureListener { busy = false }
+                .addOnFailureListener { e -> busy = false; onError?.invoke("mlkit: ${e.message}") }
         }
     }
 
