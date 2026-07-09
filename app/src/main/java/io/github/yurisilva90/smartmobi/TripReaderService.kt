@@ -83,7 +83,31 @@ class TripReaderService : AccessibilityService() {
                     AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
         }
         serviceInfo = info
-        log("\n═══════════════ SERVIÇO CONECTADO v17 ${fmt.format(Date())} ═══════════════")
+        log("\n═══════════════ SERVIÇO CONECTADO v21 ${fmt.format(Date())} ═══════════════")
+        // Leitura por TEMPO, não só por evento — a tela de oferta pode ser
+        // canvas puro e não disparar TYPE_WINDOW_CONTENT_CHANGED nenhum.
+        // É assim (por polling) que apps como o Gigu conseguem ler rápido.
+        main.post(pollRunnable)
+    }
+
+    private val pollRunnable = object : Runnable {
+        override fun run() {
+            try { pollForeground() } catch (_: Exception) {}
+            main.postDelayed(this, 600)
+        }
+    }
+
+    private fun pollForeground() {
+        var nnFg = false
+        try {
+            for (w in windows) {
+                val wp = w.root?.packageName?.toString() ?: continue
+                if (NN_PKGS.contains(wp) && w.type == AccessibilityWindowInfo.TYPE_APPLICATION && w.isActive) {
+                    nnFg = true; break
+                }
+            }
+        } catch (_: Exception) {}
+        if (nnFg) requestOcrPass()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -235,19 +259,23 @@ class TripReaderService : AccessibilityService() {
             return
         }
         val now = System.currentTimeMillis()
-        if (now - lastOcrMs < 900) return
+        if (now - lastOcrMs < 600) return
         lastOcrMs = now
         svc.captureAndRecognize({ lines ->
             if (lines.isEmpty()) {
-                sendToCloud("99", "ocr", "OCR_VAZIO", "OCR_SEM_LINHAS", emptyList(), null, null, emptyList())
+                if (System.currentTimeMillis() - lastOcrLogMs > 1500) {
+                    lastOcrLogMs = System.currentTimeMillis()
+                    sendToCloud("99", "ocr", "OCR_VAZIO", "OCR_SEM_LINHAS", emptyList(), null, null, emptyList())
+                }
                 return@captureAndRecognize
             }
             val joined = lines.joinToString("  ")
             val low = joined.lowercase(Locale.getDefault())
             val isOffer = isOfferScreen(low)
-            // Loga TODA passada de OCR (achando oferta ou não) — throttle 3s —
-            // pra sabermos exatamente o que a câmera do OCR está enxergando.
-            if (System.currentTimeMillis() - lastOcrLogMs > 3000) {
+            // Modo diagnóstico: loga TODA passada de OCR, achando oferta ou
+            // não — é a única forma de descobrir o padrão real da tela sem
+            // continuar chutando. Throttle 1.5s pra não inundar o Supabase.
+            if (System.currentTimeMillis() - lastOcrLogMs > 1500) {
                 lastOcrLogMs = System.currentTimeMillis()
                 sendToCloud("99", "ocr", if (isOffer) "OCR_OFERTA" else "OCR_TELA_NORMAL",
                     if (isOffer) "OFERTA_OCR" else "OCR_SEM_OFERTA",
@@ -255,7 +283,7 @@ class TripReaderService : AccessibilityService() {
             }
             if (isOffer) processRealOffer("99", lines)
         }, { err ->
-            if (System.currentTimeMillis() - lastOcrLogMs > 3000) {
+            if (System.currentTimeMillis() - lastOcrLogMs > 1500) {
                 lastOcrLogMs = System.currentTimeMillis()
                 sendToCloud("99", "ocr", "OCR_ERRO: $err", "OCR_ERRO", emptyList(), null, null, emptyList())
             }
@@ -593,4 +621,9 @@ class TripReaderService : AccessibilityService() {
     }
 
     override fun onInterrupt() {}
+
+    override fun onDestroy() {
+        main.removeCallbacks(pollRunnable)
+        super.onDestroy()
+    }
 }
