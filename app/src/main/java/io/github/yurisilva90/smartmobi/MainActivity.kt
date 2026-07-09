@@ -262,12 +262,10 @@ class MainActivity : AppCompatActivity() {
             }
 
             // Salva a configuração do MōB Flash (lida pelo TripReaderService via SharedPreferences)
-            @JavascriptInterface fun saveFlashConfig(enabled: Boolean, custoPorKm: Double, metaBoa: Double, metaAceitavel: Double) {
+            // configJson vem pronto do JS: {"enabled":..,"custoPorKm":..,"kpis":{...}}
+            @JavascriptInterface fun saveFlashConfig(configJson: String) {
                 getSharedPreferences(GpsService.PREFS_NAME, android.content.Context.MODE_PRIVATE).edit()
-                    .putBoolean(TripReaderService.KEY_FLASH_ENABLED, enabled)
-                    .putFloat(TripReaderService.KEY_FLASH_CUSTO_KM, custoPorKm.toFloat())
-                    .putFloat(TripReaderService.KEY_FLASH_META_BOA, metaBoa.toFloat())
-                    .putFloat(TripReaderService.KEY_FLASH_META_ACEIT, metaAceitavel.toFloat())
+                    .putString(TripReaderService.KEY_FLASH_CONFIG_JSON, configJson)
                     .apply()
             }
         }, "SmartMobiNative")
