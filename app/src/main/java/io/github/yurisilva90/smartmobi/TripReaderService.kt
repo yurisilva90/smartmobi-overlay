@@ -57,6 +57,8 @@ class TripReaderService : AccessibilityService() {
 
     private val fmt = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
     private val main = Handler(Looper.getMainLooper())
+    private val flashCard by lazy { FlashCard(this) }
+    private var lastFlashPlat = ""
 
     override fun onServiceConnected() {
         val info = AccessibilityServiceInfo().apply {
@@ -90,6 +92,28 @@ class TripReaderService : AccessibilityService() {
             GIGU_PKGS.contains(pkg) -> "GIGU"
             else -> return
         }
+
+        // ── TESTE VISUAL do MōB Flash ──────────────────────────────────
+        // Ao ENTRAR na 99 ou Uber (transição de app), mostra o card com
+        // dados AMOSTRA fixos — não é valor real da oferta ainda, isso
+        // depende do pipeline de OCR que está em teste à parte. O objetivo
+        // aqui é só validar posição/legibilidade/cores no aparelho real.
+        if (plat != lastFlashPlat && (plat == "99" || plat == "UBER")) {
+            lastFlashPlat = plat
+            flashCard.show(
+                platform = plat,
+                overallGrade = "a", // amostra "no limite" — mostra a mistura de cores por métrica
+                metrics = listOf(
+                    FlashCard.Metric("R$/KM", "2,50", "g"),
+                    FlashCard.Metric("R$/HORA", "21", "a"),
+                    FlashCard.Metric("R$/MIN", "0,58", "a"),
+                    FlashCard.Metric("NOTA", "4,55", "a")
+                ),
+                totalMin = 24,
+                totalKm = 10.2
+            )
+        }
+        if (plat != "99" && plat != "UBER") lastFlashPlat = ""
 
         val now = System.currentTimeMillis()
         if (now - lastLogMs < 700) return
