@@ -44,19 +44,25 @@ class FlashCard(private val context: Context) {
     // conteúdo interno pedir MATCH_PARENT, o Android não consegue resolver
     // o tamanho e o conteúdo colapsa pra ~0 (foi a causa do card aparecer
     // como uma tarja fina sem números — só as bordas coloridas sobravam).
-    private val cardWidthPx = dp(296)
+    // 336dp — largura suficiente pra até 6 métricas numa linha só.
+    private val cardWidthPx = dp(336)
 
     private val params = WindowManager.LayoutParams(
         cardWidthPx,
         WindowManager.LayoutParams.WRAP_CONTENT,
         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+        // SEM FLAG_NOT_TOUCHABLE: o card precisa responder a toque (fecha
+        // ao tocar, igual o Gigu). FLAG_NOT_FOCUSABLE continua — não pode
+        // roubar foco de teclado do app por baixo.
+        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
         PixelFormat.TRANSLUCENT
     ).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; y = dp(58) }
 
     // platform: "99" ou "UBER". overallGrade: pior nota entre as métricas ativas.
-    // metrics: quantas o usuário tiver selecionado — quebra em linhas de até 3.
-    fun show(platform: String, overallGrade: String, metrics: List<Metric>, totalMin: Int, totalKm: Double, autoHideMs: Long = 15000L) {
+    // metrics: sempre numa linha só (o card é largo o suficiente pras 6 possíveis).
+    // autoHideMs é só rede de segurança — o normal é o TripReaderService
+    // chamar hide() sozinho assim que a tela de oferta sai do ar (~1s).
+    fun show(platform: String, overallGrade: String, metrics: List<Metric>, totalMin: Int, totalKm: Double, autoHideMs: Long = 20000L) {
         if (metrics.isEmpty()) return
         handler.removeCallbacks(hideRunnable)
         handler.post {
@@ -77,7 +83,6 @@ class FlashCard(private val context: Context) {
 
     private fun buildCard(platform: String, overallGrade: String, metrics: List<Metric>, totalMin: Int, totalKm: Double): FrameLayout {
         val gradeColor = colorOf(overallGrade)
-        val maxPerRow = 3
 
         val root = FrameLayout(context).apply {
             layoutParams = FrameLayout.LayoutParams(cardWidthPx, FrameLayout.LayoutParams.WRAP_CONTENT)
@@ -87,6 +92,9 @@ class FlashCard(private val context: Context) {
                 setColor(Color.parseColor("#E60E0E17"))
             }
             elevation = dpf(10)
+            isClickable = true
+            // Toque em qualquer parte do card fecha ele — igual o Gigu.
+            setOnClickListener { hide() }
         }
 
         val row = LinearLayout(context).apply {
@@ -101,7 +109,7 @@ class FlashCard(private val context: Context) {
         val content = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            setPadding(dp(13), dp(11), dp(13), dp(11))
+            setPadding(dp(10), dp(9), dp(10), dp(9))
         }
 
         // topo: logo da plataforma — SEM fundo branco, só a imagem
@@ -112,50 +120,48 @@ class FlashCard(private val context: Context) {
         val logoRes = if (platform == "UBER") R.drawable.ic_platform_uber else R.drawable.ic_platform_99
         val logoIv = ImageView(context).apply {
             setImageResource(logoRes)
-            val h = dp(16)
-            val w = if (platform == "UBER") dp(46) else dp(16)
+            val h = dp(15)
+            val w = if (platform == "UBER") dp(44) else dp(15)
             layoutParams = LinearLayout.LayoutParams(w, h)
             scaleType = ImageView.ScaleType.FIT_CENTER
         }
         topRow.addView(logoIv)
         content.addView(topRow)
 
-        val spacer1 = TextView(context).apply { layoutParams = LinearLayout.LayoutParams(0, dp(7)) }
+        val spacer1 = TextView(context).apply { layoutParams = LinearLayout.LayoutParams(0, dp(6)) }
         content.addView(spacer1)
 
-        // métricas em linhas de até 3, com valores maiores
-        metrics.chunked(maxPerRow).forEachIndexed { idx, chunk ->
-            if (idx > 0) content.addView(TextView(context).apply { layoutParams = LinearLayout.LayoutParams(0, dp(6)) })
-            val metricsRow = LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            }
-            chunk.forEach { m ->
-                val tile = LinearLayout(context).apply {
-                    orientation = LinearLayout.VERTICAL
-                    gravity = Gravity.CENTER_HORIZONTAL
-                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                }
-                val n = TextView(context).apply {
-                    text = m.value; textSize = 22f
-                    setTextColor(colorOf(m.grade)); setTypeface(Typeface.DEFAULT_BOLD)
-                    gravity = Gravity.CENTER
-                    maxLines = 1
-                }
-                val l = TextView(context).apply {
-                    text = m.label; textSize = 8.5f
-                    setTextColor(Color.parseColor("#8A8A99")); setTypeface(Typeface.DEFAULT_BOLD)
-                    gravity = Gravity.CENTER; setPadding(0, dp(3), 0, 0)
-                }
-                tile.addView(n); tile.addView(l)
-                metricsRow.addView(tile)
-            }
-            content.addView(metricsRow)
+        // TODAS as métricas numa linha só, espaço reduzido entre elas.
+        val metricsRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
+        metrics.forEach { m ->
+            val tile = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            val n = TextView(context).apply {
+                text = m.value; textSize = 18f
+                setTextColor(colorOf(m.grade)); setTypeface(Typeface.DEFAULT_BOLD)
+                gravity = Gravity.CENTER
+                maxLines = 1
+            }
+            val l = TextView(context).apply {
+                text = m.label; textSize = 7.5f
+                setTextColor(Color.parseColor("#8A8A99")); setTypeface(Typeface.DEFAULT_BOLD)
+                gravity = Gravity.CENTER; setPadding(0, dp(2), 0, 0)
+                maxLines = 1
+            }
+            tile.addView(n); tile.addView(l)
+            metricsRow.addView(tile)
+        }
+        content.addView(metricsRow)
 
         val div = FrameLayout(context).apply {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).apply {
-                topMargin = dp(10); bottomMargin = dp(8)
+                topMargin = dp(8); bottomMargin = dp(6)
             }
             setBackgroundColor(Color.parseColor("#1FFFFFFF"))
         }
