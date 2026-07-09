@@ -221,24 +221,45 @@ class TripReaderService : AccessibilityService() {
     //    já está rodando (velocidade > completude). ──
     private var lastOcrMs = 0L
     private var lastOcrLogMs = 0L
+    private var lastOcrMissMs = 0L
     private fun requestOcrPass() {
-        val svc = ScreenOcrService.instance ?: return
-        if (!ScreenOcrService.isActive) return
+        val svc = ScreenOcrService.instance
+        if (svc == null || !ScreenOcrService.isActive) {
+            // Sem isso não dá pra saber se o problema é permissão ou parser —
+            // loga no máx a cada 5s pra não inundar.
+            val now = System.currentTimeMillis()
+            if (now - lastOcrMissMs > 5000) {
+                lastOcrMissMs = now
+                sendToCloud("99", "ocr", "OCR_INATIVO", "OCR_SEM_PERMISSAO", emptyList(), null, null, emptyList())
+            }
+            return
+        }
         val now = System.currentTimeMillis()
         if (now - lastOcrMs < 900) return
         lastOcrMs = now
-        svc.captureAndRecognize { lines ->
-            if (lines.isEmpty()) return@captureAndRecognize
+        svc.captureAndRecognize({ lines ->
+            if (lines.isEmpty()) {
+                sendToCloud("99", "ocr", "OCR_VAZIO", "OCR_SEM_LINHAS", emptyList(), null, null, emptyList())
+                return@captureAndRecognize
+            }
             val joined = lines.joinToString("  ")
             val low = joined.lowercase(Locale.getDefault())
-            // Loga amostras de OCR quando parecem oferta (auditoria do parser)
-            if (isOfferScreen(low) && System.currentTimeMillis() - lastOcrLogMs > 3000) {
+            val isOffer = isOfferScreen(low)
+            // Loga TODA passada de OCR (achando oferta ou não) — throttle 3s —
+            // pra sabermos exatamente o que a câmera do OCR está enxergando.
+            if (System.currentTimeMillis() - lastOcrLogMs > 3000) {
                 lastOcrLogMs = System.currentTimeMillis()
-                sendToCloud("99", "ocr", "OCR_OFERTA", "OFERTA_OCR",
+                sendToCloud("99", "ocr", if (isOffer) "OCR_OFERTA" else "OCR_TELA_NORMAL",
+                    if (isOffer) "OFERTA_OCR" else "OCR_SEM_OFERTA",
                     extractMoney(joined), extractKm(low), extractMin(low), lines)
             }
-            processRealOffer("99", lines)
-        }
+            if (isOffer) processRealOffer("99", lines)
+        }, { err ->
+            if (System.currentTimeMillis() - lastOcrLogMs > 3000) {
+                lastOcrLogMs = System.currentTimeMillis()
+                sendToCloud("99", "ocr", "OCR_ERRO: $err", "OCR_ERRO", emptyList(), null, null, emptyList())
+            }
+        })
     }
 
     // ── Notificação da 99/Uber: extrai título/texto e tenta oferta ──
