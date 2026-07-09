@@ -9,8 +9,8 @@ android {
         applicationId "io.github.yurisilva90.smartmobi"
         minSdk 24
         targetSdk 34
-        versionCode 120
-        versionName "1.0.20"
+        versionCode 121
+        versionName "1.0.21"
     }
     buildTypes {
         debug { versionNameSuffix "-debug" }
