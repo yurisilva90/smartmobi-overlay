@@ -268,7 +268,10 @@ class TripReaderService : AccessibilityService() {
                     if (isOffer) "OFERTA_OCR" else "OCR_SEM_OFERTA",
                     extractMoney(joined), extractKm(low), extractMin(low), lines)
             }
-            if (isOffer) processRealOffer(plat, lines)
+            // Chama sempre (não só quando isOffer==true): é a própria função
+            // que decide mostrar OU esconder o card, e precisa rodar em toda
+            // leitura pra esconder rápido quando a oferta some da tela.
+            processRealOffer(plat, lines)
         }, { err ->
             if (System.currentTimeMillis() - lastOcrLogMs > 1500) {
                 lastOcrLogMs = System.currentTimeMillis()
@@ -318,23 +321,29 @@ class TripReaderService : AccessibilityService() {
             moneyToDouble(it.groupValues[1])
         }
 
-        // pernas: "4min (925m)" + "8min (2,5km)" → soma, com limite de sanidade
-        // (ruído de OCR pontual pode virar "914min" — descarta perna absurda)
+        // pernas — 3 formatos confirmados em prints reais:
+        //  99 tipo A ("Aceitar por"):    "8min (2,6km)"      — min fora, dist dentro dos parênteses
+        //  99 tipo B ("Escolher"):       "(10 min 3,1 km)"   — min E dist dentro dos mesmos parênteses
+        //  Uber ("Selecionar"):          "4 min (1.2 km)" / "5 minutos (1.6 km)" — "minutos" por extenso, ponto decimal
         var totMin = 0; var totKm = 0.0; var legs = 0
-        Regex("""(\d{1,3})\s*min\s*\((\d+(?:[.,]\d+)?)\s*(m|km)\)""").findAll(low).forEach { m ->
-            val mins = m.groupValues[1].toIntOrNull() ?: 0
-            val dist = m.groupValues[2].replace(",", ".").toDoubleOrNull() ?: 0.0
-            val unit = m.groupValues[3]
+        fun addLeg(minsStr: String, distStr: String, unit: String) {
+            val mins = minsStr.toIntOrNull() ?: return
+            val dist = distStr.replace(",", ".").toDoubleOrNull() ?: return
             val km2 = if (unit == "m") dist / 1000.0 else dist
-            if (mins in 1..90 && km2 in 0.05..80.0) {
-                totMin += mins; totKm += km2; legs++
-            }
+            if (mins in 1..90 && km2 in 0.05..80.0) { totMin += mins; totKm += km2; legs++ }
         }
+        Regex("""(\d{1,3})\s*min(?:utos)?\s*\((\d+(?:[.,]\d+)?)\s*(m|km)\)""").findAll(low)
+            .forEach { addLeg(it.groupValues[1], it.groupValues[2], it.groupValues[3]) }
+        Regex("""\(\s*(\d{1,3})\s*min(?:utos)?\s+(\d+(?:[.,]\d+)?)\s*(m|km)\s*\)""").findAll(low)
+            .forEach { addLeg(it.groupValues[1], it.groupValues[2], it.groupValues[3]) }
+
         var km: Double? = if (legs > 0 && totKm > 0) totKm else null
         val min: Int? = if (legs > 0 && totMin > 0) totMin else extractMin(low)?.toIntOrNull()
 
         // fallback de valor: se não achou "aceitar por", pega o R$ que for
-        // consistente com rkm direto × km (evita pegar ganhos do dia)
+        // consistente com rkm direto × km (evita pegar ganhos do dia) — é
+        // esse caminho que resolve o tipo B (99 "Escolher") e a Uber
+        // ("Selecionar"), que não têm o texto "aceitar por"
         if (valor == null) {
             val monies = extractMoney(joined).mapNotNull { moneyToDouble(it) }
             valor = if (rkmDirect != null && km != null) {
@@ -349,11 +358,12 @@ class TripReaderService : AccessibilityService() {
 
         // nota: procura o número 1..5 com 2 casas NA MESMA LINHA que menciona
         // "corrida(s)" — não no texto inteiro (senão pega R$/km por engano,
-        // que também cai na faixa 1..5, tipo "R$1,31/km")
+        // que também cai na faixa 1..5, tipo "R$1,31/km"). Uber também usa
+        // formato "4,90 (1985)" — número + parênteses com contagem.
         var nota: Double? = null
         for (line in texts) {
             val l = line.lowercase(Locale.getDefault())
-            if (l.contains("corrid") || l.contains("corda")) { // "corda" cobre corte de OCR em "corridas"
+            if (l.contains("corrid") || l.contains("corda") || Regex("""[1-5][.,]\d{2}\s*\(\d+\)""").containsMatchIn(l)) {
                 Regex("""([1-5][.,]\d{2})""").find(line)?.let {
                     nota = it.groupValues[1].replace(",", ".").toDoubleOrNull()
                 }
@@ -365,10 +375,16 @@ class TripReaderService : AccessibilityService() {
     }
 
     private fun isOfferScreen(low: String): Boolean {
-        // 99: "Aceitar por R$..." é a assinatura; ou taxa de serviço + pernas min(km)
+        // 99 tipo A: "Aceitar por R$..." — o mais confiável
         if (low.contains("aceitar por")) return true
         if (low.contains("taxa de serviço") && Regex("""\d+\s*min\s*\(""").containsMatchIn(low)) return true
-        // Uber e fallback genérico: aceitar + recusar/combinar
+        // 99 tipo B: tela "Solicitações" com botão "Escolher" (sem valor de aceite explícito)
+        if (low.contains("escolher") && Regex("""r\$\s*[\d.]+,\d{2}""").containsMatchIn(low) &&
+            Regex("""\(\s*\d{1,3}\s*min""").containsMatchIn(low)) return true
+        // Uber: botão "Selecionar", com valor e R$/km — não usa "aceitar"/"recusar"
+        if (low.contains("selecionar") && Regex("""r\$\s*[\d.]+,\d{2}""").containsMatchIn(low) &&
+            Regex("""\d{1,3}\s*min""").containsMatchIn(low)) return true
+        // Fallback genérico antigo (mantido por segurança)
         if (low.contains("aceitar") && (low.contains("recusar") || low.contains("combinar") || low.contains("dispensar"))) return true
         return false
     }
@@ -382,8 +398,10 @@ class TripReaderService : AccessibilityService() {
         val low = joined.lowercase(Locale.getDefault())
 
         if (!isOfferScreen(low)) {
+            // Esconde na hora — não espera reconhecer qual é o próximo estado.
+            // É isso que garante o card sumir rápido quando a oferta sai da tela.
+            if (lastFlashSig.isNotEmpty()) hideFlashIfActive()
             val state = inferState(low)
-            if (state != "?" && state != "OFERTA" && lastRealState == "OFERTA") hideFlashIfActive()
             if (state != "?") lastRealState = state
             return
         }
