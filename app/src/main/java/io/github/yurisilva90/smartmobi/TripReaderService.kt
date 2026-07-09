@@ -331,15 +331,17 @@ class TripReaderService : AccessibilityService() {
             moneyToDouble(it.groupValues[1])
         }
 
-        // pernas: "4min (925m)" + "8min (2,5km)" → soma
+        // pernas: "4min (925m)" + "8min (2,5km)" → soma, com limite de sanidade
+        // (ruído de OCR pontual pode virar "914min" — descarta perna absurda)
         var totMin = 0; var totKm = 0.0; var legs = 0
         Regex("""(\d{1,3})\s*min\s*\((\d+(?:[.,]\d+)?)\s*(m|km)\)""").findAll(low).forEach { m ->
             val mins = m.groupValues[1].toIntOrNull() ?: 0
             val dist = m.groupValues[2].replace(",", ".").toDoubleOrNull() ?: 0.0
             val unit = m.groupValues[3]
-            totMin += mins
-            totKm += if (unit == "m") dist / 1000.0 else dist
-            legs++
+            val km2 = if (unit == "m") dist / 1000.0 else dist
+            if (mins in 1..90 && km2 in 0.05..80.0) {
+                totMin += mins; totKm += km2; legs++
+            }
         }
         var km: Double? = if (legs > 0 && totKm > 0) totKm else null
         val min: Int? = if (legs > 0 && totMin > 0) totMin else extractMin(low)?.toIntOrNull()
@@ -358,11 +360,17 @@ class TripReaderService : AccessibilityService() {
             km = valor!! / rkmDirect
         }
 
-        // nota: "5,00 • 176 corridas" — número 1..5 com 2 casas perto de "corridas"
+        // nota: procura o número 1..5 com 2 casas NA MESMA LINHA que menciona
+        // "corrida(s)" — não no texto inteiro (senão pega R$/km por engano,
+        // que também cai na faixa 1..5, tipo "R$1,31/km")
         var nota: Double? = null
-        if (low.contains("corrida")) {
-            Regex("""\b([1-5][.,]\d{2})\b""").find(joined)?.let {
-                nota = it.groupValues[1].replace(",", ".").toDoubleOrNull()
+        for (line in texts) {
+            val l = line.lowercase(Locale.getDefault())
+            if (l.contains("corrid") || l.contains("corda")) { // "corda" cobre corte de OCR em "corridas"
+                Regex("""([1-5][.,]\d{2})""").find(line)?.let {
+                    nota = it.groupValues[1].replace(",", ".").toDoubleOrNull()
+                }
+                if (nota != null) break
             }
         }
 
@@ -399,7 +407,7 @@ class TripReaderService : AccessibilityService() {
         val km = offer.km
         val min = offer.min
 
-        if (valor == null || valor <= 0.0 || km == null || km <= 0.0) return
+        if (valor == null || valor <= 0.0 || valor > 2000.0 || km == null || km <= 0.0 || km > 150.0) return
 
         val sig = "$plat|$valor|$km|$min|${offer.nota}"
         if (sig == lastFlashSig) return
