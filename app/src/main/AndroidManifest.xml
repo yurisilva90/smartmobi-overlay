@@ -9,6 +9,7 @@
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"/>
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
     <!-- Notificações (Android 13+) -->
@@ -32,6 +33,9 @@
         </activity>
         <service android:name=".GpsService" android:exported="false"
             android:foregroundServiceType="location"/>
+        <!-- Captura de tela + OCR para o MōB Flash (oferta da 99 não expõe texto) -->
+        <service android:name=".ScreenOcrService" android:exported="false"
+            android:foregroundServiceType="mediaProjection"/>
         <!-- Receiver para botões de ação rápida nas notificações de reporte -->
         <receiver android:name=".ReporteQuickReceiver" android:exported="false"/>
         <!-- PROVA DE CONCEITO: leitor de tela Uber/99 (só leitura) -->
