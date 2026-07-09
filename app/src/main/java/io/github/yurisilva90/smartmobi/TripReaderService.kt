@@ -111,6 +111,7 @@ class TripReaderService : AccessibilityService() {
         val textsByPkg = LinkedHashMap<String, ArrayList<String>>()
         val winMeta = ArrayList<String>()
         var nnWindowSeen = false
+        var nnIsForeground = false
         var nnNodeCount = 0
         try {
             for (w in windows) {
@@ -123,7 +124,10 @@ class TripReaderService : AccessibilityService() {
                     val lst = textsByPkg.getOrPut(wp) { ArrayList() }
                     val before = lst.size
                     collectTexts(r, lst)
-                    if (NN_PKGS.contains(wp)) { nnWindowSeen = true; nnNodeCount += (lst.size - before) }
+                    if (NN_PKGS.contains(wp)) {
+                        nnWindowSeen = true; nnNodeCount += (lst.size - before)
+                        if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION && w.isActive) nnIsForeground = true
+                    }
                 }
             }
         } catch (_: Exception) {}
@@ -153,14 +157,16 @@ class TripReaderService : AccessibilityService() {
             hideFlashIfActive()
         }
 
-        // ── DIAGNÓSTICO + OCR: janela da 99 visível mas VAZIA de texto
-        //    (canvas/Flutter). O caminho real é a imagem → captura + OCR. ──
-        if (nnWindowSeen && nnNodeCount == 0) {
+        // ── OCR só quando a 99 está REALMENTE em primeiro plano (janela de
+        //    aplicativo ativa), não em qualquer tela. O gatilho antigo
+        //    disparava em todo app (launcher, ajustes, teclado) porque
+        //    checava só "janela da 99 existe", e ela pode existir em 2º plano. ──
+        if (nnIsForeground && nnNodeCount == 0) {
             requestOcrPass()
             val winSig = winMeta.sorted().joinToString(";")
             if (winSig != lastWinSig) {
                 lastWinSig = winSig
-                sendToCloud("DIAG", evPkg, "99-window-sem-texto", "DIAG_EMPTY", emptyList(), null, null, winMeta)
+                sendToCloud("DIAG", evPkg, "99-fg-sem-texto", "DIAG_EMPTY", emptyList(), null, null, winMeta)
             }
         }
 
