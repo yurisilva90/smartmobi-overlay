@@ -229,6 +229,47 @@ class MainActivity : AppCompatActivity() {
                 GpsService.clearSavedState(this@MainActivity)
                 stopService(Intent(this@MainActivity, GpsService::class.java))
             }
+
+            // Vibração de confirmação (usada em receiveOverlayTrip)
+            @JavascriptInterface fun vibrate(ms: Long) {
+                try {
+                    val v = getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator ?: return
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        v.vibrate(android.os.VibrationEffect.createOneShot(ms, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+                    } else {
+                        @Suppress("DEPRECATION") v.vibrate(ms)
+                    }
+                } catch (_: Exception) {}
+            }
+
+            // Abre a tela de Acessibilidade do Android pro usuário ativar o MōB Flash
+            @JavascriptInterface fun openA11ySettings() {
+                try {
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    })
+                } catch (_: Exception) {}
+            }
+
+            // Status do MōB Flash — permite a tela de configuração mostrar o que falta
+            @JavascriptInterface fun isA11yEnabled(): Boolean {
+                return try {
+                    val enabledServices = Settings.Secure.getString(
+                        contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+                    ) ?: ""
+                    enabledServices.contains("${packageName}/${packageName}.TripReaderService")
+                } catch (_: Exception) { false }
+            }
+
+            // Salva a configuração do MōB Flash (lida pelo TripReaderService via SharedPreferences)
+            @JavascriptInterface fun saveFlashConfig(enabled: Boolean, custoPorKm: Double, metaBoa: Double, metaAceitavel: Double) {
+                getSharedPreferences(GpsService.PREFS_NAME, android.content.Context.MODE_PRIVATE).edit()
+                    .putBoolean(TripReaderService.KEY_FLASH_ENABLED, enabled)
+                    .putFloat(TripReaderService.KEY_FLASH_CUSTO_KM, custoPorKm.toFloat())
+                    .putFloat(TripReaderService.KEY_FLASH_META_BOA, metaBoa.toFloat())
+                    .putFloat(TripReaderService.KEY_FLASH_META_ACEIT, metaAceitavel.toFloat())
+                    .apply()
+            }
         }, "SmartMobiNative")
 
         webView.webChromeClient = object : WebChromeClient() {
