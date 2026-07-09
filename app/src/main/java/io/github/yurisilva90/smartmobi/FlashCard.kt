@@ -18,10 +18,8 @@ import android.widget.TextView
 // MōB Flash — card flutuante de decisão rápida sobre a oferta.
 // Aparece por cima do app da 99/Uber. SÓ EXIBE — nunca toca em nada.
 //
-// TESTE DE VISUAL: por enquanto é populado com dados AMOSTRA (fixos),
-// não com valores reais extraídos da oferta — isso ainda depende do
-// pipeline de OCR que está em teste separado. O objetivo aqui é
-// validar posição, legibilidade e cores no aparelho real.
+// Suporta N métricas (o usuário escolhe quais na tela de configuração),
+// quebrando em várias linhas de até 3 quando precisa.
 // ══════════════════════════════════════════════════════════════════
 class FlashCard(private val context: Context) {
 
@@ -49,10 +47,10 @@ class FlashCard(private val context: Context) {
         PixelFormat.TRANSLUCENT
     ).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; y = dp(58) }
 
-    // platform: "99" ou "UBER". overallGrade: "g"/"a"/"r" — cor da borda dupla.
-    // metrics: até 4 (R$/km, R$/hora, R$/min, Nota), cada uma com sua própria cor.
-    // totalMin/totalKm: tempo e km somando deslocamento até o passageiro + a corrida.
-    fun show(platform: String, overallGrade: String, metrics: List<Metric>, totalMin: Int, totalKm: Double, autoHideMs: Long = 8000L) {
+    // platform: "99" ou "UBER". overallGrade: pior nota entre as métricas ativas.
+    // metrics: quantas o usuário tiver selecionado — quebra em linhas de até 3.
+    fun show(platform: String, overallGrade: String, metrics: List<Metric>, totalMin: Int, totalKm: Double, autoHideMs: Long = 15000L) {
+        if (metrics.isEmpty()) return
         handler.removeCallbacks(hideRunnable)
         handler.post {
             container?.let { try { wm.removeView(it) } catch (_: Exception) {} }
@@ -72,15 +70,15 @@ class FlashCard(private val context: Context) {
 
     private fun buildCard(platform: String, overallGrade: String, metrics: List<Metric>, totalMin: Int, totalKm: Double): FrameLayout {
         val gradeColor = colorOf(overallGrade)
-        val cardWidth = dp(272)
+        val cardWidth = dp(296)
+        val maxPerRow = 3
 
-        // ── raiz: linha horizontal [barra esquerda] [conteúdo] [barra direita] ──
         val root = FrameLayout(context).apply {
             layoutParams = FrameLayout.LayoutParams(cardWidth, FrameLayout.LayoutParams.WRAP_CONTENT)
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = dpf(16)
-                setColor(Color.parseColor("#E60E0E17"))  // dark chrome, quase opaco
+                setColor(Color.parseColor("#E60E0E17"))
             }
             elevation = dpf(10)
         }
@@ -90,17 +88,15 @@ class FlashCard(private val context: Context) {
             layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
         }
 
-        // barra colorida esquerda ("borda dos dois lados")
         row.addView(sideBar(dp(5), FrameLayout.LayoutParams.MATCH_PARENT, gradeColor, roundLeft = true))
 
-        // conteúdo central
         val content = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
+            setPadding(dp(13), dp(11), dp(13), dp(11))
         }
 
-        // topo: logo da plataforma
+        // topo: logo da plataforma — SEM fundo branco, só a imagem
         val topRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -108,55 +104,55 @@ class FlashCard(private val context: Context) {
         val logoRes = if (platform == "UBER") R.drawable.ic_platform_uber else R.drawable.ic_platform_99
         val logoIv = ImageView(context).apply {
             setImageResource(logoRes)
-            val h = dp(14)
-            val w = if (platform == "UBER") dp(40) else dp(14)
+            val h = dp(16)
+            val w = if (platform == "UBER") dp(46) else dp(16)
             layoutParams = LinearLayout.LayoutParams(w, h)
             scaleType = ImageView.ScaleType.FIT_CENTER
-            background = GradientDrawable().apply { cornerRadius = dpf(3); setColor(Color.WHITE) }
-            val pad = dp(2); setPadding(pad, pad, pad, pad)
         }
         topRow.addView(logoIv)
         content.addView(topRow)
 
-        val spacer1 = TextView(context).apply { layoutParams = LinearLayout.LayoutParams(0, dp(6)) }
+        val spacer1 = TextView(context).apply { layoutParams = LinearLayout.LayoutParams(0, dp(7)) }
         content.addView(spacer1)
 
-        // grade de métricas — todas do MESMO tamanho, lado a lado
-        val metricsRow = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        // métricas em linhas de até 3, com valores maiores
+        metrics.chunked(maxPerRow).forEachIndexed { idx, chunk ->
+            if (idx > 0) content.addView(TextView(context).apply { layoutParams = LinearLayout.LayoutParams(0, dp(6)) })
+            val metricsRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            }
+            chunk.forEach { m ->
+                val tile = LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                val n = TextView(context).apply {
+                    text = m.value; textSize = 22f
+                    setTextColor(colorOf(m.grade)); setTypeface(Typeface.DEFAULT_BOLD)
+                    gravity = Gravity.CENTER
+                    maxLines = 1
+                }
+                val l = TextView(context).apply {
+                    text = m.label; textSize = 8.5f
+                    setTextColor(Color.parseColor("#8A8A99")); setTypeface(Typeface.DEFAULT_BOLD)
+                    gravity = Gravity.CENTER; setPadding(0, dp(3), 0, 0)
+                }
+                tile.addView(n); tile.addView(l)
+                metricsRow.addView(tile)
+            }
+            content.addView(metricsRow)
         }
-        metrics.forEach { m ->
-            val tile = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER_HORIZONTAL
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            }
-            val n = TextView(context).apply {
-                text = m.value; textSize = 15f
-                setTextColor(colorOf(m.grade)); setTypeface(Typeface.DEFAULT_BOLD)
-                gravity = Gravity.CENTER
-            }
-            val l = TextView(context).apply {
-                text = m.label; textSize = 8f
-                setTextColor(Color.parseColor("#8A8A99")); setTypeface(Typeface.DEFAULT_BOLD)
-                gravity = Gravity.CENTER; setPadding(0, dp(2), 0, 0)
-            }
-            tile.addView(n); tile.addView(l)
-            metricsRow.addView(tile)
-        }
-        content.addView(metricsRow)
 
-        // divisor
         val div = FrameLayout(context).apply {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).apply {
-                topMargin = dp(9); bottomMargin = dp(7)
+                topMargin = dp(10); bottomMargin = dp(8)
             }
             setBackgroundColor(Color.parseColor("#1FFFFFFF"))
         }
         content.addView(div)
 
-        // rodapé: tempo total + km total (deslocamento + corrida)
         val bottomRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
@@ -176,15 +172,12 @@ class FlashCard(private val context: Context) {
         content.addView(bottomRow)
 
         row.addView(content)
-
-        // barra colorida direita
         row.addView(sideBar(dp(5), FrameLayout.LayoutParams.MATCH_PARENT, gradeColor, roundRight = true))
 
         root.addView(row)
         return root
     }
 
-    // View sólida colorida usada como as duas barras laterais
     private fun sideBar(w: Int, h: Int, color: Int, roundLeft: Boolean = false, roundRight: Boolean = false): android.view.View {
         return android.view.View(context).apply {
             layoutParams = LinearLayout.LayoutParams(w, h)
