@@ -165,6 +165,12 @@ class MainActivity : AppCompatActivity() {
             @JavascriptInterface fun isNativeApp() = true
             @JavascriptInterface fun getVersion()  = "1.5.0"
             @JavascriptInterface fun hasOverlay()  = Settings.canDrawOverlays(this@MainActivity)
+            @JavascriptInterface fun openOverlaySettings() {
+                try {
+                    startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:$packageName")).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK })
+                } catch (_: Exception) {}
+            }
             @JavascriptInterface fun saveSession(json: String) {
                 prefs.edit().putString("session", json).apply()
             }
