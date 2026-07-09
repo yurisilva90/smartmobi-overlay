@@ -39,8 +39,15 @@ class FlashCard(private val context: Context) {
         else -> Color.parseColor("#EF4444")
     }
 
+    // Largura FIXA em pixels — não pode ser WRAP_CONTENT aqui. A janela do
+    // WindowManager é o "root" da hierarquia; se ela for WRAP_CONTENT e o
+    // conteúdo interno pedir MATCH_PARENT, o Android não consegue resolver
+    // o tamanho e o conteúdo colapsa pra ~0 (foi a causa do card aparecer
+    // como uma tarja fina sem números — só as bordas coloridas sobravam).
+    private val cardWidthPx = dp(296)
+
     private val params = WindowManager.LayoutParams(
-        WindowManager.LayoutParams.WRAP_CONTENT,
+        cardWidthPx,
         WindowManager.LayoutParams.WRAP_CONTENT,
         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
@@ -70,11 +77,10 @@ class FlashCard(private val context: Context) {
 
     private fun buildCard(platform: String, overallGrade: String, metrics: List<Metric>, totalMin: Int, totalKm: Double): FrameLayout {
         val gradeColor = colorOf(overallGrade)
-        val cardWidth = dp(296)
         val maxPerRow = 3
 
         val root = FrameLayout(context).apply {
-            layoutParams = FrameLayout.LayoutParams(cardWidth, FrameLayout.LayoutParams.WRAP_CONTENT)
+            layoutParams = FrameLayout.LayoutParams(cardWidthPx, FrameLayout.LayoutParams.WRAP_CONTENT)
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = dpf(16)
@@ -85,7 +91,9 @@ class FlashCard(private val context: Context) {
 
         val row = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
-            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT)
+            // Largura EXPLÍCITA (não MATCH_PARENT) — root já tem largura fixa
+            // definida acima, então isso é só espelhar o mesmo valor.
+            layoutParams = FrameLayout.LayoutParams(cardWidthPx, FrameLayout.LayoutParams.WRAP_CONTENT)
         }
 
         row.addView(sideBar(dp(5), FrameLayout.LayoutParams.MATCH_PARENT, gradeColor, roundLeft = true))
