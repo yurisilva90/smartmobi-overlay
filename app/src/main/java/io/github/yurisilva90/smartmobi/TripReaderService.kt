@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.Notification
 import android.content.Context
+import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -248,8 +249,9 @@ class TripReaderService : AccessibilityService() {
         val now = System.currentTimeMillis()
         if (now - lastOcrMs < 600) return
         lastOcrMs = now
-        svc.captureAndRecognize({ lines ->
+        svc.captureAndRecognize({ lines, bmp ->
             if (lines.isEmpty()) {
+                bmp?.recycle()
                 if (System.currentTimeMillis() - lastOcrLogMs > 1500) {
                     lastOcrLogMs = System.currentTimeMillis()
                     sendToCloud(plat, "ocr", "OCR_VAZIO", "OCR_SEM_LINHAS", emptyList(), null, null, emptyList())
@@ -271,7 +273,9 @@ class TripReaderService : AccessibilityService() {
             // Chama sempre (não só quando isOffer==true): é a própria função
             // que decide mostrar OU esconder o card, e precisa rodar em toda
             // leitura pra esconder rápido quando a oferta some da tela.
-            processRealOffer(plat, lines)
+            // O bitmap só é usado (e reciclado) dentro de processRealOffer,
+            // exatamente no momento em que um card é lançado — nunca antes.
+            processRealOffer(plat, lines, bmp)
         }, { err ->
             if (System.currentTimeMillis() - lastOcrLogMs > 1500) {
                 lastOcrLogMs = System.currentTimeMillis()
@@ -404,9 +408,9 @@ class TripReaderService : AccessibilityService() {
     }
 
     // ── MōB Flash real: só usa o texto do próprio app (99/Uber) ──
-    private fun processRealOffer(plat: String, texts: List<String>) {
+    private fun processRealOffer(plat: String, texts: List<String>, bmp: Bitmap? = null) {
         val cfg = loadFlashConfig()
-        if (!cfg.optBoolean("enabled", true)) { hideFlashIfActive(); return }
+        if (!cfg.optBoolean("enabled", true)) { bmp?.recycle(); hideFlashIfActive(); return }
 
         val joined = texts.joinToString("  ")
         val low = joined.lowercase(Locale.getDefault())
@@ -414,6 +418,7 @@ class TripReaderService : AccessibilityService() {
         if (!isOfferScreen(low)) {
             // Esconde na hora — não espera reconhecer qual é o próximo estado.
             // É isso que garante o card sumir rápido quando a oferta sai da tela.
+            bmp?.recycle()
             if (lastFlashSig.isNotEmpty()) hideFlashIfActive()
             val state = inferState(low)
             if (state != "?") lastRealState = state
@@ -426,10 +431,12 @@ class TripReaderService : AccessibilityService() {
         val km = offer.km
         val min = offer.min
 
-        if (valor == null || valor <= 0.0 || valor > 2000.0 || km == null || km <= 0.0 || km > 150.0) return
+        if (valor == null || valor <= 0.0 || valor > 2000.0 || km == null || km <= 0.0 || km > 150.0) {
+            bmp?.recycle(); return
+        }
 
         val sig = "$plat|$valor|$km|$min|${offer.nota}"
-        if (sig == lastFlashSig) return
+        if (sig == lastFlashSig) { bmp?.recycle(); return }
         lastFlashSig = sig
 
         val custoPorKm = cfg.optDouble("custoPorKm", 0.0)
@@ -469,7 +476,7 @@ class TripReaderService : AccessibilityService() {
             }
             metrics.add(FlashCard.Metric(label, fmtVal, grade))
         }
-        if (metrics.isEmpty()) return
+        if (metrics.isEmpty()) { bmp?.recycle(); return }
 
         val overallGrade = when {
             grades.contains("r") -> "r"
@@ -480,6 +487,13 @@ class TripReaderService : AccessibilityService() {
         // Loga a oferta detectada (pra auditoria da precisão do parser)
         sendToCloud(plat, "offer-parser", "OFERTA_DETECTADA v=$valor km=$km min=$min rkm=$rkm nota=${offer.nota}",
             "OFERTA", extractMoney(joined), km.toString(), min?.toString(), texts)
+
+        // Print da tela + dados do card — EXATAMENTE no momento em que o card
+        // é lançado (não quando a oferta chega). É esse par (imagem + números)
+        // que permite auditar as inconsistências (perna faltando, valor
+        // dobrando etc.) depois, comparando o que a tela mostrava com o que
+        // o app calculou naquele instante.
+        saveSnapshot(plat, bmp, overallGrade, metrics, min ?: 0, km, offer, texts)
 
         main.post {
             flashCard.show(
@@ -595,6 +609,75 @@ class TripReaderService : AccessibilityService() {
             val f = File(getExternalFilesDir(null), LOG_FILE)
             f.appendText(msg + "\n")
         } catch (_: Exception) {}
+    }
+
+    // Salva o print da tela + os dados do card no exato momento em que o
+    // card é lançado (chamado só a partir de processRealOffer, nunca a
+    // partir de um frame que não virou card). Recicla o bitmap ao final.
+    private fun saveSnapshot(
+        plat: String, bmp: Bitmap?, overallGrade: String, metrics: List<FlashCard.Metric>,
+        totalMin: Int, totalKm: Double, offer: Offer, texts: List<String>
+    ) {
+        if (bmp == null) return
+        thread(isDaemon = true) {
+            try {
+                val baos = java.io.ByteArrayOutputStream()
+                bmp.compress(Bitmap.CompressFormat.JPEG, 55, baos)
+                bmp.recycle()
+                val bytes = baos.toByteArray()
+                val fileName = "snap_${System.currentTimeMillis()}_${System.nanoTime() % 100000}.jpg"
+
+                val prefs = getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
+                val userId = prefs.getString(GpsService.KEY_USER_ID, null)
+                val deviceId = try {
+                    Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+                } catch (_: Exception) { "unknown" }
+
+                // 1) sobe a imagem pro Storage
+                val storageUrl = URL("$SUPABASE_URL/storage/v1/object/flash-snapshots/$fileName")
+                val conn = storageUrl.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.connectTimeout = 10000; conn.readTimeout = 10000
+                conn.setRequestProperty("Content-Type", "image/jpeg")
+                conn.setRequestProperty("apikey", SUPABASE_ANON)
+                conn.setRequestProperty("Authorization", "Bearer $SUPABASE_ANON")
+                conn.outputStream.use { it.write(bytes) }
+                val code1 = conn.responseCode
+                conn.disconnect()
+                if (code1 !in 200..299) return@thread
+
+                // 2) registra os dados do card junto (pra comparar depois)
+                val body = JSONObject().apply {
+                    put("device_id", deviceId)
+                    if (userId != null) put("user_id", userId)
+                    put("platform", plat)
+                    put("overall_grade", overallGrade)
+                    put("total_min", totalMin)
+                    put("total_km", totalKm)
+                    put("valor", offer.valor ?: JSONObject.NULL)
+                    put("km_lido", offer.km ?: JSONObject.NULL)
+                    put("min_lido", offer.min ?: JSONObject.NULL)
+                    put("metrics", JSONArray(metrics.map { m ->
+                        JSONObject().apply { put("label", m.label); put("value", m.value); put("grade", m.grade) }
+                    }))
+                    put("raw_texts", JSONArray(texts))
+                    put("screenshot_path", fileName)
+                }
+                val url2 = URL("$SUPABASE_URL/rest/v1/flash_card_snapshots")
+                val conn2 = url2.openConnection() as HttpURLConnection
+                conn2.requestMethod = "POST"
+                conn2.doOutput = true
+                conn2.connectTimeout = 8000; conn2.readTimeout = 8000
+                conn2.setRequestProperty("Content-Type", "application/json")
+                conn2.setRequestProperty("apikey", SUPABASE_ANON)
+                conn2.setRequestProperty("Authorization", "Bearer $SUPABASE_ANON")
+                conn2.setRequestProperty("Prefer", "return=minimal")
+                conn2.outputStream.use { it.write(body.toString().toByteArray()) }
+                conn2.responseCode
+                conn2.disconnect()
+            } catch (_: Exception) {}
+        }
     }
 
     private fun sendToCloud(
