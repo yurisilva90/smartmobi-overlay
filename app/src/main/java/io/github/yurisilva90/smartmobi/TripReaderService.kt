@@ -3,8 +3,14 @@ package io.github.yurisilva90.smartmobi
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
+import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
@@ -307,7 +313,8 @@ class TripReaderService : AccessibilityService() {
     // ── Parser de oferta com base nos prints reais da 99 ──
     private data class Offer(
         val valor: Double?, val km: Double?, val min: Int?,
-        val rkmDirect: Double?, val nota: Double?
+        val rkmDirect: Double?, val nota: Double?,
+        val origem: String? = null, val destino: String? = null
     )
 
     private fun parseOffer(texts: List<String>): Offer {
@@ -375,7 +382,26 @@ class TripReaderService : AccessibilityService() {
             }
         }
 
-        return Offer(valor, km, min, rkmDirect, nota)
+        // endereços: a linha logo depois de uma "perna" (tempo+distância)
+        // costuma ser o endereço por extenso — 1ª perna = origem, 2ª = destino.
+        val legLineRe = Regex("""^\(?\s*\d{1,3}\s*min(?:utos)?""", RegexOption.IGNORE_CASE)
+        val addrCandidates = ArrayList<String>()
+        for (i in texts.indices) {
+            if (legLineRe.containsMatchIn(texts[i])) {
+                val next = texts.getOrNull(i + 1)?.trim()
+                if (!next.isNullOrEmpty()) {
+                    val nl = next.lowercase(Locale.getDefault())
+                    if (!legLineRe.containsMatchIn(next) &&
+                        !nl.contains("aceitar") && !nl.contains("selecionar") && !nl.contains("escolher")) {
+                        addrCandidates.add(next)
+                    }
+                }
+            }
+        }
+        val origem = addrCandidates.getOrNull(0)
+        val destino = addrCandidates.getOrNull(1)
+
+        return Offer(valor, km, min, rkmDirect, nota, origem, destino)
     }
 
     private fun isOfferScreen(low: String): Boolean {
@@ -494,6 +520,7 @@ class TripReaderService : AccessibilityService() {
         // dobrando etc.) depois, comparando o que a tela mostrava com o que
         // o app calculou naquele instante.
         saveSnapshot(plat, bmp, overallGrade, metrics, min ?: 0, km, offer, texts)
+        showRouteNotification(plat, offer)
 
         main.post {
             flashCard.show(
@@ -678,6 +705,74 @@ class TripReaderService : AccessibilityService() {
                 conn2.disconnect()
             } catch (_: Exception) {}
         }
+    }
+
+    // Notificação com endereço de origem/destino + 2 botões que abrem o
+    // mapa do celular. IMPORTANCE_LOW de propósito: nunca aparece flutuando
+    // por cima da tela (heads-up) nem faz som/vibra — só fica disponível
+    // quando o motorista arrasta a central de notificações pra baixo, do
+    // jeito que foi pedido, pra não atrapalhar enquanto dirige.
+    private val NOTIF_CHANNEL_ROUTE = "mob_flash_route"
+    private var lastNotifKey = ""
+    private fun showRouteNotification(plat: String, offer: Offer) {
+        val origem = offer.origem
+        val destino = offer.destino
+        if (origem == null && destino == null) return
+        val key = "$plat|$origem|$destino"
+        if (key == lastNotifKey) return
+        lastNotifKey = key
+
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val existing = nm.getNotificationChannel(NOTIF_CHANNEL_ROUTE)
+            if (existing == null) {
+                val ch = NotificationChannel(
+                    NOTIF_CHANNEL_ROUTE, "MōB Flash — endereços da corrida",
+                    NotificationManager.IMPORTANCE_LOW
+                )
+                ch.setSound(null, null)
+                ch.enableVibration(false)
+                nm.createNotificationChannel(ch)
+            }
+        }
+
+        fun mapIntent(addr: String): PendingIntent {
+            val uri = Uri.parse("geo:0,0?q=" + Uri.encode(addr))
+            val it = Intent(Intent.ACTION_VIEW, uri).apply { setPackage("com.google.android.apps.maps") }
+            val fallback = Intent(Intent.ACTION_VIEW, uri)
+            val real = if (it.resolveActivity(packageManager) != null) it else fallback
+            return PendingIntent.getActivity(
+                this, addr.hashCode(), real,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        }
+
+        val resumo = listOfNotNull(
+            origem?.let { "De: $it" },
+            destino?.let { "Para: $it" }
+        ).joinToString("\n")
+
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, NOTIF_CHANNEL_ROUTE)
+        } else {
+            @Suppress("DEPRECATION") Notification.Builder(this)
+        }
+        builder.setContentTitle("Endereços da corrida ($plat)")
+            .setStyle(Notification.BigTextStyle().bigText(resumo))
+            .setContentText(resumo.lines().firstOrNull() ?: "")
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setPriority(Notification.PRIORITY_LOW)
+            .setOnlyAlertOnce(true)
+            .setAutoCancel(true)
+
+        if (origem != null) {
+            builder.addAction(Notification.Action.Builder(null, "Mapa Origem", mapIntent(origem)).build())
+        }
+        if (destino != null) {
+            builder.addAction(Notification.Action.Builder(null, "Mapa Destino", mapIntent(destino)).build())
+        }
+
+        try { nm.notify(4103, builder.build()) } catch (_: Exception) {}
     }
 
     private fun sendToCloud(
