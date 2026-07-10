@@ -334,8 +334,17 @@ class MainActivity : AppCompatActivity() {
                 ScreenOcrService.pendingResultData = data
                 val it = Intent(this, ScreenOcrService::class.java)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(it) else startService(it)
+                // O serviço leva um instante pra terminar de configurar a
+                // gravação (onStartCommand roda de forma assíncrona). Sem
+                // essa espera, a tela checava "ativo?" cedo demais e mostrava
+                // "Pendente" mesmo já tendo funcionado — daí parecia que só
+                // "pegava" na segunda vez que a pessoa tocava em Ativar.
+                Handler(Looper.getMainLooper()).postDelayed({
+                    webView.evaluateJavascript("try{renderFlashPerms&&renderFlashPerms()}catch(e){}", null)
+                }, 700)
+            } else {
+                webView.evaluateJavascript("try{renderFlashPerms&&renderFlashPerms()}catch(e){}", null)
             }
-            webView.evaluateJavascript("try{renderFlashPerms&&renderFlashPerms()}catch(e){}", null)
         }
     }
     override fun onKeyDown(k: Int, e: KeyEvent): Boolean {
