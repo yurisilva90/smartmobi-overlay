@@ -40,10 +40,6 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             -d "{\"display_title\":\"MoB-v${VERSION}-c${CODE}\"}"
-      - name: Nome do app com a versão (só nesse build — não é commitado no repo)
-        run: |
-          sed -i "s#<string name=\"app_name\">MōB</string>#<string name=\"app_name\">MōB v${{ steps.version.outputs.version }}</string>#" app/src/main/res/values/strings.xml
-          cat app/src/main/res/values/strings.xml
       - run: chmod +x gradlew
       - run: ./gradlew assembleDebug --no-daemon
         env:
@@ -53,15 +49,15 @@ jobs:
           name: MoB-v${{ steps.version.outputs.version }}-c${{ steps.version.outputs.code }}
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 60
-      - name: Preparar APK com nome fixo pro link de download
-        run: cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/MoB-latest.apk
-      - name: Publicar em Release (link direto — sem zip, sem site em modo mobile)
+      - name: Preparar APK com nome versionado (evita "MoB-latest (2).apk" confuso no celular)
+        run: cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/MoB-v${{ steps.version.outputs.version }}.apk
+      - name: Publicar em Release (link estável na página, arquivo com nome versionado)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: "MōB v${{ steps.version.outputs.version }} (build ${{ steps.version.outputs.code }})"
-          body: "APK mais recente. Link direto (sempre o mesmo, atualiza a cada build): baixa o arquivo MoB-latest.apk abaixo."
+          body: "APK mais recente. O nome do arquivo já traz a versão (MoB-v${{ steps.version.outputs.version }}.apk) — assim não confunde nem sobrescreve downloads anteriores."
           prerelease: true
-          files: app/build/outputs/apk/debug/MoB-latest.apk
+          files: app/build/outputs/apk/debug/MoB-v${{ steps.version.outputs.version }}.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
