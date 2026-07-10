@@ -77,6 +77,8 @@ class TripReaderService : AccessibilityService() {
     private val flashCard by lazy { FlashCard(this) }
     private var lastFlashSig = ""
     private var lastRealState = "?"
+    private var lastOfferValor: Double? = null
+    private var bestLegsForOffer = 0
 
     override fun onServiceConnected() {
         val info = AccessibilityServiceInfo().apply {
@@ -314,7 +316,8 @@ class TripReaderService : AccessibilityService() {
     private data class Offer(
         val valor: Double?, val km: Double?, val min: Int?,
         val rkmDirect: Double?, val nota: Double?,
-        val origem: String? = null, val destino: String? = null
+        val origem: String? = null, val destino: String? = null,
+        val legsFound: Int = 0
     )
 
     private fun parseOffer(texts: List<String>): Offer {
@@ -401,7 +404,7 @@ class TripReaderService : AccessibilityService() {
         val origem = addrCandidates.getOrNull(0)
         val destino = addrCandidates.getOrNull(1)
 
-        return Offer(valor, km, min, rkmDirect, nota, origem, destino)
+        return Offer(valor, km, min, rkmDirect, nota, origem, destino, legs)
     }
 
     private fun isOfferScreen(low: String): Boolean {
@@ -459,6 +462,18 @@ class TripReaderService : AccessibilityService() {
 
         if (valor == null || valor <= 0.0 || valor > 2000.0 || km == null || km <= 0.0 || km > 150.0) {
             bmp?.recycle(); return
+        }
+
+        // A mesma oferta (mesmo valor) não pode "regredir" pra uma leitura
+        // com menos pernas do que uma que já conseguimos ler certo — foi
+        // exatamente essa oscilação (1 perna ↔ 2 pernas) que fazia o card
+        // piscar e trocar de km/tempo o tempo todo numa mesma oferta.
+        if (lastOfferValor != null && kotlin.math.abs(valor - lastOfferValor!!) < 0.02) {
+            if (offer.legsFound < bestLegsForOffer) { bmp?.recycle(); return }
+            if (offer.legsFound > bestLegsForOffer) bestLegsForOffer = offer.legsFound
+        } else {
+            lastOfferValor = valor
+            bestLegsForOffer = offer.legsFound
         }
 
         val sig = "$plat|$valor|$km|$min|${offer.nota}"
@@ -560,6 +575,8 @@ class TripReaderService : AccessibilityService() {
     private fun hideFlashIfActive() {
         if (lastFlashSig.isNotEmpty()) {
             lastFlashSig = ""
+            lastOfferValor = null
+            bestLegsForOffer = 0
             main.post { flashCard.hide() }
         }
     }
