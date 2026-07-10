@@ -35,28 +35,36 @@ class FlashCard(private val context: Context) {
     // ── Voz por cor: "Aceitar/Analisar/Recusar corrida" ──
     private var tts: TextToSpeech? = null
     private var ttsReady = false
+    private var pendingPhrase: String? = null
     private fun ensureTts() {
         if (tts != null) return
         tts = TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 tts?.language = Locale("pt", "BR")
                 ttsReady = true
+                // A 1ª oferta da sessão às vezes chegava antes do motor de
+                // TTS terminar de iniciar, e a fala era simplesmente
+                // descartada. Agora guarda e fala assim que fica pronto.
+                pendingPhrase?.let { p ->
+                    try { tts?.speak(p, TextToSpeech.QUEUE_FLUSH, null, "mob_flash_grade") } catch (_: Exception) {}
+                    pendingPhrase = null
+                }
             }
         }
     }
     private fun speakGrade(grade: String) {
-        ensureTts()
-        if (!ttsReady) return
         val phrase = when (grade) {
             "g" -> "Aceitar corrida"
             "a" -> "Analisar corrida"
             else -> "Recusar corrida"
         }
+        ensureTts()
+        if (!ttsReady) { pendingPhrase = phrase; return }
         try { tts?.speak(phrase, TextToSpeech.QUEUE_FLUSH, null, "mob_flash_grade") } catch (_: Exception) {}
     }
     fun shutdownTts() {
         try { tts?.stop(); tts?.shutdown() } catch (_: Exception) {}
-        tts = null; ttsReady = false
+        tts = null; ttsReady = false; pendingPhrase = null
     }
 
     private fun dp(v: Int) = (v * context.resources.displayMetrics.density).toInt()
