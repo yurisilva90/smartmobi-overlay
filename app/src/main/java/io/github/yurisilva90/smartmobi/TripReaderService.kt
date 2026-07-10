@@ -322,7 +322,14 @@ class TripReaderService : AccessibilityService() {
 
     private fun parseOffer(texts: List<String>): Offer {
         val joined = texts.joinToString("  ")
+        // O OCR troca "1" por "l" (L minúsculo) ou "I" com frequência —
+        // foi essa confusão que fazia pernas como "5 min (1.4 km)" virarem
+        // "5 min (l.4 km)" numa leitura e sumirem (regex exige dígito),
+        // causando o km/tempo oscilar entre "com 1 perna" e "com 2 pernas"
+        // na MESMA oferta. Corrige antes de qualquer outra extração.
         val low = joined.lowercase(Locale.getDefault())
+            .replace(Regex("""\b[lI](?=[.,]\d)"""), "1")   // "l.4" / "I,4" → "1.4"
+            .replace(Regex("""(?<=\d[.,])[lI]\b"""), "1")  // "4.l" / "4,I" → "4.1"
 
         // valor: "Aceitar por R$12,06" é a âncora mais confiável
         var valor: Double? = null
@@ -387,17 +394,29 @@ class TripReaderService : AccessibilityService() {
 
         // endereços: a linha logo depois de uma "perna" (tempo+distância)
         // costuma ser o endereço por extenso — 1ª perna = origem, 2ª = destino.
+        // Pula linhas curtas/genéricas ("1 parada", "X Não afeta a TA" etc.)
+        // que às vezes aparecem entre a perna e o endereço de verdade —
+        // foi uma delas ("1 parada", às vezes lida "l parada") que virava
+        // origem por engano na notificação.
+        fun looksLikeAddress(s: String): Boolean {
+            val sl = s.lowercase(Locale.getDefault()).trim()
+            if (sl.length < 6) return false
+            if (sl.contains("parada")) return false
+            if (sl.contains("não afeta") || sl.contains("nao afeta")) return false
+            if (Regex("""^\(?\d{1,3}\s*(min|km|m)\b""").containsMatchIn(sl)) return false // outra perna
+            if (Regex("""^[x%\d.,\s]+$""").containsMatchIn(sl)) return false // só símbolo/número solto
+            return true
+        }
         val legLineRe = Regex("""^\(?\s*\d{1,3}\s*min(?:utos)?""", RegexOption.IGNORE_CASE)
         val addrCandidates = ArrayList<String>()
         for (i in texts.indices) {
             if (legLineRe.containsMatchIn(texts[i])) {
-                val next = texts.getOrNull(i + 1)?.trim()
-                if (!next.isNullOrEmpty()) {
-                    val nl = next.lowercase(Locale.getDefault())
-                    if (!legLineRe.containsMatchIn(next) &&
-                        !nl.contains("aceitar") && !nl.contains("selecionar") && !nl.contains("escolher")) {
-                        addrCandidates.add(next)
-                    }
+                for (j in (i + 1)..minOf(i + 3, texts.size - 1)) {
+                    val cand = texts.getOrNull(j)?.trim() ?: break
+                    val nl = cand.lowercase(Locale.getDefault())
+                    if (legLineRe.containsMatchIn(cand)) break // já é a próxima perna, para de procurar
+                    if (nl.contains("aceitar") || nl.contains("selecionar") || nl.contains("escolher")) break
+                    if (looksLikeAddress(cand)) { addrCandidates.add(cand); break }
                 }
             }
         }
