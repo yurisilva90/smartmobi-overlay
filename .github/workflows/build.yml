@@ -5,6 +5,8 @@ on:
   workflow_dispatch:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-22.04
@@ -47,3 +49,15 @@ jobs:
           name: MoB-v${{ steps.version.outputs.version }}-c${{ steps.version.outputs.code }}
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 60
+      - name: Preparar APK com nome fixo pro link de download
+        run: cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/MoB-latest.apk
+      - name: Publicar em Release (link direto — sem zip, sem site em modo mobile)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "MōB v${{ steps.version.outputs.version }} (build ${{ steps.version.outputs.code }})"
+          body: "APK mais recente. Link direto (sempre o mesmo, atualiza a cada build): baixa o arquivo MoB-latest.apk abaixo."
+          prerelease: true
+          files: app/build/outputs/apk/debug/MoB-latest.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
