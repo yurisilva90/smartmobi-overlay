@@ -384,6 +384,13 @@ class TripReaderService : AccessibilityService() {
         // Uber: botão "Selecionar", com valor e R$/km — não usa "aceitar"/"recusar"
         if (low.contains("selecionar") && Regex("""r\$\s*[\d.]+,\d{2}""").containsMatchIn(low) &&
             Regex("""\d{1,3}\s*min""").containsMatchIn(low)) return true
+        // 99 tipo C: card SEM botão nenhum (toca o card inteiro pra aceitar
+        // — segundo o usuário, esse é o formato mais comum). Sem palavra de
+        // ação pra ancorar, então detecta pela estrutura inteira da tela:
+        // valor + R$/km explícito + nota-com-corridas + pelo menos 1 perna.
+        if (Regex("""r\$\s*[\d.]+,\d{2}\s*/\s*km""").containsMatchIn(low) &&
+            Regex("""[1-5][.,]\d{2}\s*[·(]|\bcorrid""").containsMatchIn(low) &&
+            Regex("""\d{1,3}\s*min""").containsMatchIn(low)) return true
         // Fallback genérico antigo (mantido por segurança)
         if (low.contains("aceitar") && (low.contains("recusar") || low.contains("combinar") || low.contains("dispensar"))) return true
         return false
