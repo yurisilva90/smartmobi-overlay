@@ -40,6 +40,10 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             -d "{\"display_title\":\"MoB-v${VERSION}-c${CODE}\"}"
+      - name: Nome do app com a versão (só nesse build — não é commitado no repo)
+        run: |
+          sed -i "s#<string name=\"app_name\">MōB</string>#<string name=\"app_name\">MōB v${{ steps.version.outputs.version }}</string>#" app/src/main/res/values/strings.xml
+          cat app/src/main/res/values/strings.xml
       - run: chmod +x gradlew
       - run: ./gradlew assembleDebug --no-daemon
         env:
