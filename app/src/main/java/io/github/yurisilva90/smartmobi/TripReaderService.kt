@@ -463,8 +463,8 @@ class TripReaderService : AccessibilityService() {
             }
             grades.add(grade)
             val fmtVal = when (key) {
-                "margem" -> "${v.toInt()}%"
-                "lucro"  -> "R$${fmtBr(v)}"
+                "margem" -> "${v.toInt()}"
+                "lucro"  -> fmtBr(v)
                 else     -> fmtBr(v)
             }
             metrics.add(FlashCard.Metric(label, fmtVal, grade))
