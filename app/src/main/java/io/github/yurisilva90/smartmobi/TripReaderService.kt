@@ -391,6 +391,13 @@ class TripReaderService : AccessibilityService() {
         if (Regex("""r\$\s*[\d.]+,\d{2}\s*/\s*km""").containsMatchIn(low) &&
             Regex("""[1-5][.,]\d{2}\s*[·(]|\bcorrid""").containsMatchIn(low) &&
             Regex("""\d{1,3}\s*min""").containsMatchIn(low)) return true
+        // Uber tipo B: botão "Aceitar" sozinho (sem "por R$", sem R$/km
+        // visível na tela) — âncora na nota com contagem entre parênteses,
+        // que é a assinatura de layout da Uber ("4,94 (1910)")
+        if (low.contains("aceitar") && !low.contains("aceitar por") &&
+            Regex("""r\$\s*[\d.]+,\d{2}""").containsMatchIn(low) &&
+            Regex("""[1-5][.,]\d{2}\s*\(\d+\)""").containsMatchIn(low) &&
+            Regex("""\d{1,3}\s*min""").containsMatchIn(low)) return true
         // Fallback genérico antigo (mantido por segurança)
         if (low.contains("aceitar") && (low.contains("recusar") || low.contains("combinar") || low.contains("dispensar"))) return true
         return false
@@ -457,8 +464,7 @@ class TripReaderService : AccessibilityService() {
             grades.add(grade)
             val fmtVal = when (key) {
                 "margem" -> "${v.toInt()}%"
-                "lucro"  -> "R$${v.toInt()}"
-                "rhora"  -> v.toInt().toString()
+                "lucro"  -> "R$${fmtBr(v)}"
                 else     -> fmtBr(v)
             }
             metrics.add(FlashCard.Metric(label, fmtVal, grade))
