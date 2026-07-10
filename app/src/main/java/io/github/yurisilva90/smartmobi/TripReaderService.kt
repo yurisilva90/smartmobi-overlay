@@ -481,7 +481,7 @@ class TripReaderService : AccessibilityService() {
         )
 
         val metrics = ArrayList<FlashCard.Metric>()
-        val grades = ArrayList<String>()
+        val gradesForOverall = ArrayList<String>()
         for ((key, label) in KPI_ORDER) {
             val kCfg = kpisCfg.optJSONObject(key) ?: continue
             if (!kCfg.optBoolean("enabled", false)) continue
@@ -494,7 +494,9 @@ class TripReaderService : AccessibilityService() {
                 v >= green -> "g"
                 else       -> "a"
             }
-            grades.add(grade)
+            // A "nota" (do passageiro) entra no card, mas NÃO conta pra cor
+            // geral das bordas — só os KPIs financeiros decidem isso.
+            if (key != "nota") gradesForOverall.add(grade)
             val fmtVal = when (key) {
                 "margem" -> "${v.toInt()}"
                 "lucro"  -> fmtBr(v)
@@ -505,8 +507,8 @@ class TripReaderService : AccessibilityService() {
         if (metrics.isEmpty()) { bmp?.recycle(); return }
 
         val overallGrade = when {
-            grades.contains("r") -> "r"
-            grades.contains("a") -> "a"
+            gradesForOverall.contains("r") -> "r"
+            gradesForOverall.contains("a") -> "a"
             else -> "g"
         }
 
