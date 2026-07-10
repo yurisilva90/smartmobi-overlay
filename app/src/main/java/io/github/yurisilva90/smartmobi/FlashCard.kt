@@ -11,7 +11,6 @@ import android.speech.tts.TextToSpeech
 import android.view.Gravity
 import android.view.WindowManager
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.util.Locale
@@ -72,7 +71,7 @@ class FlashCard(private val context: Context) {
     // Base fixa (bordas + padding) + um "slot" de largura por métrica ativa.
     // É assim que o card fica mais estreito com 2 KPIs e mais largo com 4.
     private val baseWidthPx = dp(46)
-    private val tileWidthPx = dp(66)
+    private val tileWidthPx = dp(74)
     private fun widthFor(n: Int) = baseWidthPx + tileWidthPx * n.coerceIn(1, 4)
 
     private val params = WindowManager.LayoutParams(
@@ -168,15 +167,15 @@ class FlashCard(private val context: Context) {
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             }
             val n = TextView(context).apply {
-                text = m.value; textSize = 26f
+                text = m.value; textSize = 31f
                 setTextColor(colorOf(m.grade)); setTypeface(Typeface.DEFAULT_BOLD)
                 gravity = Gravity.CENTER
                 maxLines = 1
             }
             val l = TextView(context).apply {
-                text = m.label; textSize = 8f
+                text = m.label; textSize = 6.8f
                 setTextColor(Color.parseColor("#8A8A99")); setTypeface(Typeface.DEFAULT_BOLD)
-                gravity = Gravity.CENTER; setPadding(0, dp(2), 0, 0)
+                gravity = Gravity.CENTER; setPadding(0, dp(3), 0, 0)
                 maxLines = 1
             }
             tile.addView(n); tile.addView(l)
@@ -200,18 +199,23 @@ class FlashCard(private val context: Context) {
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
 
-        val logoRes = if (platform == "UBER") R.drawable.ic_platform_uber else R.drawable.ic_platform_99
-        val logoIv = ImageView(context).apply {
-            setImageResource(logoRes)
-            // 99: logo pequena e quadrada — aumentada. Uber: wordmark largo,
-            // com leve zoom (5%) pra cortar uma linha clara na borda do PNG.
-            val h = if (platform == "UBER") dp(15) else dp(19)
-            val w = if (platform == "UBER") dp(44) else dp(19)
-            layoutParams = LinearLayout.LayoutParams(w, h).apply { marginEnd = dp(8) }
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            scaleX = 1.06f; scaleY = 1.06f
+        val isUber = platform == "UBER"
+        val logoBadge = TextView(context).apply {
+            text = if (isUber) "UBER" else "99"
+            textSize = if (isUber) 9.5f else 10f
+            setTypeface(Typeface.DEFAULT_BOLD)
+            setTextColor(if (isUber) Color.WHITE else Color.parseColor("#111111"))
+            setPadding(dp(7), dp(3), dp(7), dp(3))
+            background = GradientDrawable().apply {
+                cornerRadius = dpf(5)
+                setColor(if (isUber) Color.BLACK else Color.parseColor("#FFC800"))
+                if (isUber) { setStroke(dp(1), Color.parseColor("#333333")) }
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginEnd = dp(8) }
         }
-        bottomRow.addView(logoIv)
+        bottomRow.addView(logoBadge)
 
         val tTime = TextView(context).apply {
             text = fmtMin(totalMin); textSize = 15.75f
