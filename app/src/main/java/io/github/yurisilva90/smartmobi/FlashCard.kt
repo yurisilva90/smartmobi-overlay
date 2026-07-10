@@ -7,12 +7,14 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
+import android.speech.tts.TextToSpeech
 import android.view.Gravity
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import java.util.Locale
 
 // ══════════════════════════════════════════════════════════════════
 // MōB Flash — card flutuante de decisão rápida sobre a oferta.
@@ -30,6 +32,33 @@ class FlashCard(private val context: Context) {
     private val handler = Handler(Looper.getMainLooper())
     private var container: FrameLayout? = null
     private val hideRunnable = Runnable { hide() }
+
+    // ── Voz por cor: "Aceitar/Analisar/Recusar corrida" ──
+    private var tts: TextToSpeech? = null
+    private var ttsReady = false
+    private fun ensureTts() {
+        if (tts != null) return
+        tts = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                tts?.language = Locale("pt", "BR")
+                ttsReady = true
+            }
+        }
+    }
+    private fun speakGrade(grade: String) {
+        ensureTts()
+        if (!ttsReady) return
+        val phrase = when (grade) {
+            "g" -> "Aceitar corrida"
+            "a" -> "Analisar corrida"
+            else -> "Recusar corrida"
+        }
+        try { tts?.speak(phrase, TextToSpeech.QUEUE_FLUSH, null, "mob_flash_grade") } catch (_: Exception) {}
+    }
+    fun shutdownTts() {
+        try { tts?.stop(); tts?.shutdown() } catch (_: Exception) {}
+        tts = null; ttsReady = false
+    }
 
     private fun dp(v: Int) = (v * context.resources.displayMetrics.density).toInt()
     private fun dpf(v: Int) = (v * context.resources.displayMetrics.density)
@@ -64,12 +93,16 @@ class FlashCard(private val context: Context) {
         if (metrics.isEmpty()) return
         handler.removeCallbacks(hideRunnable)
         handler.post {
+            val wasHidden = container == null
             container?.let { try { wm.removeView(it) } catch (_: Exception) {} }
             val cardWidthPx = widthFor(metrics.size)
             params.width = cardWidthPx
             container = buildCard(platform, overallGrade, metrics, totalMin, totalKm, cardWidthPx)
             try { wm.addView(container, params) } catch (e: Exception) { e.printStackTrace() }
             handler.postDelayed(hideRunnable, autoHideMs)
+            // Só fala quando o card estava escondido — evita repetir a fala
+            // toda vez que o OCR refina km/min da mesma oferta já mostrada.
+            if (wasHidden) speakGrade(overallGrade)
         }
     }
 
