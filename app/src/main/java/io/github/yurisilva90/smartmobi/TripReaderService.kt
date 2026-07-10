@@ -650,6 +650,7 @@ class TripReaderService : AccessibilityService() {
 
     override fun onDestroy() {
         main.removeCallbacks(pollRunnable)
+        flashCard.shutdownTts()
         super.onDestroy()
     }
 }
