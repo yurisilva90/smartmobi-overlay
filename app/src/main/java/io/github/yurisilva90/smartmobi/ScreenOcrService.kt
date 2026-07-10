@@ -124,9 +124,11 @@ class ScreenOcrService : Service() {
         imageReader = null
     }
 
-    // Captura 1 frame e devolve as LINHAS de texto reconhecidas (thread-safe,
-    // descarta pedidos enquanto um OCR está em andamento — velocidade > tudo).
-    fun captureAndRecognize(onResult: (List<String>) -> Unit, onError: ((String) -> Unit)? = null) {
+    // Captura 1 frame e devolve as LINHAS de texto reconhecidas + o Bitmap
+    // do mesmo frame (pra quem chamar decidir se salva o print — só quando
+    // vira card, não em todo frame). Quem recebe o bitmap é responsável por
+    // reciclar (bmp.recycle()) depois de usar.
+    fun captureAndRecognize(onResult: (List<String>, Bitmap?) -> Unit, onError: ((String) -> Unit)? = null) {
         if (busy) return
         val reader = imageReader ?: run { onError?.invoke("sem imageReader"); return }
         busy = true
@@ -160,9 +162,9 @@ class ScreenOcrService : Service() {
                         }
                     }
                     busy = false
-                    onResult(lines)
+                    onResult(lines, bmp)
                 }
-                .addOnFailureListener { e -> busy = false; onError?.invoke("mlkit: ${e.message}") }
+                .addOnFailureListener { e -> busy = false; bmp?.recycle(); onError?.invoke("mlkit: ${e.message}") }
         }
     }
 
