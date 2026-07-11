@@ -210,7 +210,14 @@ class TripReaderService : AccessibilityService() {
         // porque a corrida continua valendo mesmo com a Uber fora da tela.
         if (realPlat == "UBER" && realTexts.isNotEmpty()) {
             detectAndApplyTripSubState(realTexts)
+        } else if (realPlat == "99") {
+            // 99 não é mapeado/deduzido de propósito — as leituras aqui servem
+            // só pra logar e a gente identificar o padrão real de tela depois.
+            // Enquanto isso, sempre força Online (mesmo que a Uber tivesse
+            // deixado Buscar/Corrida confirmado antes de trocar de app).
+            forceTripSubStateOnline()
         }
+
 
         // ── Log combinado (throttle + dedup) ──
         if (now - lastLogMs < 700) return
@@ -649,6 +656,17 @@ class TripReaderService : AccessibilityService() {
         if (tripSubStateConsecutive >= TRIP_STATE_DEBOUNCE && confirmedTripSubState != raw) {
             confirmedTripSubState = raw
             MainActivity.floatingWidget?.updateTripState(raw)
+        }
+    }
+
+    // Usado quando estamos comprovadamente na 99 (não precisa de debounce —
+    // não é uma leitura ambígua de OCR, é só "estamos na 99, então Online").
+    private fun forceTripSubStateOnline() {
+        if (confirmedTripSubState != "online") {
+            confirmedTripSubState = "online"
+            lastTripSubStateRaw = "online"
+            tripSubStateConsecutive = 0
+            MainActivity.floatingWidget?.updateTripState("online")
         }
     }
 
