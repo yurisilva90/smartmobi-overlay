@@ -56,6 +56,34 @@ class FloatingWidget(private val context: Context) {
 
     fun updateKm(newKm: Double) { km = newKm; updateDisplay() }
 
+    // Sub-status da corrida atual (Online/Buscar/Corrida), detectado pelo
+    // TripReaderService via leitura de tela (Accessibility). Só tem efeito
+    // quando a jornada está de fato "running" (não pausada/parada) — nesses
+    // casos o card continua mostrando Pausado/Offline normalmente.
+    // Cores: Online=verde (igual sempre foi), Buscar=laranja, Corrida=azul.
+    fun updateTripState(subStatus: String) {
+        handler.post {
+            if (!GpsService.isRunning || GpsService.isPaused) return@post
+            val (label, colorHex) = when (subStatus) {
+                "buscar"  -> "Buscar" to "#F97316"
+                "corrida" -> "Corrida" to "#3B82F6"
+                else      -> "Online" to "#22C55E"
+            }
+            val c = Color.parseColor(colorHex)
+            container?.findViewWithTag<TextView>("status_tv")?.apply { text = label; setTextColor(c) }
+            container?.findViewWithTag<FrameLayout>("status_dot")?.apply {
+                background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(c) }
+            }
+            tvKm?.setTextColor(c)
+            container?.background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = (20 * context.resources.displayMetrics.density)
+                setColor(Color.parseColor("#0F172A"))
+                setStroke((2 * context.resources.displayMetrics.density).toInt(), c)
+            }
+        }
+    }
+
     fun updateStatus(status: String) {
         // Apenas atualiza cores/labels — o estado de pausa real está no GpsService
         handler.post {
@@ -148,7 +176,7 @@ class FloatingWidget(private val context: Context) {
         }
         header.addView(statusDot)
         val statusTv = TextView(context).apply {
-            text = "Online"; textSize = 10f
+            text = "Online"; textSize = 9f
             setTextColor(Color.parseColor("#22C55E"))
             setTypeface(null, Typeface.BOLD); tag = "status_tv"
         }
