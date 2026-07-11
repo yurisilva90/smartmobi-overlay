@@ -70,6 +70,16 @@ class TripReaderService : AccessibilityService() {
         private var lastScanMs = 0L
         private var lastState = "?"
         private var lastWinSig = ""
+
+        // ── Status no widget flutuante: Online/Buscar/Corrida ──────────────
+        // Debounce: exige N leituras seguidas e CONSISTENTES do mesmo sinal
+        // antes de confirmar a troca (leituras a cada ~600ms via pollForeground,
+        // então isso adiciona no máx ~1.8s de atraso — imperceptível dirigindo,
+        // evita "piscar" estado por ruído de OCR/acessibilidade).
+        private const val TRIP_STATE_DEBOUNCE = 3
+        private var lastTripSubStateRaw = "online"
+        private var tripSubStateConsecutive = 0
+        private var confirmedTripSubState = "online"
     }
 
     private val fmt = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
@@ -188,6 +198,18 @@ class TripReaderService : AccessibilityService() {
             processRealOffer(realPlat, realTexts)
         } else if (realPlat == null) {
             hideFlashIfActive()
+        }
+
+        // ── Status Online/Buscar/Corrida no widget flutuante ────────────────
+        // Só pra Uber por enquanto: o padrão de "corrida em andamento" da 99
+        // ainda não foi confirmado em log real (só a tela de cancelamento foi
+        // vista até agora). Não hardcodear formato da 99 sem dado real — mesma
+        // regra já usada pro resto do Flash. Quando não estamos lendo texto da
+        // Uber (app em 2º plano, ex: motorista foi pro Waze durante a corrida),
+        // simplesmente não chama nada — o último estado confirmado permanece,
+        // porque a corrida continua valendo mesmo com a Uber fora da tela.
+        if (realPlat == "UBER" && realTexts.isNotEmpty()) {
+            detectAndApplyTripSubState(realTexts)
         }
 
         // ── Log combinado (throttle + dedup) ──
@@ -597,6 +619,36 @@ class TripReaderService : AccessibilityService() {
             lastOfferValor = null
             bestLegsForOffer = 0
             main.post { flashCard.hide() }
+        }
+    }
+
+    // ── Detecta Online/Buscar/Corrida pelo texto do botão de ação da Uber ──
+    // Sinal mais confiável e simples (confirmado em log real de uma corrida
+    // completa em 11/07/2026): o texto do próprio botão.
+    //   "Iniciar {carro}"  (ex: "Iniciar UberX") → ainda não pegou o passageiro → Buscar
+    //   "Encerrar {carro}" (ex: "Encerrar UberX") → já com passageiro          → Corrida
+    // Qualquer outra tela (oferta, tela inicial aguardando) → Online.
+    // "Avaliando oferta" (card de oferta na tela) NÃO vira um estado à parte
+    // de propósito — continua mostrando Online, pra não poluir o motorista
+    // com informação demais num momento de decisão rápida.
+    private val encerrarRe = Regex("""\bencerrar\s+\S""", RegexOption.IGNORE_CASE)
+    private val iniciarRe  = Regex("""\biniciar\s+\S""", RegexOption.IGNORE_CASE)
+    private fun detectAndApplyTripSubState(texts: List<String>) {
+        val joined = texts.joinToString(" ")
+        val raw = when {
+            encerrarRe.containsMatchIn(joined) -> "corrida"
+            iniciarRe.containsMatchIn(joined)  -> "buscar"
+            else -> "online"
+        }
+        if (raw == lastTripSubStateRaw) {
+            tripSubStateConsecutive++
+        } else {
+            lastTripSubStateRaw = raw
+            tripSubStateConsecutive = 1
+        }
+        if (tripSubStateConsecutive >= TRIP_STATE_DEBOUNCE && confirmedTripSubState != raw) {
+            confirmedTripSubState = raw
+            MainActivity.floatingWidget?.updateTripState(raw)
         }
     }
 
