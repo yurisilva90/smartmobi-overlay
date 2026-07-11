@@ -176,7 +176,7 @@ class FloatingWidget(private val context: Context) {
         }
         header.addView(statusDot)
         val statusTv = TextView(context).apply {
-            text = "Online"; textSize = 9f
+            text = "Online"; textSize = 10f
             setTextColor(Color.parseColor("#22C55E"))
             setTypeface(null, Typeface.BOLD); tag = "status_tv"
         }
