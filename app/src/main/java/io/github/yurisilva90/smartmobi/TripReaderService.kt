@@ -127,6 +127,34 @@ class TripReaderService : AccessibilityService() {
             }
         } catch (_: Exception) {}
         if (fgPlat != null) requestOcrPass(fgPlat)
+
+        // ── Status Online/Buscar/Corrida: por TEMPO, não só por evento ──────
+        // Mesmo motivo do requestOcrPass já ser por polling: a tela de
+        // navegação com mapa pode passar bastante tempo sem disparar
+        // TYPE_WINDOW_CONTENT_CHANGED (o mapa em si não é uma view de texto
+        // mudando), então depender só de onAccessibilityEvent deixava o
+        // card preso em "Online" numa corrida real mesmo com o texto certo
+        // já na tela. Roda a cada 600ms, igual o resto do Flash.
+        when (fgPlat) {
+            "UBER" -> scanUberTripState()
+            "99"   -> forceTripSubStateOnline()
+        }
+    }
+
+    // Varre só as janelas da Uber (independente de evento) e roda a mesma
+    // detecção com debounce de sempre — dá pra chamar em loop sem medo,
+    // detectAndApplyTripSubState já é seguro pra repetição.
+    private fun scanUberTripState() {
+        val texts = ArrayList<String>()
+        try {
+            for (w in windows) {
+                val r = w.root ?: continue
+                val wp = r.packageName?.toString() ?: continue
+                if (!UBER_PKGS.contains(wp)) continue
+                collectTexts(r, texts)
+            }
+        } catch (_: Exception) {}
+        if (texts.isNotEmpty()) detectAndApplyTripSubState(texts)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
