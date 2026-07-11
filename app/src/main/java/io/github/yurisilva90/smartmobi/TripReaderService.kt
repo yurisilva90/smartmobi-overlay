@@ -135,6 +135,18 @@ class TripReaderService : AccessibilityService() {
         // mudando), então depender só de onAccessibilityEvent deixava o
         // card preso em "Online" numa corrida real mesmo com o texto certo
         // já na tela. Roda a cada 600ms, igual o resto do Flash.
+        //
+        // MAS: enquanto tiver oferta ativa na tela (FlashCard mostrando —
+        // caso real de corrida em andamento + nova oferta chegando antes de
+        // encerrar a atual), essa varredura PARA por completo. Dois motivos:
+        // 1) o texto do card de oferta pode ser lido junto com o da tela de
+        //    navegação por baixo, fazendo o status oscilar (Corrida→Online→
+        //    Corrida) sem debounce nunca fechar de verdade.
+        // 2) rodar collectTexts() (varredura recursiva da árvore inteira)
+        //    no mesmo tick de 600ms que o OCR do Flash sobrecarrega a thread
+        //    principal e é o que tava causando o FlashCard piscar. Status do
+        //    botão flutuante nunca deve competir com o Flash pela UI thread.
+        if (lastFlashSig.isNotEmpty()) return
         when (fgPlat) {
             "UBER" -> scanUberTripState()
             "99"   -> forceTripSubStateOnline()
@@ -143,7 +155,8 @@ class TripReaderService : AccessibilityService() {
 
     // Varre só as janelas da Uber (independente de evento) e roda a mesma
     // detecção com debounce de sempre — dá pra chamar em loop sem medo,
-    // detectAndApplyTripSubState já é seguro pra repetição.
+    // detectAndApplyTripSubState já é seguro pra repetição. Nunca chamado
+    // com oferta ativa (ver guard em pollForeground).
     private fun scanUberTripState() {
         val texts = ArrayList<String>()
         try {
@@ -156,6 +169,7 @@ class TripReaderService : AccessibilityService() {
         } catch (_: Exception) {}
         if (texts.isNotEmpty()) detectAndApplyTripSubState(texts)
     }
+
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         event ?: return
@@ -236,14 +250,20 @@ class TripReaderService : AccessibilityService() {
         // Uber (app em 2º plano, ex: motorista foi pro Waze durante a corrida),
         // simplesmente não chama nada — o último estado confirmado permanece,
         // porque a corrida continua valendo mesmo com a Uber fora da tela.
-        if (realPlat == "UBER" && realTexts.isNotEmpty()) {
-            detectAndApplyTripSubState(realTexts)
-        } else if (realPlat == "99") {
-            // 99 não é mapeado/deduzido de propósito — as leituras aqui servem
-            // só pra logar e a gente identificar o padrão real de tela depois.
-            // Enquanto isso, sempre força Online (mesmo que a Uber tivesse
-            // deixado Buscar/Corrida confirmado antes de trocar de app).
-            forceTripSubStateOnline()
+        //
+        // Guard igual ao do pollForeground: com oferta ativa (lastFlashSig
+        // setado pelo processRealOffer logo acima), o texto da tela pode vir
+        // misturado com o card de oferta — não mexe no status nesse momento.
+        if (lastFlashSig.isEmpty()) {
+            if (realPlat == "UBER" && realTexts.isNotEmpty()) {
+                detectAndApplyTripSubState(realTexts)
+            } else if (realPlat == "99") {
+                // 99 não é mapeado/deduzido de propósito — as leituras aqui servem
+                // só pra logar e a gente identificar o padrão real de tela depois.
+                // Enquanto isso, sempre força Online (mesmo que a Uber tivesse
+                // deixado Buscar/Corrida confirmado antes de trocar de app).
+                forceTripSubStateOnline()
+            }
         }
 
 
