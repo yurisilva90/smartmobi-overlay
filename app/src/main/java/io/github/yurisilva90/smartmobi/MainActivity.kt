@@ -213,6 +213,20 @@ class MainActivity : AppCompatActivity() {
             @JavascriptInterface fun getGpsStartTime(): Long = GpsService.startTimeMs
             @JavascriptInterface fun getGpsPausedMs(): Long = GpsService.pausedMs
             @JavascriptInterface fun isGpsRunning(): Boolean = GpsService.isRunning
+            // Km exato no instante da última virada de dia (00:00) capturada
+            // durante a jornada atual. -1.0 = ainda não cruzou meia-noite
+            // (ou o app já consumiu/limpou o snapshot anterior).
+            @JavascriptInterface fun getKmAtMidnight(): Double = GpsService.kmAtMidnight
+            // Data (yyyy-MM-dd) do dia que começou naquela virada — string
+            // vazia se não há snapshot pendente.
+            @JavascriptInterface fun getMidnightSnapshotDate(): String = GpsService.midnightSnapshotDate
+            // Chamado pelo JS depois que o motorista decide e a divisão foi
+            // aplicada — evita reaplicar a mesma divisão se o app reabrir.
+            @JavascriptInterface fun clearMidnightSnapshot() {
+                GpsService.clearMidnightSnapshot(this@MainActivity)
+                val i = Intent(this@MainActivity, GpsService::class.java).apply { action = "CLEAR_MIDNIGHT" }
+                startService(i)
+            }
             @JavascriptInterface fun saveUserToken(userId: String, accessToken: String) {
                 // Armazena credenciais para o GpsService usar nas notificações de reporte rápido
                 GpsService.saveUserCredentials(this@MainActivity, userId, accessToken)

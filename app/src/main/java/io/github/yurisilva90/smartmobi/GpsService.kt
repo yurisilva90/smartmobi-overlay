@@ -46,6 +46,13 @@ class GpsService : Service(), LocationListener {
         const val KEY_GPS_PAUSED   = "gps_paused_ms"
         const val KEY_GPS_SAVED_AT = "gps_saved_at"
 
+        // Snapshot do km exato no instante em que a jornada cruza a meia-noite
+        // (virada de dia) — usado pra dividir a jornada certinha entre os dois
+        // dias sem depender de estimativa por tempo. -1.0 = não capturado ainda
+        // nesta jornada (ou já consumido/limpo pelo app).
+        const val KEY_GPS_KM_MIDNIGHT   = "gps_km_midnight"
+        const val KEY_GPS_MIDNIGHT_DATE = "gps_midnight_date"
+
         // Limpa o estado salvo — chamado quando a jornada é encerrada de
         // verdade (stopFloating) ou resetada (RESET). Sem isso, uma jornada
         // NOVA herdaria km/start da anterior no restart do serviço.
@@ -53,7 +60,17 @@ class GpsService : Service(), LocationListener {
             ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
                 .putBoolean(KEY_GPS_RUNNING, false)
                 .remove(KEY_GPS_START).remove(KEY_GPS_KM)
-                .remove(KEY_GPS_PAUSED).remove(KEY_GPS_SAVED_AT).apply()
+                .remove(KEY_GPS_PAUSED).remove(KEY_GPS_SAVED_AT)
+                .remove(KEY_GPS_KM_MIDNIGHT).remove(KEY_GPS_MIDNIGHT_DATE).apply()
+        }
+
+        // Limpa só o snapshot da meia-noite — chamado pelo JS depois que o app
+        // já leu e aplicou a divisão (pra não reaplicar de novo se reabrir).
+        fun clearMidnightSnapshot(ctx: Context) {
+            kmAtMidnight = -1.0
+            midnightSnapshotDate = ""
+            ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+                .remove(KEY_GPS_KM_MIDNIGHT).remove(KEY_GPS_MIDNIGHT_DATE).apply()
         }
 
         const val KEY_PENDING_LOC  = "pending_loc"
@@ -155,6 +172,11 @@ class GpsService : Service(), LocationListener {
         var pausedMs     = 0L
         var pauseStartMs = 0L
         var lastGpsFixTime = 0L
+        // km acumulado no instante exato da última virada de dia capturada
+        // (00:00:00 local) durante a jornada atual, e a data (yyyy-MM-dd) do
+        // dia que começou ali. -1.0/"" = nenhuma virada capturada ainda.
+        var kmAtMidnight: Double = -1.0
+        var midnightSnapshotDate: String = ""
 
         fun saveUserCredentials(ctx: Context, userId: String, accessToken: String) {
             ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
@@ -203,7 +225,10 @@ class GpsService : Service(), LocationListener {
         when (intent?.action) {
             "PAUSE"  -> { isPaused = true;  pauseStartMs = System.currentTimeMillis(); updateNotif("Pausado"); saveState(); return START_STICKY }
             "RESUME" -> { isPaused = false; pausedMs += System.currentTimeMillis() - pauseStartMs; updateNotif("GPS ativo"); saveState(); return START_STICKY }
-            "RESET"  -> { totalKm = 0.0; startTimeMs = System.currentTimeMillis(); pausedMs = 0; lastLocation = null; lastFixTime = 0L; lastGpsFixTime = 0L; clearSavedState(this) }
+            "RESET"  -> { totalKm = 0.0; startTimeMs = System.currentTimeMillis(); pausedMs = 0; lastLocation = null; lastFixTime = 0L; lastGpsFixTime = 0L; kmAtMidnight = -1.0; midnightSnapshotDate = ""; clearSavedState(this) }
+            // JS já leu e aplicou a divisão da jornada — limpa o snapshot pra
+            // não reaplicar de novo se o app reabrir antes da próxima meia-noite.
+            "CLEAR_MIDNIGHT" -> { clearMidnightSnapshot(this); return START_STICKY }
         }
         createChannels()
         // O JS pode semear a sessão via extras (reanexar jornada em aberto):
@@ -259,6 +284,18 @@ class GpsService : Service(), LocationListener {
         }
         isRunning = true
         saveState()
+        // Restaura o snapshot da meia-noite salvo (se o serviço foi morto e
+        // reiniciado pelo Android DEPOIS de capturar, mas ANTES do JS consumir).
+        // Só restaura se ainda não tem um em memória — não sobrescreve um
+        // snapshot mais novo capturado nesta mesma execução.
+        if (kmAtMidnight < 0.0) {
+            val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val savedDate = prefs.getString(KEY_GPS_MIDNIGHT_DATE, "") ?: ""
+            if (savedDate.isNotEmpty()) {
+                kmAtMidnight = java.lang.Double.longBitsToDouble(prefs.getLong(KEY_GPS_KM_MIDNIGHT, -1L))
+                midnightSnapshotDate = savedDate
+            }
+        }
         val pi = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         startForeground(NOTIF_ID, buildNotif("GPS ativo — 0.0 km", pi))
         locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
@@ -269,7 +306,41 @@ class GpsService : Service(), LocationListener {
                 locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 10000L, 20f, this)
         } catch (e: SecurityException) { e.printStackTrace() }
         alertHandler.postDelayed(checkRunnable, 5 * 60 * 1000L)
+        scheduleMidnightCheck()
         return START_STICKY
+    }
+
+    // ── Snapshot de km na virada de dia (meia-noite local) ────────────────
+    // Handler separado do checkRunnable (esse é de alerta de trânsito, com
+    // intervalo fixo de 10min — meia-noite precisa de um alvo exato, não um
+    // polling). Agenda o disparo pro instante exato do próximo 00:00:01
+    // (1s de folga de segurança), captura o km ali, e já reagenda pro dia
+    // seguinte — assim uma jornada de vários dias (teoricamente) continua
+    // capturando toda virada, não só a primeira.
+    private val midnightHandler = Handler(Looper.getMainLooper())
+    private val midnightRunnable = Runnable {
+        if (isRunning && !isPaused) captureMidnightSnapshot()
+        scheduleMidnightCheck()
+    }
+
+    private fun scheduleMidnightCheck() {
+        midnightHandler.removeCallbacks(midnightRunnable)
+        val cal = Calendar.getInstance()
+        cal.add(Calendar.DAY_OF_YEAR, 1)
+        cal.set(Calendar.HOUR_OF_DAY, 0); cal.set(Calendar.MINUTE, 0)
+        cal.set(Calendar.SECOND, 1); cal.set(Calendar.MILLISECOND, 0)
+        val delay = cal.timeInMillis - System.currentTimeMillis()
+        midnightHandler.postDelayed(midnightRunnable, delay)
+    }
+
+    private fun captureMidnightSnapshot() {
+        val todayStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
+        kmAtMidnight = totalKm
+        midnightSnapshotDate = todayStr
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putLong(KEY_GPS_KM_MIDNIGHT, java.lang.Double.doubleToRawLongBits(kmAtMidnight))
+            .putString(KEY_GPS_MIDNIGHT_DATE, midnightSnapshotDate)
+            .apply()
     }
 
     override fun onLocationChanged(location: Location) {
@@ -428,6 +499,7 @@ class GpsService : Service(), LocationListener {
         // (chamado no stopGpsService do MainActivity). isRunning permanece true
         // nas prefs para o restart do START_STICKY retomar a jornada.
         isRunning = false; alertHandler.removeCallbacks(checkRunnable)
+        midnightHandler.removeCallbacks(midnightRunnable)
         try { locationManager.removeUpdates(this) } catch (e: Exception) {}
         super.onDestroy()
     }
