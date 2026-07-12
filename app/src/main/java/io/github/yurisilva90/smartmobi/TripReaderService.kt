@@ -89,6 +89,14 @@ class TripReaderService : AccessibilityService() {
     private var lastRealState = "?"
     private var lastOfferValor: Double? = null
     private var bestLegsForOffer = 0
+    // 99: a tela de navegação compacta (rua/distância/velocidade) é IDÊNTICA
+    // indo buscar o passageiro e indo pro destino — só o endereço fixo no
+    // topo muda, e não vale a pena comparar endereço pra isso. Em vez disso,
+    // usamos esse flag: uma vez confirmado que chegou no embarque (ou que a
+    // tela de espera com contagem regressiva apareceu), qualquer navegação
+    // compacta depois disso já é "corrida", não "buscar". Reseta ao voltar
+    // pra Aguardando/Buscando.
+    private var nn99ReachedPickup = false
 
     override fun onServiceConnected() {
         val info = AccessibilityServiceInfo().apply {
@@ -149,8 +157,22 @@ class TripReaderService : AccessibilityService() {
         if (lastFlashSig.isNotEmpty()) return
         when (fgPlat) {
             "UBER" -> scanUberTripState()
-            "99"   -> forceTripSubStateOnline()
+            "99"   -> scanNN99TripState()
         }
+    }
+
+    // Varre só as janelas da 99, mesmo princípio do scanUberTripState.
+    private fun scanNN99TripState() {
+        val texts = ArrayList<String>()
+        try {
+            for (w in windows) {
+                val r = w.root ?: continue
+                val wp = r.packageName?.toString() ?: continue
+                if (!NN_PKGS.contains(wp)) continue
+                collectTexts(r, texts)
+            }
+        } catch (_: Exception) {}
+        if (texts.isNotEmpty()) detectAndApply99TripSubState(texts)
     }
 
     // Varre só as janelas da Uber (independente de evento) e roda a mesma
@@ -243,13 +265,12 @@ class TripReaderService : AccessibilityService() {
         }
 
         // ── Status Online/Buscar/Corrida no widget flutuante ────────────────
-        // Só pra Uber por enquanto: o padrão de "corrida em andamento" da 99
-        // ainda não foi confirmado em log real (só a tela de cancelamento foi
-        // vista até agora). Não hardcodear formato da 99 sem dado real — mesma
-        // regra já usada pro resto do Flash. Quando não estamos lendo texto da
-        // Uber (app em 2º plano, ex: motorista foi pro Waze durante a corrida),
-        // simplesmente não chama nada — o último estado confirmado permanece,
-        // porque a corrida continua valendo mesmo com a Uber fora da tela.
+        // Uber e 99 já confirmados em log real (ver detectAndApplyTripSubState
+        // e detectAndApply99TripSubState). Quando não estamos lendo texto de
+        // nenhuma das duas (app em 2º plano, ex: motorista foi pro Waze durante
+        // a corrida), simplesmente não chama nada — o último estado confirmado
+        // permanece, porque a corrida continua valendo mesmo com o app fora da
+        // tela.
         //
         // Guard igual ao do pollForeground: com oferta ativa (lastFlashSig
         // setado pelo processRealOffer logo acima), o texto da tela pode vir
@@ -257,12 +278,8 @@ class TripReaderService : AccessibilityService() {
         if (lastFlashSig.isEmpty()) {
             if (realPlat == "UBER" && realTexts.isNotEmpty()) {
                 detectAndApplyTripSubState(realTexts)
-            } else if (realPlat == "99") {
-                // 99 não é mapeado/deduzido de propósito — as leituras aqui servem
-                // só pra logar e a gente identificar o padrão real de tela depois.
-                // Enquanto isso, sempre força Online (mesmo que a Uber tivesse
-                // deixado Buscar/Corrida confirmado antes de trocar de app).
-                forceTripSubStateOnline()
+            } else if (realPlat == "99" && realTexts.isNotEmpty()) {
+                detectAndApply99TripSubState(realTexts)
             }
         }
 
@@ -677,24 +694,99 @@ class TripReaderService : AccessibilityService() {
         }
     }
 
-    // ── Detecta Online/Buscar/Corrida pelo texto do botão de ação da Uber ──
-    // Sinal mais confiável e simples (confirmado em log real de uma corrida
-    // completa em 11/07/2026): o texto do próprio botão.
-    //   "Iniciar {carro}"  (ex: "Iniciar UberX") → ainda não pegou o passageiro → Buscar
-    //   "Encerrar {carro}" (ex: "Encerrar UberX") → já com passageiro          → Corrida
-    // Qualquer outra tela (oferta, tela inicial aguardando) → Online.
-    // "Avaliando oferta" (card de oferta na tela) NÃO vira um estado à parte
+    // ── Detecta Online/Buscar/Corrida — Uber ──────────────────────────
+    // Sinal original (11/07/2026): texto do botão de ação.
+    //   "Iniciar {carro}"  → ainda não pegou o passageiro → Buscar
+    //   "Encerrar {carro}" → já com passageiro             → Corrida
+    //
+    // BUG CONFIRMADO em log real (corrida da Thainara, mesmo dia): esse
+    // botão some da leitura em duas variantes de tela reais — a versão
+    // condensada/miniatura (troca de app no meio da corrida) e a versão
+    // com menu/drawer aberto (mostra "Coletar pagamento" como item de
+    // lista, sem o texto "Encerrar" em lugar nenhum). Isso fazia o status
+    // cair pra "online" por engano no meio de uma corrida real (300+
+    // leituras em 13min oscilando). "Destino de {nome}" é o único texto
+    // confirmado presente em TODAS as variações — vira o sinal principal.
+    // Os estados de cauda (perto do fim: troca pra "Coletar pagamento",
+    // depois "Pagamento realizado", depois "Como foi a viagem?") também
+    // contam como "corrida" — sem isso, o status voltaria pra "online"
+    // antes da corrida realmente terminar. "Não é possível ficar offline"
+    // só aparece com corrida ativa, serve de reforço.
+    // "Avaliando oferta" (card de oferta na tela) NÃO vira estado à parte
     // de propósito — continua mostrando Online, pra não poluir o motorista
-    // com informação demais num momento de decisão rápida.
+    // num momento de decisão rápida.
     private val encerrarRe = Regex("""\bencerrar\s+\S""", RegexOption.IGNORE_CASE)
     private val iniciarRe  = Regex("""\biniciar\s+\S""", RegexOption.IGNORE_CASE)
+    private val destinoDeRe = Regex("""\bDestino de\b""", RegexOption.IGNORE_CASE)
+    private val uberCorridaTailRe = Regex(
+        """\bColetar pagamento\b|\bPagamento realizado\b|\bComo foi a viagem\b|\bNão é possível ficar offline\b""",
+        RegexOption.IGNORE_CASE
+    )
+    private val uberBuscarReforcoRe = Regex(
+        """\bEncontro com\b|\bAguardando usuário\b|\bUsuário notificado\b""",
+        RegexOption.IGNORE_CASE
+    )
     private fun detectAndApplyTripSubState(texts: List<String>) {
         val joined = texts.joinToString(" ")
         val raw = when {
-            encerrarRe.containsMatchIn(joined) -> "corrida"
-            iniciarRe.containsMatchIn(joined)  -> "buscar"
+            encerrarRe.containsMatchIn(joined)        -> "corrida"
+            destinoDeRe.containsMatchIn(joined)       -> "corrida"
+            uberCorridaTailRe.containsMatchIn(joined) -> "corrida"
+            iniciarRe.containsMatchIn(joined)         -> "buscar"
+            uberBuscarReforcoRe.containsMatchIn(joined) -> "buscar"
             else -> "online"
         }
+        applyTripSubStateDebounced(raw)
+    }
+
+    // ── Detecta Online/Buscar/Corrida — 99 ────────────────────────────
+    // Confirmado em log real (2 corridas completas, 12/07/2026). Ao
+    // contrário da Uber, a 99 tem uma tela de navegação compacta
+    // (rua + distância + "Ir" + km/h) que é IDÊNTICA indo buscar o
+    // passageiro e indo pro destino — só o endereço fixo no topo muda,
+    // e comparar endereço é caro/frágil pra fazer aqui. Por isso usamos
+    // nn99ReachedPickup: uma vez visto "Cheguei no embarque" ou a tela
+    // de espera com contagem regressiva ("Passaremos a cobrar uma taxa
+    // de espera..." + botão "Iniciar corrida"), qualquer navegação
+    // compacta subsequente já conta como corrida, não buscar.
+    private val nn99AceiteRe = Regex(
+        """Corrida encontrada|Corrida aceita|Vamos nessa""", RegexOption.IGNORE_CASE
+    )
+    private val nn99ChegouEsperaRe = Regex(
+        """Cheguei no embarque|Passaremos a cobrar uma taxa de espera|Iniciar corrida""",
+        RegexOption.IGNORE_CASE
+    )
+    private val nn99FinalRe = Regex(
+        """Finalizar corrida|Como foi sua corrida|Avaliar como anônimo|Valor da corrida""",
+        RegexOption.IGNORE_CASE
+    )
+    private val nn99NavegandoRe = Regex("""km/h""", RegexOption.IGNORE_CASE)
+    private val nn99AguardandoRe = Regex("""Buscando|Procurando viagens""", RegexOption.IGNORE_CASE)
+    private fun detectAndApply99TripSubState(texts: List<String>) {
+        val joined = texts.joinToString(" ")
+        val raw = when {
+            nn99FinalRe.containsMatchIn(joined) -> "corrida"
+            nn99ChegouEsperaRe.containsMatchIn(joined) -> {
+                nn99ReachedPickup = true
+                "buscar"
+            }
+            nn99AceiteRe.containsMatchIn(joined) -> "buscar"
+            nn99NavegandoRe.containsMatchIn(joined) -> if (nn99ReachedPickup) "corrida" else "buscar"
+            nn99AguardandoRe.containsMatchIn(joined) -> {
+                nn99ReachedPickup = false
+                "online"
+            }
+            // Texto sem sinal claro (tela de transição/carregando) — mantém
+            // o último estado confirmado em vez de forçar online, pra não
+            // gerar flapping igual o bug já visto na Uber.
+            else -> confirmedTripSubState
+        }
+        applyTripSubStateDebounced(raw)
+    }
+
+    // Debounce compartilhado por Uber e 99 — exige N leituras seguidas e
+    // consistentes antes de confirmar a troca (evita "piscar" por ruído).
+    private fun applyTripSubStateDebounced(raw: String) {
         if (raw == lastTripSubStateRaw) {
             tripSubStateConsecutive++
         } else {
@@ -704,17 +796,6 @@ class TripReaderService : AccessibilityService() {
         if (tripSubStateConsecutive >= TRIP_STATE_DEBOUNCE && confirmedTripSubState != raw) {
             confirmedTripSubState = raw
             MainActivity.floatingWidget?.updateTripState(raw)
-        }
-    }
-
-    // Usado quando estamos comprovadamente na 99 (não precisa de debounce —
-    // não é uma leitura ambígua de OCR, é só "estamos na 99, então Online").
-    private fun forceTripSubStateOnline() {
-        if (confirmedTripSubState != "online") {
-            confirmedTripSubState = "online"
-            lastTripSubStateRaw = "online"
-            tripSubStateConsecutive = 0
-            MainActivity.floatingWidget?.updateTripState("online")
         }
     }
 
