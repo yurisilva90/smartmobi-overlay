@@ -892,20 +892,36 @@ class TripReaderService : AccessibilityService() {
             }
         }
 
+        // Prioriza abrir direto em modo navegação turn-by-turn (google.navigation:),
+        // não só soltar um pin (geo:) — atalho já carregando o endereço pronto
+        // pra seguir, sem passo extra de "iniciar rota". Cai pra geo: se o Maps
+        // não resolver o scheme de navegação, e pro browser como último fallback.
         fun mapIntent(addr: String): PendingIntent {
-            val uri = Uri.parse("geo:0,0?q=" + Uri.encode(addr))
-            val it = Intent(Intent.ACTION_VIEW, uri).apply { setPackage("com.google.android.apps.maps") }
-            val fallback = Intent(Intent.ACTION_VIEW, uri)
-            val real = if (it.resolveActivity(packageManager) != null) it else fallback
+            val navUri = Uri.parse("google.navigation:q=" + Uri.encode(addr))
+            val navIntent = Intent(Intent.ACTION_VIEW, navUri).apply { setPackage("com.google.android.apps.maps") }
+            val geoUri = Uri.parse("geo:0,0?q=" + Uri.encode(addr))
+            val geoIntent = Intent(Intent.ACTION_VIEW, geoUri).apply { setPackage("com.google.android.apps.maps") }
+            val browserIntent = Intent(Intent.ACTION_VIEW, geoUri)
+            val real = when {
+                navIntent.resolveActivity(packageManager) != null -> navIntent
+                geoIntent.resolveActivity(packageManager) != null -> geoIntent
+                else -> browserIntent
+            }
             return PendingIntent.getActivity(
                 this, addr.hashCode(), real,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
         }
 
+        val valorTxt = offer.valor?.let { "R$ ${fmtBr(it)}" }
+        val minTxt = offer.min?.let { "$it min" }
+        val kmTxt = offer.km?.let { "${fmtBr(it)} km" }
+        val meta = listOfNotNull(valorTxt, minTxt, kmTxt).joinToString(" · ")
+        val titulo = if (meta.isNotEmpty()) "$plat · $meta" else plat
+
         val resumo = listOfNotNull(
-            origem?.let { "De: $it" },
-            destino?.let { "Para: $it" }
+            origem?.let { "Origem: $it" },
+            destino?.let { "Destino: $it" }
         ).joinToString("\n")
 
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -913,7 +929,7 @@ class TripReaderService : AccessibilityService() {
         } else {
             @Suppress("DEPRECATION") Notification.Builder(this)
         }
-        builder.setContentTitle("Endereços da corrida ($plat)")
+        builder.setContentTitle(titulo)
             .setStyle(Notification.BigTextStyle().bigText(resumo))
             .setContentText(resumo.lines().firstOrNull() ?: "")
             .setSmallIcon(R.mipmap.ic_launcher)
@@ -922,10 +938,10 @@ class TripReaderService : AccessibilityService() {
             .setAutoCancel(true)
 
         if (origem != null) {
-            builder.addAction(Notification.Action.Builder(null, "Mapa Origem", mapIntent(origem)).build())
+            builder.addAction(Notification.Action.Builder(null, "Navegar Origem", mapIntent(origem)).build())
         }
         if (destino != null) {
-            builder.addAction(Notification.Action.Builder(null, "Mapa Destino", mapIntent(destino)).build())
+            builder.addAction(Notification.Action.Builder(null, "Navegar Destino", mapIntent(destino)).build())
         }
 
         try { nm.notify(4103, builder.build()) } catch (_: Exception) {}
