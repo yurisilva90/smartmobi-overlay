@@ -497,7 +497,11 @@ class TripReaderService : AccessibilityService() {
             if (sl.length < 6) return false
             if (sl.contains("parada")) return false
             if (sl.contains("não afeta") || sl.contains("nao afeta")) return false
-            if (Regex("""^\(?\d{1,3}\s*(min|km|m)\b""").containsMatchIn(sl)) return false // outra perna
+            // BUG CONFIRMADO EM PRINT REAL (notificação "Para: 5,3 km"): o
+            // regex antigo só rejeitava km/min INTEIROS ("5 km"), não decimais
+            // ("5,3 km") — deixava passar distância solta como se fosse
+            // endereço. Adicionado ([.,]\d+)? pra cobrir a parte decimal.
+            if (Regex("""^\(?\d{1,3}([.,]\d+)?\s*(min|km|m)\b""").containsMatchIn(sl)) return false // outra perna/distância solta
             if (Regex("""^[x%\d.,\s]+$""").containsMatchIn(sl)) return false // só símbolo/número solto
             return true
         }
