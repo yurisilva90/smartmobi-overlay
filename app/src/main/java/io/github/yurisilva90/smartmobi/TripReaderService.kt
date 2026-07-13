@@ -730,7 +730,29 @@ class TripReaderService : AccessibilityService() {
         """\bEncontro com\b|\bAguardando usuário\b|\bUsuário notificado\b""",
         RegexOption.IGNORE_CASE
     )
+
+    // BUG CONFIRMADO EM ANÁLISE REAL (últimas 5 corridas Uber, 12-13/07/2026):
+    // de 1556 leituras classificadas "online", 93,5% (1455) eram na verdade
+    // o texto do NOSSO PRÓPRIO botão flutuante vazando pro OCR — não texto
+    // da Uber. O botão é um overlay de sistema desenhado por cima de tudo;
+    // a captura de tela pro OCR é baseada em pixel, não em árvore de
+    // acessibilidade, então não distingue "isso é da Uber" de "isso é do
+    // nosso próprio widget". Quando a leitura vem só com o rótulo do nosso
+    // status + timer + km (ex: ["Buscar", "01:36", "31,7 km"]), sem nenhum
+    // texto real da Uber junto, isso não deve nem contar pro debounce —
+    // só ignora e espera a próxima leitura.
+    private val widgetLeakLabelRe = Regex("""^(Online|Buscar|Corrida)$""", RegexOption.IGNORE_CASE)
+    private val widgetLeakTimerRe = Regex("""^\d{1,2}:\d{2}$""")
+    private val widgetLeakKmRe = Regex("""^\d+([.,]\d+)?\s*km$""", RegexOption.IGNORE_CASE)
+    private fun looksLikeOwnWidgetLeak(texts: List<String>): Boolean {
+        if (texts.isEmpty() || texts.size > 4) return false
+        val hasLabel = texts.any { widgetLeakLabelRe.matches(it.trim()) }
+        val hasTimerOrKm = texts.any { widgetLeakTimerRe.matches(it.trim()) || widgetLeakKmRe.matches(it.trim()) }
+        return hasLabel && hasTimerOrKm
+    }
+
     private fun detectAndApplyTripSubState(texts: List<String>) {
+        if (looksLikeOwnWidgetLeak(texts)) return
         val joined = texts.joinToString(" ")
         val raw = when {
             encerrarRe.containsMatchIn(joined)        -> "corrida"
@@ -767,6 +789,7 @@ class TripReaderService : AccessibilityService() {
     private val nn99NavegandoRe = Regex("""km/h""", RegexOption.IGNORE_CASE)
     private val nn99AguardandoRe = Regex("""Buscando|Procurando viagens""", RegexOption.IGNORE_CASE)
     private fun detectAndApply99TripSubState(texts: List<String>) {
+        if (looksLikeOwnWidgetLeak(texts)) return
         val joined = texts.joinToString(" ")
         val raw = when {
             nn99FinalRe.containsMatchIn(joined) -> "corrida"
