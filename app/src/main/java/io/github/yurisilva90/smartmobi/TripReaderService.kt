@@ -9,6 +9,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Rect
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -87,8 +88,18 @@ class TripReaderService : AccessibilityService() {
     private val flashCard by lazy { FlashCard(this) }
     private var lastFlashSig = ""
     private var lastRealState = "?"
-    private var lastOfferValor: Double? = null
-    private var bestLegsForOffer = 0
+    // INVESTIGAÇÃO (13/07/2026): achado um buraco de 36min sem nenhum card,
+    // com ofertas reais e válidas confirmadas no OCR (texto limpo, formato
+    // Uber padrão) durante esse tempo. Causa provável: essas duas variáveis
+    // eram um valor ÚNICO compartilhado entre Uber e 99, não por plataforma.
+    // Rodando os dois apps ao mesmo tempo, uma oferta da 99 com valor por
+    // acaso a menos de R$0,02 de uma oferta da Uber (comum, faixa de preço
+    // parecida) fazia a trava de "não regredir pernas" comparar contra o
+    // valor errado — a oferta Uber podia ser descartada silenciosamente por
+    // parecer "regressão" de uma oferta de OUTRA plataforma. Agora é por
+    // plataforma, elimina esse cruzamento.
+    private val lastOfferValorByPlat = HashMap<String, Double>()
+    private val bestLegsForOfferByPlat = HashMap<String, Int>()
     // 99: a tela de navegação compacta (rua/distância/velocidade) é IDÊNTICA
     // indo buscar o passageiro e indo pro destino — só o endereço fixo no
     // topo muda, e não vale a pena comparar endereço pra isso. Em vez disso,
@@ -125,13 +136,29 @@ class TripReaderService : AccessibilityService() {
     }
 
     private fun pollForeground() {
+        // BUG CONFIRMADO EM ANÁLISE REAL (13/07/2026): pegar a primeira janela
+        // do loop (ordem de z-order) fazia uma PiP pequena da 99/Uber — que
+        // fica no topo do z-order por natureza, mesmo ocupando um cantinho
+        // da tela — vencer por engano sobre o app que realmente domina a
+        // tela visualmente. Resultado: fgPlat marcado como "99" enquanto o
+        // OCR (que fotografa a tela inteira) lia texto quase todo da Uber,
+        // gerando cards e logs com platform errado. Agora escolhe pela MAIOR
+        // área visível entre as janelas candidatas, não pela primeira.
         var fgPlat: String? = null
+        var bestArea = -1
         try {
+            val rect = Rect()
             for (w in windows) {
                 val wp = w.root?.packageName?.toString() ?: continue
                 if (w.type != AccessibilityWindowInfo.TYPE_APPLICATION || !w.isActive) continue
-                if (NN_PKGS.contains(wp)) { fgPlat = "99"; break }
-                if (UBER_PKGS.contains(wp)) { fgPlat = "UBER"; break }
+                val cand = when {
+                    NN_PKGS.contains(wp)   -> "99"
+                    UBER_PKGS.contains(wp) -> "UBER"
+                    else -> null
+                } ?: continue
+                w.getBoundsInScreen(rect)
+                val area = rect.width().coerceAtLeast(0) * rect.height().coerceAtLeast(0)
+                if (area > bestArea) { bestArea = area; fgPlat = cand }
             }
         } catch (_: Exception) {}
         if (fgPlat != null) requestOcrPass(fgPlat)
@@ -216,11 +243,13 @@ class TripReaderService : AccessibilityService() {
         // ── Varre TODAS as janelas visíveis, texto separado por pacote,
         //    e coleta metadados das janelas pra diagnóstico ──
         val textsByPkg = LinkedHashMap<String, ArrayList<String>>()
+        val pkgArea = HashMap<String, Int>()
         val winMeta = ArrayList<String>()
         var nnWindowSeen = false
         var nnIsForeground = false
         var nnNodeCount = 0
         try {
+            val rect = Rect()
             for (w in windows) {
                 val r = w.root
                 val wp = r?.packageName?.toString()
@@ -231,6 +260,9 @@ class TripReaderService : AccessibilityService() {
                     val lst = textsByPkg.getOrPut(wp) { ArrayList() }
                     val before = lst.size
                     collectTexts(r, lst)
+                    w.getBoundsInScreen(rect)
+                    val area = rect.width().coerceAtLeast(0) * rect.height().coerceAtLeast(0)
+                    if (area > (pkgArea[wp] ?: 0)) pkgArea[wp] = area
                     if (NN_PKGS.contains(wp)) {
                         nnWindowSeen = true; nnNodeCount += (lst.size - before)
                         if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION && w.isActive) nnIsForeground = true
@@ -250,7 +282,13 @@ class TripReaderService : AccessibilityService() {
         }
         if (textsByPkg.isEmpty()) return
 
-        val realPkg = textsByPkg.keys.firstOrNull { UBER_PKGS.contains(it) || NN_PKGS.contains(it) }
+        // Mesma correção do fgPlat em pollForeground: escolhe pela MAIOR área
+        // visível entre Uber/99, não pela primeira encontrada (que favorecia
+        // uma PiP pequena por causa do z-order, mesmo com a Uber ocupando
+        // quase toda a tela por baixo).
+        val realPkg = textsByPkg.keys
+            .filter { UBER_PKGS.contains(it) || NN_PKGS.contains(it) }
+            .maxByOrNull { pkgArea[it] ?: 0 }
         val realPlat = when {
             realPkg != null && UBER_PKGS.contains(realPkg) -> "UBER"
             realPkg != null && NN_PKGS.contains(realPkg)   -> "99"
@@ -293,8 +331,21 @@ class TripReaderService : AccessibilityService() {
             realPlat != null -> realPlat
             else -> "OUTRO"
         }
-        val allTexts = ArrayList<String>()
-        textsByPkg.values.forEach { allTexts.addAll(it) }
+        // BUG CONFIRMADO EM ANÁLISE REAL (13/07/2026): antes disso, o texto
+        // gravado era a MISTURA de todos os pacotes visíveis
+        // (textsByPkg.values.forEach — Uber E 99 juntos, quando o motorista
+        // roda os dois apps ao mesmo tempo, um deles em PiP/miniatura), mas
+        // a linha era marcada só com a plataforma do evento que disparou.
+        // Resultado: linhas (e flash_card_snapshots — os cards reais
+        // exibidos na tela) marcadas platform=99 com conteúdo 100% Uber,
+        // e vice-versa. Agora escopa o texto ao MESMO pacote que definiu
+        // 'plat', nunca mistura dois apps na mesma linha.
+        val platPkg = when (plat) {
+            "UBER" -> UBER_PKGS.firstOrNull { textsByPkg.containsKey(it) } ?: evPkg
+            "99"   -> NN_PKGS.firstOrNull { textsByPkg.containsKey(it) } ?: evPkg
+            else   -> evPkg
+        }
+        val allTexts = ArrayList(textsByPkg[platPkg] ?: emptyList())
         if (allTexts.isEmpty()) return
         val sig = plat + "|" + allTexts.take(8).joinToString("|")
         if (sig == lastSig) return
@@ -581,16 +632,20 @@ class TripReaderService : AccessibilityService() {
             bmp?.recycle(); return
         }
 
-        // A mesma oferta (mesmo valor) não pode "regredir" pra uma leitura
-        // com menos pernas do que uma que já conseguimos ler certo — foi
-        // exatamente essa oscilação (1 perna ↔ 2 pernas) que fazia o card
-        // piscar e trocar de km/tempo o tempo todo numa mesma oferta.
-        if (lastOfferValor != null && kotlin.math.abs(valor - lastOfferValor!!) < 0.02) {
-            if (offer.legsFound < bestLegsForOffer) { bmp?.recycle(); return }
-            if (offer.legsFound > bestLegsForOffer) bestLegsForOffer = offer.legsFound
+        // A mesma oferta (mesmo valor, MESMA PLATAFORMA) não pode "regredir"
+        // pra uma leitura com menos pernas do que uma que já conseguimos ler
+        // certo — foi exatamente essa oscilação (1 perna ↔ 2 pernas) que
+        // fazia o card piscar e trocar de km/tempo o tempo todo numa mesma
+        // oferta. Escopado por plataforma (ver comentário na declaração das
+        // variáveis) pra não cruzar Uber com 99 quando os dois rodam juntos.
+        val prevValor = lastOfferValorByPlat[plat]
+        if (prevValor != null && kotlin.math.abs(valor - prevValor) < 0.02) {
+            val bestLegs = bestLegsForOfferByPlat[plat] ?: 0
+            if (offer.legsFound < bestLegs) { bmp?.recycle(); return }
+            if (offer.legsFound > bestLegs) bestLegsForOfferByPlat[plat] = offer.legsFound
         } else {
-            lastOfferValor = valor
-            bestLegsForOffer = offer.legsFound
+            lastOfferValorByPlat[plat] = valor
+            bestLegsForOfferByPlat[plat] = offer.legsFound
         }
 
         val sig = "$plat|$valor|$km|$min|${offer.nota}"
@@ -692,8 +747,8 @@ class TripReaderService : AccessibilityService() {
     private fun hideFlashIfActive() {
         if (lastFlashSig.isNotEmpty()) {
             lastFlashSig = ""
-            lastOfferValor = null
-            bestLegsForOffer = 0
+            lastOfferValorByPlat.clear()
+            bestLegsForOfferByPlat.clear()
             main.post { flashCard.hide() }
         }
     }
