@@ -554,6 +554,17 @@ class TripReaderService : AccessibilityService() {
             // endereço. Adicionado ([.,]\d+)? pra cobrir a parte decimal.
             if (Regex("""^\(?\d{1,3}([.,]\d+)?\s*(min|km|m)\b""").containsMatchIn(sl)) return false // outra perna/distância solta
             if (Regex("""^[x%\d.,\s]+$""").containsMatchIn(sl)) return false // só símbolo/número solto
+            // BUG CONFIRMADO EM PRINTS REAIS (13/07/2026): a notificação saiu
+            // com "Origem: S R$1,45 Tarifa base dinâmica incl." e "Destino:
+            // Online" — texto de bônus/dinâmico e de status sendo lido como
+            // se fosse endereço. Endereço de verdade nunca tem "R$" nem essas
+            // palavras — rejeita explicitamente.
+            if (sl.contains("r$")) return false // endereço nunca tem valor em R$
+            if (sl.contains("tarifa") || sl.contains("incl.")) return false
+            if (sl.contains("taxa de espera") || sl.contains("espera longa")) return false
+            if (sl == "online" || sl == "buscando" || sl == "offline" || sl == "conectar") return false
+            if (sl.contains("perfil essencial") || sl.contains("perfil premium") || sl.contains("perfil prata")) return false
+            if (sl.contains("pgto. no app") || sl == "dinheiro" || sl == "negocia" || sl == "qr code") return false
             return true
         }
         val legLineRe = Regex("""^\(?\s*\d{1,3}\s*min(?:utos)?""", RegexOption.IGNORE_CASE)
