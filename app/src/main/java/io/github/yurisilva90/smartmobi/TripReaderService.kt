@@ -606,6 +606,13 @@ class TripReaderService : AccessibilityService() {
 
     // ── MōB Flash real: só usa o texto do próprio app (99/Uber) ──
     private fun processRealOffer(plat: String, texts: List<String>, bmp: Bitmap? = null) {
+        // PEDIDO (13/07/2026): Flash só deve ficar ativo com a jornada
+        // iniciada — antes disso ele rodava independente, mesmo sem GPS
+        // ligado. Isso também cria um lembrete natural: se o motorista
+        // esquecer de iniciar a jornada e não ver o card numa oferta, ele
+        // vai lembrar de ligar a jornada primeiro. GpsService.isRunning é
+        // o mesmo flag nativo que isGpsRunning() expõe pro JS.
+        if (!GpsService.isRunning) { bmp?.recycle(); hideFlashIfActive(); return }
         val cfg = loadFlashConfig()
         if (!cfg.optBoolean("enabled", true)) { bmp?.recycle(); hideFlashIfActive(); return }
 
