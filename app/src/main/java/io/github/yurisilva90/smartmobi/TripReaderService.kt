@@ -839,7 +839,7 @@ class TripReaderService : AccessibilityService() {
     }
 
     // ── Detecta Online/Buscar/Corrida — 99 ────────────────────────────
-    // Confirmado em log real (2 corridas completas, 12/07/2026). Ao
+    // Confirmado em log real (várias corridas completas, 12-13/07/2026). Ao
     // contrário da Uber, a 99 tem uma tela de navegação compacta
     // (rua + distância + "Ir" + km/h) que é IDÊNTICA indo buscar o
     // passageiro e indo pro destino — só o endereço fixo no topo muda,
@@ -852,7 +852,10 @@ class TripReaderService : AccessibilityService() {
         """Corrida encontrada|Corrida aceita|Vamos nessa""", RegexOption.IGNORE_CASE
     )
     private val nn99ChegouEsperaRe = Regex(
-        """Cheguei no embarque|Passaremos a cobrar uma taxa de espera|Iniciar corrida""",
+        // "Você está perto do local de embarque" ADICIONADO (13/07/2026) —
+        // confirmado em corrida real, é outra forma de avisar chegada além
+        // das duas já conhecidas.
+        """Cheguei no embarque|Passaremos a cobrar uma taxa de espera|Iniciar corrida|Você está perto do local de embarque""",
         RegexOption.IGNORE_CASE
     )
     private val nn99FinalRe = Regex(
@@ -861,24 +864,55 @@ class TripReaderService : AccessibilityService() {
     )
     private val nn99NavegandoRe = Regex("""km/h""", RegexOption.IGNORE_CASE)
     private val nn99AguardandoRe = Regex("""Buscando|Procurando viagens""", RegexOption.IGNORE_CASE)
+    private var nn99KnownDestAddr: String? = null
     private fun detectAndApply99TripSubState(texts: List<String>) {
         if (looksLikeOwnWidgetLeak(texts)) return
         val joined = texts.joinToString(" ")
+
+        // BUG CONFIRMADO EM CORRIDA REAL (13/07/2026): o motorista foi pro
+        // chat com o passageiro logo que chegou, e o app trocou o endereço
+        // de navegação pro destino final SEM NUNCA mostrar "Cheguei no
+        // embarque" nem a tela de espera — nn99ReachedPickup nunca ligava,
+        // o status ficava preso em "buscar" a viagem inteira. Sinal de
+        // reforço: se a linha de endereço completo (rua+número+bairro, tem
+        // vírgula, é longa) mudar de verdade — não só truncamento de OCR,
+        // por isso compara só os 18 primeiros caracteres — trata como
+        // "acabou de pegar o passageiro" mesmo sem ver a tela de espera.
+        val addrLine = texts.firstOrNull { it.length >= 20 && it.contains(",") && !it.contains("R$") }
+        if (addrLine != null) {
+            val known = nn99KnownDestAddr
+            if (known == null) {
+                nn99KnownDestAddr = addrLine
+            } else if (!addrLine.take(18).equals(known.take(18), ignoreCase = true)) {
+                nn99ReachedPickup = true
+                nn99KnownDestAddr = addrLine
+            }
+        }
+
         val raw = when {
             nn99FinalRe.containsMatchIn(joined) -> "corrida"
             nn99ChegouEsperaRe.containsMatchIn(joined) -> {
                 nn99ReachedPickup = true
                 "buscar"
             }
-            nn99AceiteRe.containsMatchIn(joined) -> "buscar"
+            // BUG CONFIRMADO EM CORRIDA REAL: "Corrida aceita" reapareceu
+            // 5 leituras seguidas (~5s) já no meio de uma corrida em
+            // andamento — provavelmente toast de uma nova oferta aceita
+            // por engano/overlap. Se já estamos com nn99ReachedPickup=true
+            // (corrida confirmada), ignora — não deixa isso derrubar o
+            // status de volta pra "buscar". Só vale como sinal de "buscar"
+            // quando ainda não passamos do embarque.
+            nn99AceiteRe.containsMatchIn(joined) -> if (nn99ReachedPickup) confirmedTripSubState else "buscar"
             nn99NavegandoRe.containsMatchIn(joined) -> if (nn99ReachedPickup) "corrida" else "buscar"
             nn99AguardandoRe.containsMatchIn(joined) -> {
                 nn99ReachedPickup = false
+                nn99KnownDestAddr = null
                 "online"
             }
-            // Texto sem sinal claro (tela de transição/carregando) — mantém
-            // o último estado confirmado em vez de forçar online, pra não
-            // gerar flapping igual o bug já visto na Uber.
+            // Texto sem sinal claro (tela de transição/carregando/chat com
+            // o passageiro) — mantém o último estado confirmado em vez de
+            // forçar online, pra não gerar flapping igual o bug já visto
+            // na Uber.
             else -> confirmedTripSubState
         }
         applyTripSubStateDebounced(raw)
