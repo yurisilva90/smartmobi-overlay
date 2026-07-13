@@ -52,6 +52,7 @@ class ScreenOcrService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
     @Volatile private var busy = false
+    @Volatile private var busySinceMs = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -129,9 +130,25 @@ class ScreenOcrService : Service() {
     // vira card, não em todo frame). Quem recebe o bitmap é responsável por
     // reciclar (bmp.recycle()) depois de usar.
     fun captureAndRecognize(onResult: (List<String>, Bitmap?) -> Unit, onError: ((String) -> Unit)? = null) {
-        if (busy) return
+        // INVESTIGAÇÃO (13/07/2026): oferta chegando durante corrida ativa
+        // nunca foi capturada em ~90s de tentativas repetidas, mesmo com
+        // print manual confirmando que a tela realmente mostrava o card.
+        // Uma hipótese real: o listener do ML Kit (sucesso OU erro) às vezes
+        // não dispara nenhum dos dois — aí "busy" fica true pra sempre e
+        // TODA captura futura é ignorada silenciosamente, sem log de erro
+        // nenhum (por isso não aparecia nem como OCR_ERRO). Trava de
+        // segurança: se "busy" ficar travado por mais de 5s, destrava
+        // sozinho e segue a captura, em vez de continuar bloqueado.
+        if (busy) {
+            if (System.currentTimeMillis() - busySinceMs > 5000) {
+                busy = false
+            } else {
+                return
+            }
+        }
         val reader = imageReader ?: run { onError?.invoke("sem imageReader"); return }
         busy = true
+        busySinceMs = System.currentTimeMillis()
         main.post {
             var bmp: Bitmap? = null
             try {

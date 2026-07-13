@@ -702,8 +702,12 @@ class TripReaderService : AccessibilityService() {
             // A "nota" (do passageiro) entra no card, mas NÃO conta pra cor
             // geral das bordas — só os KPIs financeiros decidem isso.
             if (key != "nota") gradesForOverall.add(grade)
+            // PEDIDO (13/07/2026): % Lucro só mostrava o número, sem o
+            // símbolo — bem fácil de confundir com outro KPI de relance.
+            // Agora o "%" vai junto no valor grande, não só no rótulo
+            // pequeno embaixo.
             val fmtVal = when (key) {
-                "margem" -> "${v.toInt()}"
+                "margem" -> "${v.toInt()}%"
                 "lucro"  -> fmtBr(v)
                 else     -> fmtBr(v)
             }
@@ -865,6 +869,7 @@ class TripReaderService : AccessibilityService() {
     private val nn99NavegandoRe = Regex("""km/h""", RegexOption.IGNORE_CASE)
     private val nn99AguardandoRe = Regex("""Buscando|Procurando viagens""", RegexOption.IGNORE_CASE)
     private var nn99KnownDestAddr: String? = null
+    private var nn99LastActiveSignalMs = 0L
     private fun detectAndApply99TripSubState(texts: List<String>) {
         if (looksLikeOwnWidgetLeak(texts)) return
         val joined = texts.joinToString(" ")
@@ -890,9 +895,13 @@ class TripReaderService : AccessibilityService() {
         }
 
         val raw = when {
-            nn99FinalRe.containsMatchIn(joined) -> "corrida"
+            nn99FinalRe.containsMatchIn(joined) -> {
+                nn99LastActiveSignalMs = System.currentTimeMillis()
+                "corrida"
+            }
             nn99ChegouEsperaRe.containsMatchIn(joined) -> {
                 nn99ReachedPickup = true
+                nn99LastActiveSignalMs = System.currentTimeMillis()
                 "buscar"
             }
             // BUG CONFIRMADO EM CORRIDA REAL: "Corrida aceita" reapareceu
@@ -902,9 +911,33 @@ class TripReaderService : AccessibilityService() {
             // (corrida confirmada), ignora — não deixa isso derrubar o
             // status de volta pra "buscar". Só vale como sinal de "buscar"
             // quando ainda não passamos do embarque.
-            nn99AceiteRe.containsMatchIn(joined) -> if (nn99ReachedPickup) confirmedTripSubState else "buscar"
-            nn99NavegandoRe.containsMatchIn(joined) -> if (nn99ReachedPickup) "corrida" else "buscar"
+            nn99AceiteRe.containsMatchIn(joined) -> {
+                if (nn99ReachedPickup) confirmedTripSubState else {
+                    nn99LastActiveSignalMs = System.currentTimeMillis()
+                    "buscar"
+                }
+            }
+            nn99NavegandoRe.containsMatchIn(joined) -> {
+                nn99LastActiveSignalMs = System.currentTimeMillis()
+                if (nn99ReachedPickup) "corrida" else "buscar"
+            }
             nn99AguardandoRe.containsMatchIn(joined) -> {
+                nn99ReachedPickup = false
+                nn99KnownDestAddr = null
+                "online"
+            }
+            // BUG CONFIRMADO (13/07/2026): corrida do Anderson terminou de
+            // verdade, mas o status ficou preso em "Corrida" — a tela final
+            // (avaliação, painel de ganhos, etc.) nunca bateu com nenhum dos
+            // textos conhecidos de "Buscando"/"Procurando viagens", então o
+            // fallback abaixo (mantém o último estado) segurava "corrida"
+            // indefinidamente. Rede de segurança: se faz mais de 90s que
+            // nenhum sinal de corrida/buscar apareceu de verdade E o status
+            // não é online, assume que a corrida encerrou silenciosamente e
+            // volta sozinho — evita ficar preso esperando um texto exato
+            // que pode nunca aparecer.
+            confirmedTripSubState != "online" && nn99LastActiveSignalMs > 0 &&
+                System.currentTimeMillis() - nn99LastActiveSignalMs > 90_000 -> {
                 nn99ReachedPickup = false
                 nn99KnownDestAddr = null
                 "online"
