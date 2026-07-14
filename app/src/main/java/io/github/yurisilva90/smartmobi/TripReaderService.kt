@@ -884,8 +884,25 @@ class TripReaderService : AccessibilityService() {
     // Prova definitiva de que ainda não chegou, mesmo que o botão "Cheguei
     // no embarque" já esteja visível na mesma leitura.
     private val nn99ChegueAntesRe = Regex("""Chegue antes de \d{1,2}:\d{2}""", RegexOption.IGNORE_CASE)
-    private val nn99FinalRe = Regex(
-        """Finalizar corrida|Como foi sua corrida|Avaliar como anônimo|Valor da corrida""",
+    // "Finalizar corrida" é o botão, ainda com o motorista dirigindo até o
+    // destino — mantém "corrida" (na prática já é coberto pelo km/h com
+    // reachedPickup=true, mas mantido por segurança).
+    private val nn99FinalRe = Regex("""Finalizar corrida""", RegexOption.IGNORE_CASE)
+    // BUG CONFIRMADO EM LOG REAL (14/07/2026, corrida da Maria Eduarda):
+    // depois que "Finalizar corrida" é tocado, aparece a tela de avaliação
+    // ("Como foi sua corrida com [nome]?" / "Avaliar como anônimo" /
+    // "Valor da corrida +R$X"). Antes essas telas também contavam como
+    // "corrida" (mesma regra do botão), e só voltava pra "online" quando
+    // "Buscando" reaparecia — só que às vezes "Valor da corrida" (toast de
+    // ganhos) e "Buscando" apareciam JUNTOS na mesma leitura, e por causa da
+    // ordem de prioridade "corrida" vencia, atrasando a virada. No total o
+    // motorista via até ~1min mostrando "corrida" depois de já ter
+    // encerrado de verdade. Pro motorista, uma vez que chegou na tela de
+    // avaliação a corrida já acabou (dinheiro caiu, só falta avaliar) —
+    // então esses textos agora contam como corrida encerrada e viram
+    // "online" na hora, sem esperar "Buscando" reaparecer.
+    private val nn99AvaliacaoRe = Regex(
+        """Como foi sua corrida|Avaliar como anônimo|Valor da corrida""",
         RegexOption.IGNORE_CASE
     )
     private val nn99NavegandoRe = Regex("""km/h""", RegexOption.IGNORE_CASE)
@@ -917,6 +934,14 @@ class TripReaderService : AccessibilityService() {
         }
 
         val raw = when {
+            // Checado ANTES de nn99FinalRe: a tela de avaliação é a prova
+            // definitiva de que a corrida já encerrou de verdade.
+            nn99AvaliacaoRe.containsMatchIn(joined) -> {
+                nn99ReachedPickup = false
+                nn99KnownDestAddr = null
+                nn99LastActiveSignalMs = System.currentTimeMillis()
+                "online"
+            }
             nn99FinalRe.containsMatchIn(joined) -> {
                 nn99LastActiveSignalMs = System.currentTimeMillis()
                 "corrida"
