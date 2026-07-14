@@ -122,6 +122,12 @@ class TripReaderService : AccessibilityService() {
         }
         serviceInfo = info
         log("\n═══════════════ SERVIÇO CONECTADO v21 ${fmt.format(Date())} ═══════════════")
+        // Carrega o cache local das regras de detecção na hora (instantâneo)
+        // e já dispara um fetch forçado em background pra pegar qualquer
+        // ajuste feito no Supabase desde a última vez que o app abriu —
+        // sem isso, um ajuste de regra só valeria depois de até 10min.
+        RuleEngine.ensureLoaded(this)
+        RuleEngine.refreshIfDue(this, force = true)
         // Leitura por TEMPO, não só por evento — a tela de oferta pode ser
         // canvas puro e não disparar TYPE_WINDOW_CONTENT_CHANGED nenhum.
         // É assim (por polling) que apps como o Gigu conseguem ler rápido.
@@ -796,17 +802,13 @@ class TripReaderService : AccessibilityService() {
     // "Avaliando oferta" (card de oferta na tela) NÃO vira estado à parte
     // de propósito — continua mostrando Online, pra não poluir o motorista
     // num momento de decisão rápida.
-    private val encerrarRe = Regex("""\bencerrar\s+\S""", RegexOption.IGNORE_CASE)
-    private val iniciarRe  = Regex("""\biniciar\s+\S""", RegexOption.IGNORE_CASE)
-    private val destinoDeRe = Regex("""\bDestino de\b""", RegexOption.IGNORE_CASE)
-    private val uberCorridaTailRe = Regex(
-        """\bColetar pagamento\b|\bPagamento realizado\b|\bComo foi a viagem\b|\bNão é possível ficar offline\b""",
-        RegexOption.IGNORE_CASE
-    )
-    private val uberBuscarReforcoRe = Regex(
-        """\bEncontro com\b|\bAguardando usuário\b|\bUsuário notificado\b""",
-        RegexOption.IGNORE_CASE
-    )
+    // Os padrões de texto (encerrar/iniciar/destino de/etc), a ordem de
+    // prioridade entre eles e o resultado de cada um NÃO estão mais fixos
+    // aqui — moraram pra tabela `state_detection_rules` no Supabase (ver
+    // RuleEngine.kt), plataforma 'uber'. Isso permite ajustar um padrão de
+    // texto sem precisar gerar APK novo. O que continua aqui (estrutural,
+    // não é um padrão de texto isolado) é só o filtro de vazamento do
+    // próprio widget logo abaixo.
 
     // BUG CONFIRMADO EM ANÁLISE REAL (últimas 5 corridas Uber, 12-13/07/2026):
     // de 1556 leituras classificadas "online", 93,5% (1455) eram na verdade
@@ -830,15 +832,12 @@ class TripReaderService : AccessibilityService() {
 
     private fun detectAndApplyTripSubState(texts: List<String>) {
         if (looksLikeOwnWidgetLeak(texts)) return
-        val joined = texts.joinToString(" ")
-        val raw = when {
-            encerrarRe.containsMatchIn(joined)        -> "corrida"
-            destinoDeRe.containsMatchIn(joined)       -> "corrida"
-            uberCorridaTailRe.containsMatchIn(joined) -> "corrida"
-            iniciarRe.containsMatchIn(joined)         -> "buscar"
-            uberBuscarReforcoRe.containsMatchIn(joined) -> "buscar"
-            else -> "online"
-        }
+        RuleEngine.ensureLoaded(this)
+        RuleEngine.refreshIfDue(this)
+        val ev = RuleEngine.evaluate("uber", texts, reachedPickup = false)
+        // Uber não usa o flag reachedPickup (Destino de/Encerrar já
+        // distinguem os estados sozinhos) — só o resultado importa aqui.
+        val raw = if (ev.matched) ev.state else "online"
         applyTripSubStateDebounced(raw)
     }
 
@@ -852,66 +851,22 @@ class TripReaderService : AccessibilityService() {
     // regressiva ("Passaremos a cobrar uma taxa de espera..." + botão
     // "Iniciar corrida"), qualquer navegação compacta subsequente já
     // conta como corrida, não buscar.
-    private val nn99AceiteRe = Regex(
-        """Corrida encontrada|Corrida aceita|Vamos nessa""", RegexOption.IGNORE_CASE
-    )
-    // BUG CONFIRMADO EM LOG REAL (14/07/2026, corrida da Maria Eduarda):
-    // "Cheguei no embarque" é só o BOTÃO que o motorista pode tocar — ele
-    // já aparece na tela ainda a 1,7km / 5min de distância do embarque
-    // (confirmado no trip_reader_log, várias leituras seguidas com "5 min
-    // 1,5 km" + "Chegue antes de 08:34" + "Cheguei no embarque" juntos).
-    // Tratar a mera presença desse texto como prova de chegada fazia
-    // nn99ReachedPickup ligar cedo demais, e qualquer leitura seguinte só
-    // com "km/h" (sem "Cheguei no embarque" na mesma leitura, por ruído de
-    // OCR) virava "corrida" por engano enquanto ainda buscava. Por isso
-    // esse texto NÃO entra mais no gatilho de chegada — só os sinais que
-    // só aparecem de fato na tela de espera pós-chegada (confirmados no
-    // mesmo log: "Calculando taxa de espera" / "Você receberá a taxa de
-    // espera total depois que finalizar esta corrida" / "Iniciar corrida"
-    // nunca apareceram nas leituras em trânsito).
-    private val nn99ChegouEsperaRe = Regex(
-        // "Você está perto do local de embarque" ADICIONADO (13/07/2026) —
-        // confirmado em corrida real, é outra forma de avisar chegada além
-        // das já conhecidas.
-        """Passaremos a cobrar uma taxa de espera|Iniciar corrida|Você está perto do local de embarque|Calculando taxa de espera|Você receberá a taxa de espera total""",
-        RegexOption.IGNORE_CASE
-    )
-    // Botão visível, mas SEM confirmação de chegada de verdade (ver nota
-    // acima) — ainda conta como "buscar", só não liga nn99ReachedPickup.
-    private val nn99BotaoChegueiRe = Regex("""Cheguei no embarque""", RegexOption.IGNORE_CASE)
-    // Só aparece durante a navegação até o embarque (prazo pro motorista
-    // chegar) — confirmado no mesmo log, nunca junto da tela de espera.
-    // Prova definitiva de que ainda não chegou, mesmo que o botão "Cheguei
-    // no embarque" já esteja visível na mesma leitura.
-    private val nn99ChegueAntesRe = Regex("""Chegue antes de \d{1,2}:\d{2}""", RegexOption.IGNORE_CASE)
-    // "Finalizar corrida" é o botão, ainda com o motorista dirigindo até o
-    // destino — mantém "corrida" (na prática já é coberto pelo km/h com
-    // reachedPickup=true, mas mantido por segurança).
-    private val nn99FinalRe = Regex("""Finalizar corrida""", RegexOption.IGNORE_CASE)
-    // BUG CONFIRMADO EM LOG REAL (14/07/2026, corrida da Maria Eduarda):
-    // depois que "Finalizar corrida" é tocado, aparece a tela de avaliação
-    // ("Como foi sua corrida com [nome]?" / "Avaliar como anônimo" /
-    // "Valor da corrida +R$X"). Antes essas telas também contavam como
-    // "corrida" (mesma regra do botão), e só voltava pra "online" quando
-    // "Buscando" reaparecia — só que às vezes "Valor da corrida" (toast de
-    // ganhos) e "Buscando" apareciam JUNTOS na mesma leitura, e por causa da
-    // ordem de prioridade "corrida" vencia, atrasando a virada. No total o
-    // motorista via até ~1min mostrando "corrida" depois de já ter
-    // encerrado de verdade. Pro motorista, uma vez que chegou na tela de
-    // avaliação a corrida já acabou (dinheiro caiu, só falta avaliar) —
-    // então esses textos agora contam como corrida encerrada e viram
-    // "online" na hora, sem esperar "Buscando" reaparecer.
-    private val nn99AvaliacaoRe = Regex(
-        """Como foi sua corrida|Avaliar como anônimo|Valor da corrida""",
-        RegexOption.IGNORE_CASE
-    )
-    private val nn99NavegandoRe = Regex("""km/h""", RegexOption.IGNORE_CASE)
-    private val nn99AguardandoRe = Regex("""Buscando|Procurando viagens""", RegexOption.IGNORE_CASE)
+    // Os padrões de texto (Cheguei no embarque, Chegue antes de, Buscando,
+    // km/h, etc), a prioridade entre eles e se cada um liga o flag
+    // nn99ReachedPickup NÃO estão mais fixos aqui — moraram pra tabela
+    // `state_detection_rules` no Supabase (plataforma '99'), via
+    // RuleEngine.kt. O que continua em Kotlin (estrutural, precisa de
+    // estado entre leituras, não é um padrão de texto isolado):
+    //   • o heurístico de troca de endereço abaixo
+    //   • a rede de segurança por timeout (o número em si é configurável
+    //     via `state_detection_config`, mas a lógica de "há quanto tempo
+    //     sem sinal" fica aqui)
     private var nn99KnownDestAddr: String? = null
     private var nn99LastActiveSignalMs = 0L
     private fun detectAndApply99TripSubState(texts: List<String>) {
         if (looksLikeOwnWidgetLeak(texts)) return
-        val joined = texts.joinToString(" ")
+        RuleEngine.ensureLoaded(this)
+        RuleEngine.refreshIfDue(this)
 
         // BUG CONFIRMADO EM CORRIDA REAL (13/07/2026): o motorista foi pro
         // chat com o passageiro logo que chegou, e o app trocou o endereço
@@ -933,88 +888,34 @@ class TripReaderService : AccessibilityService() {
             }
         }
 
-        val raw = when {
-            // Checado ANTES de nn99FinalRe: a tela de avaliação é a prova
-            // definitiva de que a corrida já encerrou de verdade.
-            nn99AvaliacaoRe.containsMatchIn(joined) -> {
-                nn99ReachedPickup = false
-                nn99KnownDestAddr = null
-                nn99LastActiveSignalMs = System.currentTimeMillis()
-                "online"
-            }
-            nn99FinalRe.containsMatchIn(joined) -> {
-                nn99LastActiveSignalMs = System.currentTimeMillis()
-                "corrida"
-            }
-            // Prova definitiva de que ainda está a caminho — checado ANTES
-            // do botão "Cheguei no embarque" pra nunca deixar ele (que
-            // aparece cedo demais) vencer quando os dois estão na mesma
-            // leitura. Reseta nn99ReachedPickup pra false de propósito:
-            // se esse texto está na tela, não tem como já ter chegado.
-            nn99ChegueAntesRe.containsMatchIn(joined) -> {
-                nn99ReachedPickup = false
-                nn99LastActiveSignalMs = System.currentTimeMillis()
-                "buscar"
-            }
-            nn99ChegouEsperaRe.containsMatchIn(joined) -> {
-                nn99ReachedPickup = true
-                nn99LastActiveSignalMs = System.currentTimeMillis()
-                "buscar"
-            }
-            nn99BotaoChegueiRe.containsMatchIn(joined) -> {
-                // só o botão, sem confirmação — conta como buscar mas não
-                // liga nn99ReachedPickup (ver nota na declaração da regex).
-                nn99LastActiveSignalMs = System.currentTimeMillis()
-                "buscar"
-            }
-            // BUG CONFIRMADO EM CORRIDA REAL: "Corrida aceita" reapareceu
-            // 5 leituras seguidas (~5s) já no meio de uma corrida em
-            // andamento — provavelmente toast de uma nova oferta aceita
-            // por engano/overlap. Se já estamos com nn99ReachedPickup=true
-            // (corrida confirmada), ignora — não deixa isso derrubar o
-            // status de volta pra "buscar". Só vale como sinal de "buscar"
-            // quando ainda não passamos do embarque.
-            nn99AceiteRe.containsMatchIn(joined) -> {
-                if (nn99ReachedPickup) confirmedTripSubState else {
-                    nn99LastActiveSignalMs = System.currentTimeMillis()
-                    "buscar"
-                }
-            }
-            nn99NavegandoRe.containsMatchIn(joined) -> {
-                nn99LastActiveSignalMs = System.currentTimeMillis()
-                if (nn99ReachedPickup) "corrida" else "buscar"
-            }
-            nn99AguardandoRe.containsMatchIn(joined) -> {
-                nn99ReachedPickup = false
-                nn99KnownDestAddr = null
-                "online"
-            }
+        val ev = RuleEngine.evaluate("99", texts, nn99ReachedPickup)
+        val raw: String
+        if (ev.matched) {
+            nn99ReachedPickup = ev.newReachedPickup
+            if (ev.resetKnownAddr) nn99KnownDestAddr = null
+            nn99LastActiveSignalMs = System.currentTimeMillis()
+            raw = ev.state
+        } else {
             // BUG CONFIRMADO (13/07/2026): corrida do Anderson terminou de
             // verdade, mas o status ficou preso em "Corrida" — a tela final
-            // (avaliação, painel de ganhos, etc.) nunca bateu com nenhum dos
-            // textos conhecidos de "Buscando"/"Procurando viagens", então o
-            // fallback abaixo (mantém o último estado) segurava "corrida"
-            // indefinidamente. Rede de segurança: se faz mais de 60s que
-            // nenhum sinal de corrida/buscar apareceu de verdade E o status
-            // não é online, assume que a corrida encerrou silenciosamente e
-            // volta sozinho — evita ficar preso esperando um texto exato
-            // que pode nunca aparecer.
-            // AJUSTE (14/07/2026): estava em 15s (v1.0.48) — muito curto,
-            // confirmado no log real disparando durante uma troca de tela
-            // sem sinal reconhecido no meio da espera pelo embarque
-            // (derrubava buscar -> online por engano). Voltando pra 60s,
-            // meio-termo entre os 90s originais e os 15s que causaram o bug.
-            confirmedTripSubState != "online" && nn99LastActiveSignalMs > 0 &&
-                System.currentTimeMillis() - nn99LastActiveSignalMs > 60_000 -> {
+            // nunca bateu com nenhuma regra conhecida, e o fallback (mantém
+            // o último estado) segurava "corrida" indefinidamente. Rede de
+            // segurança: se faz mais tempo que `99_safety_timeout_ms` (config
+            // remota, default 60s) que nenhuma regra bateu de verdade E o
+            // status não é online, assume que a corrida encerrou
+            // silenciosamente e volta sozinho.
+            val safetyMs = RuleEngine.config("99_safety_timeout_ms", 60_000.0).toLong()
+            raw = if (confirmedTripSubState != "online" && nn99LastActiveSignalMs > 0 &&
+                System.currentTimeMillis() - nn99LastActiveSignalMs > safetyMs) {
                 nn99ReachedPickup = false
                 nn99KnownDestAddr = null
                 "online"
+            } else {
+                // Texto sem sinal claro (tela de transição/carregando/chat
+                // com o passageiro) — mantém o último estado confirmado em
+                // vez de forçar online, pra não gerar flapping.
+                confirmedTripSubState
             }
-            // Texto sem sinal claro (tela de transição/carregando/chat com
-            // o passageiro) — mantém o último estado confirmado em vez de
-            // forçar online, pra não gerar flapping igual o bug já visto
-            // na Uber.
-            else -> confirmedTripSubState
         }
         applyTripSubStateDebounced(raw)
     }
@@ -1028,7 +929,8 @@ class TripReaderService : AccessibilityService() {
             lastTripSubStateRaw = raw
             tripSubStateConsecutive = 1
         }
-        if (tripSubStateConsecutive >= TRIP_STATE_DEBOUNCE && confirmedTripSubState != raw) {
+        val debounce = RuleEngine.config("trip_state_debounce", TRIP_STATE_DEBOUNCE.toDouble()).toInt()
+        if (tripSubStateConsecutive >= debounce && confirmedTripSubState != raw) {
             confirmedTripSubState = raw
             MainActivity.floatingWidget?.updateTripState(raw)
         }
