@@ -848,20 +848,42 @@ class TripReaderService : AccessibilityService() {
     // (rua + distância + "Ir" + km/h) que é IDÊNTICA indo buscar o
     // passageiro e indo pro destino — só o endereço fixo no topo muda,
     // e comparar endereço é caro/frágil pra fazer aqui. Por isso usamos
-    // nn99ReachedPickup: uma vez visto "Cheguei no embarque" ou a tela
-    // de espera com contagem regressiva ("Passaremos a cobrar uma taxa
-    // de espera..." + botão "Iniciar corrida"), qualquer navegação
-    // compacta subsequente já conta como corrida, não buscar.
+    // nn99ReachedPickup: uma vez visto a tela de espera com contagem
+    // regressiva ("Passaremos a cobrar uma taxa de espera..." + botão
+    // "Iniciar corrida"), qualquer navegação compacta subsequente já
+    // conta como corrida, não buscar.
     private val nn99AceiteRe = Regex(
         """Corrida encontrada|Corrida aceita|Vamos nessa""", RegexOption.IGNORE_CASE
     )
+    // BUG CONFIRMADO EM LOG REAL (14/07/2026, corrida da Maria Eduarda):
+    // "Cheguei no embarque" é só o BOTÃO que o motorista pode tocar — ele
+    // já aparece na tela ainda a 1,7km / 5min de distância do embarque
+    // (confirmado no trip_reader_log, várias leituras seguidas com "5 min
+    // 1,5 km" + "Chegue antes de 08:34" + "Cheguei no embarque" juntos).
+    // Tratar a mera presença desse texto como prova de chegada fazia
+    // nn99ReachedPickup ligar cedo demais, e qualquer leitura seguinte só
+    // com "km/h" (sem "Cheguei no embarque" na mesma leitura, por ruído de
+    // OCR) virava "corrida" por engano enquanto ainda buscava. Por isso
+    // esse texto NÃO entra mais no gatilho de chegada — só os sinais que
+    // só aparecem de fato na tela de espera pós-chegada (confirmados no
+    // mesmo log: "Calculando taxa de espera" / "Você receberá a taxa de
+    // espera total depois que finalizar esta corrida" / "Iniciar corrida"
+    // nunca apareceram nas leituras em trânsito).
     private val nn99ChegouEsperaRe = Regex(
         // "Você está perto do local de embarque" ADICIONADO (13/07/2026) —
         // confirmado em corrida real, é outra forma de avisar chegada além
-        // das duas já conhecidas.
-        """Cheguei no embarque|Passaremos a cobrar uma taxa de espera|Iniciar corrida|Você está perto do local de embarque""",
+        // das já conhecidas.
+        """Passaremos a cobrar uma taxa de espera|Iniciar corrida|Você está perto do local de embarque|Calculando taxa de espera|Você receberá a taxa de espera total""",
         RegexOption.IGNORE_CASE
     )
+    // Botão visível, mas SEM confirmação de chegada de verdade (ver nota
+    // acima) — ainda conta como "buscar", só não liga nn99ReachedPickup.
+    private val nn99BotaoChegueiRe = Regex("""Cheguei no embarque""", RegexOption.IGNORE_CASE)
+    // Só aparece durante a navegação até o embarque (prazo pro motorista
+    // chegar) — confirmado no mesmo log, nunca junto da tela de espera.
+    // Prova definitiva de que ainda não chegou, mesmo que o botão "Cheguei
+    // no embarque" já esteja visível na mesma leitura.
+    private val nn99ChegueAntesRe = Regex("""Chegue antes de \d{1,2}:\d{2}""", RegexOption.IGNORE_CASE)
     private val nn99FinalRe = Regex(
         """Finalizar corrida|Como foi sua corrida|Avaliar como anônimo|Valor da corrida""",
         RegexOption.IGNORE_CASE
@@ -899,8 +921,24 @@ class TripReaderService : AccessibilityService() {
                 nn99LastActiveSignalMs = System.currentTimeMillis()
                 "corrida"
             }
+            // Prova definitiva de que ainda está a caminho — checado ANTES
+            // do botão "Cheguei no embarque" pra nunca deixar ele (que
+            // aparece cedo demais) vencer quando os dois estão na mesma
+            // leitura. Reseta nn99ReachedPickup pra false de propósito:
+            // se esse texto está na tela, não tem como já ter chegado.
+            nn99ChegueAntesRe.containsMatchIn(joined) -> {
+                nn99ReachedPickup = false
+                nn99LastActiveSignalMs = System.currentTimeMillis()
+                "buscar"
+            }
             nn99ChegouEsperaRe.containsMatchIn(joined) -> {
                 nn99ReachedPickup = true
+                nn99LastActiveSignalMs = System.currentTimeMillis()
+                "buscar"
+            }
+            nn99BotaoChegueiRe.containsMatchIn(joined) -> {
+                // só o botão, sem confirmação — conta como buscar mas não
+                // liga nn99ReachedPickup (ver nota na declaração da regex).
                 nn99LastActiveSignalMs = System.currentTimeMillis()
                 "buscar"
             }
@@ -931,13 +969,18 @@ class TripReaderService : AccessibilityService() {
             // (avaliação, painel de ganhos, etc.) nunca bateu com nenhum dos
             // textos conhecidos de "Buscando"/"Procurando viagens", então o
             // fallback abaixo (mantém o último estado) segurava "corrida"
-            // indefinidamente. Rede de segurança: se faz mais de 90s que
+            // indefinidamente. Rede de segurança: se faz mais de 60s que
             // nenhum sinal de corrida/buscar apareceu de verdade E o status
             // não é online, assume que a corrida encerrou silenciosamente e
             // volta sozinho — evita ficar preso esperando um texto exato
             // que pode nunca aparecer.
+            // AJUSTE (14/07/2026): estava em 15s (v1.0.48) — muito curto,
+            // confirmado no log real disparando durante uma troca de tela
+            // sem sinal reconhecido no meio da espera pelo embarque
+            // (derrubava buscar -> online por engano). Voltando pra 60s,
+            // meio-termo entre os 90s originais e os 15s que causaram o bug.
             confirmedTripSubState != "online" && nn99LastActiveSignalMs > 0 &&
-                System.currentTimeMillis() - nn99LastActiveSignalMs > 15_000 -> {
+                System.currentTimeMillis() - nn99LastActiveSignalMs > 60_000 -> {
                 nn99ReachedPickup = false
                 nn99KnownDestAddr = null
                 "online"
