@@ -5,9 +5,11 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.WindowManager
 import android.widget.FrameLayout
@@ -179,6 +181,17 @@ class FlashCard(private val context: Context) {
                 setTextColor(colorOf(m.grade)); setTypeface(Typeface.DEFAULT_BOLD)
                 gravity = Gravity.CENTER
                 maxLines = 1
+                // BUG CONFIRMADO (14/07/2026): valor calculado certo no banco
+                // ("69,23"), mas a caixa é largura fixa (dividida entre as
+                // métricas) e a fonte era tamanho fixo (31sp) sem proteção —
+                // quando o número era largo (R$/HORA costuma ter mais dígitos
+                // que R$/KM) e não cabia, o Android cortava sem avisar,
+                // geralmente a última casa decimal. Autosize encolhe a fonte
+                // até caber, sem cortar nada — 31sp continua sendo o tamanho
+                // normal quando já cabe.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    setAutoSizeTextTypeUniformWithConfiguration(18, 31, 1, TypedValue.COMPLEX_UNIT_SP)
+                }
             }
             val l = TextView(context).apply {
                 text = m.label; textSize = 6.8f

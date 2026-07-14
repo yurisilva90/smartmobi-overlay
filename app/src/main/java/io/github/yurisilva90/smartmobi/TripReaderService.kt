@@ -937,7 +937,7 @@ class TripReaderService : AccessibilityService() {
             // volta sozinho — evita ficar preso esperando um texto exato
             // que pode nunca aparecer.
             confirmedTripSubState != "online" && nn99LastActiveSignalMs > 0 &&
-                System.currentTimeMillis() - nn99LastActiveSignalMs > 90_000 -> {
+                System.currentTimeMillis() - nn99LastActiveSignalMs > 15_000 -> {
                 nn99ReachedPickup = false
                 nn99KnownDestAddr = null
                 "online"
