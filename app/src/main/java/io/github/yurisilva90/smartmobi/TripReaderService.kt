@@ -974,13 +974,29 @@ class TripReaderService : AccessibilityService() {
         // vírgula, é longa) mudar de verdade — não só truncamento de OCR,
         // por isso compara só os 18 primeiros caracteres — trata como
         // "acabou de pegar o passageiro" mesmo sem ver a tela de espera.
+        //
+        // BUG CONFIRMADO EM CORRIDA REAL (15/07/2026): uma corrida nova
+        // aceita logo depois de outra terminar nascia classificada como
+        // "Corrida" em vez de "Buscar" — o flag reachedPickup tinha ficado
+        // preso true da corrida anterior (a ponte de OCR pro Buscando não
+        // tinha disparado ainda entre uma corrida e outra), e a regra
+        // nn99_aceite ("Corrida aceita" -> buscar) só funciona quando
+        // reachedPickup está desligado. Distinção: se "Corrida aceita"
+        // aparece JUNTO com uma troca de endereço, é prova de pickup novo
+        // (não é o toast de sobreposição que a trava nn99_aceite existe
+        // pra proteger — esse mantém o MESMO endereço da corrida atual).
         val addrLine = texts.firstOrNull { it.length >= 20 && it.contains(",") && !it.contains("R$") }
+        val hasAceite = texts.any {
+            it.contains("Corrida aceita", ignoreCase = true) ||
+                it.contains("Corrida encontrada", ignoreCase = true) ||
+                it.contains("Vamos nessa", ignoreCase = true)
+        }
         if (addrLine != null) {
             val known = nn99KnownDestAddr
             if (known == null) {
                 nn99KnownDestAddr = addrLine
             } else if (!addrLine.take(18).equals(known.take(18), ignoreCase = true)) {
-                nn99ReachedPickup = true
+                nn99ReachedPickup = !hasAceite
                 nn99KnownDestAddr = addrLine
             }
         }
