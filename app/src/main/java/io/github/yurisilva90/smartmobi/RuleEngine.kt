@@ -83,7 +83,8 @@ object RuleEngine {
     private fun defaultConfigJson(): String = """
         [
           {"key":"99_safety_timeout_ms","value":60000},
-          {"key":"trip_state_debounce","value":3}
+          {"key":"trip_state_debounce","value":3},
+          {"key":"trip_state_debounce_window","value":5}
         ]
     """.trimIndent()
 

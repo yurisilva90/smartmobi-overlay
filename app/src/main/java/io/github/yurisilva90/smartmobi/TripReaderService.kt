@@ -73,13 +73,22 @@ class TripReaderService : AccessibilityService() {
         private var lastWinSig = ""
 
         // ── Status no widget flutuante: Online/Buscar/Corrida ──────────────
-        // Debounce: exige N leituras seguidas e CONSISTENTES do mesmo sinal
-        // antes de confirmar a troca (leituras a cada ~600ms via pollForeground,
-        // então isso adiciona no máx ~1.8s de atraso — imperceptível dirigindo,
-        // evita "piscar" estado por ruído de OCR/acessibilidade).
+        // Debounce: exige N leituras equivalentes dentro de uma janela das
+        // últimas M leituras antes de confirmar a troca (leituras a cada
+        // ~600ms via pollForeground).
+        // BUG CONFIRMADO EM LOG REAL (14/07/2026): o painel da Uber tem um
+        // texto que ALTERNA entre "Buscando" e "Destino definido" a cada
+        // ~2s, sempre um ou outro, nunca os dois juntos. Só "Buscando" bate
+        // com a regra de Online — "Destino definido" não bate com nenhuma
+        // regra, então cai no fallback (mantém o último estado). Com debounce
+        // por CONSECUTIVAS, isso reseta o contador pra 1 a cada leitura, e
+        // nunca fecha 3 seguidas — o status ficava travado pra sempre mesmo
+        // com o sinal certo aparecendo o tempo todo. Trocado pra "maioria
+        // dentro de uma janela": com janela ímpar, uma alternação estrita
+        // 50/50 sempre garante maioria pro lado que realmente domina.
         private const val TRIP_STATE_DEBOUNCE = 3
-        private var lastTripSubStateRaw = "online"
-        private var tripSubStateConsecutive = 0
+        private const val TRIP_STATE_DEBOUNCE_WINDOW = 5
+        private val tripSubStateHistory = ArrayDeque<String>()
         private var confirmedTripSubState = "online"
     }
 
@@ -942,16 +951,17 @@ class TripReaderService : AccessibilityService() {
     // Debounce compartilhado por Uber e 99 — exige N leituras seguidas e
     // consistentes antes de confirmar a troca (evita "piscar" por ruído).
     private fun applyTripSubStateDebounced(raw: String) {
-        if (raw == lastTripSubStateRaw) {
-            tripSubStateConsecutive++
-        } else {
-            lastTripSubStateRaw = raw
-            tripSubStateConsecutive = 1
-        }
-        val debounce = RuleEngine.config("trip_state_debounce", TRIP_STATE_DEBOUNCE.toDouble()).toInt()
-        if (tripSubStateConsecutive >= debounce && confirmedTripSubState != raw) {
-            confirmedTripSubState = raw
-            MainActivity.floatingWidget?.updateTripState(raw)
+        val windowSize = RuleEngine.config("trip_state_debounce_window", TRIP_STATE_DEBOUNCE_WINDOW.toDouble()).toInt().coerceAtLeast(1)
+        val required = RuleEngine.config("trip_state_debounce", TRIP_STATE_DEBOUNCE.toDouble()).toInt().coerceAtLeast(1)
+
+        tripSubStateHistory.addLast(raw)
+        while (tripSubStateHistory.size > windowSize) tripSubStateHistory.removeFirst()
+
+        val counts = tripSubStateHistory.groupingBy { it }.eachCount()
+        val best = counts.maxByOrNull { it.value } ?: return
+        if (best.value >= required && confirmedTripSubState != best.key) {
+            confirmedTripSubState = best.key
+            MainActivity.floatingWidget?.updateTripState(best.key)
         }
     }
 
