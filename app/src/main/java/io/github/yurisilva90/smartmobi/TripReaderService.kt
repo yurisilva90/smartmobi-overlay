@@ -447,6 +447,10 @@ class TripReaderService : AccessibilityService() {
             val joined = lines.joinToString("  ")
             val low = joined.lowercase(Locale.getDefault())
             val isOffer = isOfferScreen(low)
+            // Ponte OCR -> status (só 99): ver checkNn99OcrStatusBridge() pra
+            // explicação completa. Roda em toda passada, independente de ser
+            // tela de oferta ou não.
+            checkNn99OcrStatusBridge(plat, joined)
             // Modo diagnóstico: loga TODA passada de OCR, achando oferta ou
             // não — é a única forma de descobrir o padrão real da tela sem
             // continuar chutando. Throttle 1.5s pra não inundar o Supabase.
@@ -891,6 +895,53 @@ class TripReaderService : AccessibilityService() {
     //     sem sinal" fica aqui)
     private var nn99KnownDestAddr: String? = null
     private var nn99LastActiveSignalMs = 0L
+
+    // ── 99: ponte OCR -> status quando a corrida termina ────────────────
+    // CONFIRMADO EM LOG REAL (15/07/2026, corrida da Jessica): a tela de
+    // avaliação ("Como foi sua corrida"/"Avaliar como anônimo") só chega
+    // pela leitura de OCR — nunca pela acessibilidade, que fica muda nesse
+    // trecho (confirmado: 6min sem nenhuma leitura de acessibilidade
+    // durante uma tela de "Buscando" real, print do usuário em mãos).
+    // "Buscando" também só chega por OCR. Sem essa ponte, o status ficava
+    // preso em "Corrida" até a rede de segurança por tempo salvar sozinha
+    // (minutos depois).
+    // Fica de olho no OCR só numa janela curta depois de ver a avaliação
+    // (não o tempo todo) — de propósito, pra não expor o status ao risco
+    // de ler texto de outro app aparecendo por cima (ver v1.0.49-53).
+    // Cobertura confirmada: 28 de 30 finalizações reais mostraram a tela
+    // de avaliação nos 5min seguintes (~93%) — os ~7% restantes (corridas
+    // muito curtas) continuam cobertos pela rede de segurança por tempo.
+    private var nn99WaitingBuscandoViaOcr = false
+    private var nn99WaitingBuscandoSinceMs = 0L
+    private val NN99_WAITING_BUSCANDO_TIMEOUT_MS = 5 * 60_000L
+    private val nn99AvaliacaoOcrRe = Regex(
+        """Como foi sua corrida|Avaliar como anônimo""", RegexOption.IGNORE_CASE
+    )
+    private val nn99BuscandoOcrRe = Regex("""Buscando""", RegexOption.IGNORE_CASE)
+
+    private fun checkNn99OcrStatusBridge(plat: String, joinedOcrText: String) {
+        if (plat != "99") return
+        if (!nn99WaitingBuscandoViaOcr) {
+            if (nn99AvaliacaoOcrRe.containsMatchIn(joinedOcrText)) {
+                nn99WaitingBuscandoViaOcr = true
+                nn99WaitingBuscandoSinceMs = System.currentTimeMillis()
+            }
+            return
+        }
+        // já esperando — desiste depois do timeout e deixa a rede de
+        // segurança por tempo (30s, config remota) resolver sozinha.
+        if (System.currentTimeMillis() - nn99WaitingBuscandoSinceMs > NN99_WAITING_BUSCANDO_TIMEOUT_MS) {
+            nn99WaitingBuscandoViaOcr = false
+            return
+        }
+        if (nn99BuscandoOcrRe.containsMatchIn(joinedOcrText)) {
+            nn99WaitingBuscandoViaOcr = false
+            nn99ReachedPickup = false
+            nn99KnownDestAddr = null
+            nn99LastActiveSignalMs = System.currentTimeMillis()
+            applyTripSubStateDebounced("online")
+        }
+    }
     private fun detectAndApply99TripSubState(texts: List<String>) {
         if (looksLikeOwnWidgetLeak(texts)) return
         RuleEngine.ensureLoaded(this)
