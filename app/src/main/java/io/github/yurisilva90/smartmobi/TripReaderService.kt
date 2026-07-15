@@ -1073,6 +1073,18 @@ class TripReaderService : AccessibilityService() {
         }
         applyTripSubStateDebounced(raw, "99")
 
+        // ── Captura automática — 99: endereço mais completo visto no
+        // cabeçalho de navegação (mesmo campo usado acima pra detectar
+        // troca de endereço) — funde com o que já tinha da oferta (mais
+        // completo vence, ver AutoTripCapture). Buscar = endereço de
+        // origem/embarque; corrida = endereço de destino.
+        if (addrLine != null) {
+            when (raw) {
+                "buscar"  -> AutoTripCapture.updateAddresses("99", addrLine, null)
+                "corrida" -> AutoTripCapture.updateAddresses("99", null, addrLine)
+            }
+        }
+
         // ── Captura automática — 99: dinheiro NÃO confirmado ainda ───────
         // Diferente da Uber, ainda não temos um texto validado em dado real
         // pra "recebi em dinheiro" na 99 (ver princípio: nunca hardcodar
