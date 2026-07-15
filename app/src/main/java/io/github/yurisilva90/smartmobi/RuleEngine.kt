@@ -40,7 +40,14 @@ object RuleEngine {
         val result: String, // "online" | "buscar" | "corrida" | "branch_reached_pickup"
         val setReachedPickup: Boolean?, // null = não mexe no flag
         val onlyIfNotReachedPickup: Boolean,
-        val resetKnownAddr: Boolean
+        val resetKnownAddr: Boolean,
+        // AJUSTE (15/07/2026): se true, a regra só é considerada na leitura
+        // em que o endereço do cabeçalho mudou de verdade — e nesse caso
+        // IGNORA onlyIfNotReachedPickup, porque a troca de endereço junto
+        // com o padrão já é prova forte o bastante sozinha (ex: "Corrida
+        // aceita" + endereço novo = pickup novo de verdade, mesmo que o
+        // flag de chegada tivesse ficado preso true da corrida anterior).
+        val requiresAddrChanged: Boolean = false
     )
 
     data class Evaluation(
@@ -74,6 +81,7 @@ object RuleEngine {
           {"key":"nn99_chegue_antes","platform":"99","priority":30,"pattern":"Chegue antes de \\d{1,2}:\\d{2}","result":"buscar","set_reached_pickup":false},
           {"key":"nn99_chegou_espera","platform":"99","priority":40,"pattern":"Passaremos a cobrar uma taxa de espera|Iniciar corrida|Você está perto do local de embarque|Calculando taxa de espera|Você receberá a taxa de espera total","result":"buscar","set_reached_pickup":true},
           {"key":"nn99_botao_cheguei","platform":"99","priority":50,"pattern":"Cheguei no embarque","result":"buscar"},
+          {"key":"nn99_aceite_pickup_novo","platform":"99","priority":55,"pattern":"Corrida encontrada|Corrida aceita|Vamos nessa","result":"buscar","set_reached_pickup":false,"requires_addr_changed":true},
           {"key":"nn99_aceite","platform":"99","priority":60,"pattern":"Corrida encontrada|Corrida aceita|Vamos nessa","result":"buscar","only_if_not_reached_pickup":true},
           {"key":"nn99_navegando","platform":"99","priority":70,"pattern":"km/h","result":"branch_reached_pickup"},
           {"key":"nn99_aguardando","platform":"99","priority":80,"pattern":"Buscando|Procurando viagens","result":"online","set_reached_pickup":false,"reset_known_addr":true}
@@ -173,7 +181,8 @@ object RuleEngine {
                         setReachedPickup = if (o.has("set_reached_pickup") && !o.isNull("set_reached_pickup"))
                             o.getBoolean("set_reached_pickup") else null,
                         onlyIfNotReachedPickup = o.optBoolean("only_if_not_reached_pickup", false),
-                        resetKnownAddr = o.optBoolean("reset_known_addr", false)
+                        resetKnownAddr = o.optBoolean("reset_known_addr", false),
+                        requiresAddrChanged = o.optBoolean("requires_addr_changed", false)
                     )
                 } catch (_: Exception) { null } // 1 regex inválida vinda do banco não derruba as outras
                 if (rule != null) byPlat.getOrPut(platform) { mutableListOf() }.add(rule)
@@ -204,11 +213,15 @@ object RuleEngine {
     // Avalia as regras da plataforma em ordem de prioridade, primeira que
     // bater vence. `matched=false` quando nenhuma regra bateu — quem chama
     // decide o fallback (rede de segurança / mantém último estado).
-    fun evaluate(platform: String, texts: List<String>, reachedPickup: Boolean): Evaluation {
+    fun evaluate(platform: String, texts: List<String>, reachedPickup: Boolean, addrChanged: Boolean = false): Evaluation {
         val joined = texts.joinToString(" ")
         val rules = rulesByPlatform[platform] ?: emptyList()
         for (rule in rules) {
-            if (rule.onlyIfNotReachedPickup && reachedPickup) continue
+            if (rule.requiresAddrChanged && !addrChanged) continue
+            // requiresAddrChanged=true ignora de propósito onlyIfNotReachedPickup
+            // (ver comentário no data class Rule) — a troca de endereço já é
+            // prova forte o bastante sozinha.
+            if (rule.onlyIfNotReachedPickup && reachedPickup && !rule.requiresAddrChanged) continue
             if (!rule.pattern.containsMatchIn(joined)) continue
             val state = if (rule.result == "branch_reached_pickup") {
                 if (reachedPickup) "corrida" else "buscar"

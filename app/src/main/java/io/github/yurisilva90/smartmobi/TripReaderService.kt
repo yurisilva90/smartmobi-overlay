@@ -974,34 +974,27 @@ class TripReaderService : AccessibilityService() {
         // vírgula, é longa) mudar de verdade — não só truncamento de OCR,
         // por isso compara só os 18 primeiros caracteres — trata como
         // "acabou de pegar o passageiro" mesmo sem ver a tela de espera.
-        //
-        // BUG CONFIRMADO EM CORRIDA REAL (15/07/2026): uma corrida nova
-        // aceita logo depois de outra terminar nascia classificada como
-        // "Corrida" em vez de "Buscar" — o flag reachedPickup tinha ficado
-        // preso true da corrida anterior (a ponte de OCR pro Buscando não
-        // tinha disparado ainda entre uma corrida e outra), e a regra
-        // nn99_aceite ("Corrida aceita" -> buscar) só funciona quando
-        // reachedPickup está desligado. Distinção: se "Corrida aceita"
-        // aparece JUNTO com uma troca de endereço, é prova de pickup novo
-        // (não é o toast de sobreposição que a trava nn99_aceite existe
-        // pra proteger — esse mantém o MESMO endereço da corrida atual).
+        // AJUSTE (15/07/2026): a decisão de "isso é pickup normal (vira
+        // corrida) ou é corrida nova sobrepondo uma corrida anterior presa
+        // (vira buscar)" agora é dado, não código — ver regra
+        // nn99_aceite_pickup_novo (requires_addr_changed) na tabela
+        // state_detection_rules. Aqui só calcula e expõe SE mudou.
         val addrLine = texts.firstOrNull { it.length >= 20 && it.contains(",") && !it.contains("R$") }
-        val hasAceite = texts.any {
-            it.contains("Corrida aceita", ignoreCase = true) ||
-                it.contains("Corrida encontrada", ignoreCase = true) ||
-                it.contains("Vamos nessa", ignoreCase = true)
-        }
+        var addressChanged = false
         if (addrLine != null) {
             val known = nn99KnownDestAddr
             if (known == null) {
                 nn99KnownDestAddr = addrLine
             } else if (!addrLine.take(18).equals(known.take(18), ignoreCase = true)) {
-                nn99ReachedPickup = !hasAceite
+                addressChanged = true
+                nn99ReachedPickup = true // padrão: pickup normal. Uma regra de
+                // prioridade mais alta (nn99_aceite_pickup_novo) pode
+                // sobrescrever isso logo abaixo se for corrida nova de verdade.
                 nn99KnownDestAddr = addrLine
             }
         }
 
-        val ev = RuleEngine.evaluate("99", texts, nn99ReachedPickup)
+        val ev = RuleEngine.evaluate("99", texts, nn99ReachedPickup, addressChanged)
         val raw: String
         if (ev.matched) {
             nn99ReachedPickup = ev.newReachedPickup
