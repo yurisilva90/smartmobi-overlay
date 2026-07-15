@@ -935,11 +935,23 @@ class TripReaderService : AccessibilityService() {
             return
         }
         if (nn99BuscandoOcrRe.containsMatchIn(joinedOcrText)) {
-            nn99WaitingBuscandoViaOcr = false
             nn99ReachedPickup = false
             nn99KnownDestAddr = null
             nn99LastActiveSignalMs = System.currentTimeMillis()
             applyTripSubStateDebounced("online")
+            // BUG CONFIRMADO EM LOG REAL (15/07/2026): a versão anterior
+            // desligava a escuta na primeira vez que via "Buscando" — um
+            // voto só não é suficiente pro debounce de "3 de 5" (v1.0.53)
+            // confirmar a troca, e como a escuta já tinha desligado, nunca
+            // mais tentava de novo. "Buscando" reapareceu dezenas de vezes
+            // nos 2min seguintes e o widget nunca saiu de "Corrida".
+            // Agora só desliga quando o debounce CONFIRMOU de verdade —
+            // continua votando a cada leitura, igual as outras trocas de
+            // status (que funcionam porque são alimentadas várias vezes
+            // seguidas, nunca uma vez só).
+            if (confirmedTripSubState == "online") {
+                nn99WaitingBuscandoViaOcr = false
+            }
         }
     }
     private fun detectAndApply99TripSubState(texts: List<String>) {
