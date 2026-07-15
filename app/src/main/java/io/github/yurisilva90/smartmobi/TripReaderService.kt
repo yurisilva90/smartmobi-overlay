@@ -488,13 +488,6 @@ class TripReaderService : AccessibilityService() {
         } catch (_: Exception) {}
         if (texts.isEmpty()) return
         val plat = if (UBER_PKGS.contains(pkg)) "UBER" else "99"
-        // Segundo gatilho da ponte OCR->status (ver checkNn99OcrStatusBridge):
-        // corrida cancelada também precisa voltar pra Online, e essa
-        // notificação chega por um canal totalmente separado de tela —
-        // não depende de acessibilidade nem de OCR pra ela mesma.
-        if (plat == "99" && texts.any { nn99CanceladaRe.containsMatchIn(it) }) {
-            nn99ArmBuscandoListener()
-        }
         log("\n───── [NOTIF $plat] ${fmt.format(Date())}\n" + texts.joinToString("\n") { "   $it" })
         sendToCloud(plat, pkg, "NOTIFICATION", "NOTIF", extractMoney(texts.joinToString("  ")), null, null, texts)
         // Se a notificação tiver dado suficiente, tenta o card por ela também
@@ -928,10 +921,11 @@ class TripReaderService : AccessibilityService() {
         """Como foi sua corrida|Avaliar como anônimo""", RegexOption.IGNORE_CASE
     )
     private val nn99BuscandoOcrRe = Regex("""Buscando""", RegexOption.IGNORE_CASE)
-    private val nn99CanceladaRe = Regex("""corrida cancelada""", RegexOption.IGNORE_CASE)
 
-    // Liga a escuta de "Buscando" via OCR — chamado pelos dois gatilhos
-    // (avaliação dentro do OCR, ou notificação de cancelamento).
+    // Liga a escuta de "Buscando" via OCR — hoje só chamado pelo gatilho
+    // da avaliação. (Gatilho por notificação de "corrida cancelada" foi
+    // testado e removido a pedido em 15/07/2026 — cobria o ~7% de corridas
+    // que não passam pela avaliação, mas foi tirado por decisão do Yuri.)
     private fun nn99ArmBuscandoListener() {
         if (nn99WaitingBuscandoViaOcr) return
         nn99WaitingBuscandoViaOcr = true
