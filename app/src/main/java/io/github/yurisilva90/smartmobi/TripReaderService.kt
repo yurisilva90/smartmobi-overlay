@@ -964,15 +964,15 @@ class TripReaderService : AccessibilityService() {
     // (ver detectAndApply99TripSubState). Motivo: reduzida pra 30s a
     // pedido, ela passou a disparar durante a espera legítima pelo
     // passageiro (tela de chat/"Passaremos a cobrar taxa de espera" não
-    // bate nenhuma regra pela via limpa, então >30s sem sinal ali é
-    // normal, não corrida encerrada) — confirmado em log real, motorista
-    // ainda buscando, status caiu pra Online sozinho. Agora a ÚNICA saída
-    // de Buscar/Corrida pra Online é essa ponte, armada por dois gatilhos
-    // independentes:
-    //   1. Avaliação (OCR) — cobre o fim normal da corrida (~93% dos casos)
-    //   2. Notificação "corrida cancelada" (canal separado, sem depender
-    //      de tela nenhuma) — cobre o resto (corrida cancelada antes de
-    //      chegar na avaliação)
+    // bate nenhuma regra pela via limpa, então >30s ali é normal, não
+    // corrida encerrada) — confirmado em log real, motorista ainda
+    // buscando, status caiu pra Online sozinho.
+    // Hoje a saída de Buscar/Corrida pra Online funciona assim:
+    //   • Buscar -> Online: fica de olho no "Buscando" o tempo todo,
+    //     sem gatilho nenhum (cobre cancelamento antes de pegar o
+    //     passageiro, que nunca passaria pela avaliação)
+    //   • Corrida -> Online: só depois de ver a avaliação (arma a escuta
+    //     do "Buscando") — cobre o fim normal da corrida (~93% dos casos)
     private var nn99WaitingBuscandoViaOcr = false
     private var nn99WaitingBuscandoSinceMs = 0L
     private val NN99_WAITING_BUSCANDO_TIMEOUT_MS = 5 * 60_000L
@@ -993,6 +993,22 @@ class TripReaderService : AccessibilityService() {
 
     private fun checkNn99OcrStatusBridge(plat: String, joinedOcrText: String) {
         if (plat != "99") return
+
+        // AJUSTE (16/07/2026, a pedido): enquanto o status confirmado for
+        // "buscar", fica de olho no "Buscando" o tempo todo, sem precisar de
+        // nenhum gatilho armar antes — cobre cancelamento ANTES de pegar o
+        // passageiro (nesse caso a corrida nunca chega na tela de avaliação,
+        // então o gatilho de avaliação abaixo nunca dispararia). Custo baixo
+        // de propósito: só mais uma comparação de texto na leitura de OCR
+        // que já roda de qualquer forma a cada ~600ms — não gera leitura,
+        // tela ou gravação extra nenhuma.
+        if (confirmedTripSubState == "buscar" && nn99BuscandoOcrRe.containsMatchIn(joinedOcrText)) {
+            nn99ReachedPickup = false
+            nn99KnownDestAddr = null
+            nn99LastActiveSignalMs = System.currentTimeMillis()
+            applyTripSubStateDebounced("online", "99")
+        }
+
         if (!nn99WaitingBuscandoViaOcr) {
             if (nn99AvaliacaoOcrRe.containsMatchIn(joinedOcrText)) {
                 nn99ArmBuscandoListener()
