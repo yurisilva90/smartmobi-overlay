@@ -1,0 +1,250 @@
+package io.github.yurisilva90.smartmobi
+
+import android.content.Context
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.*
+import kotlin.concurrent.thread
+
+// ══════════════════════════════════════════════════════════════════
+// Monta o registro de "corrida automática" durante todo o ciclo
+// (aceite → buscar → embarque → corrida → fim) e só grava no Supabase
+// (tabela auto_trips) uma vez, no final. Nunca fecha o registro na
+// oferta — vai se retroalimentando com leituras melhores conforme a
+// corrida acontece (endereço mais completo, nome do passageiro, etc),
+// igual combinado: "mais completo vence", não "mais recente vence".
+//
+// Hook único de entrada: onStateTransition(), chamado pelo
+// TripReaderService toda vez que o estado confirmado (online/buscar/
+// corrida) muda de verdade (já passou pelo debounce). Km/tempo REAIS
+// vêm sempre do GpsService.totalKm (fonte autoritativa), nunca de
+// leitura de tela.
+// ══════════════════════════════════════════════════════════════════
+object AutoTripCapture {
+
+    data class OfferSnapshot(
+        val value: Double?,
+        val dinamico: Double,
+        val kmPickup: Double?,
+        val kmTrip: Double?,
+        val durPickupSec: Int?,
+        val durTripSec: Int?,
+        val origin: String?,
+        val dest: String?
+    )
+
+    private data class Buffer(
+        val platform: String,
+        var offerValue: Double?,
+        var offerDinamico: Double,
+        var offerKmPickup: Double?,
+        var offerKmTrip: Double?,
+        var offerDurPickupSec: Int?,
+        var offerDurTripSec: Int?,
+        var originAddress: String?,
+        var destAddress: String?,
+        var passengerName: String? = null,
+        var dinheiro: Boolean = false,
+        val acceptedAt: Long,
+        val pickupStartedAt: Long,
+        val pickupStartKm: Double,
+        var tripStartedAt: Long = 0L,
+        var tripStartKm: Double = 0.0,
+        var tripEndedAt: Long = 0L,
+        var tripEndKm: Double = 0.0
+    )
+
+    // Última oferta válida vista por plataforma, ANTES do aceite — vira o
+    // ponto de partida do registro assim que a corrida é aceita (online→buscar).
+    private val lastOfferByPlat = HashMap<String, OfferSnapshot>()
+
+    @Volatile private var buffer: Buffer? = null
+
+    // "mais completo vence": prioriza quem tem número de casa (\d{2,5}); em
+    // empate, o mais longo. Uma leitura de OCR ruim (mais curta/sem número)
+    // nunca substitui uma leitura boa só por ter chegado depois.
+    private fun betterAddress(old: String?, new: String?): String? {
+        if (new.isNullOrBlank()) return old
+        if (old.isNullOrBlank()) return new
+        val newHasNum = Regex("""\d{2,5}""").containsMatchIn(new)
+        val oldHasNum = Regex("""\d{2,5}""").containsMatchIn(old)
+        return when {
+            newHasNum && !oldHasNum -> new
+            !newHasNum && oldHasNum -> old
+            new.trim().length > old.trim().length -> new
+            else -> old
+        }
+    }
+
+    // Chamado toda vez que um card de oferta válido é parseado (antes do
+    // aceite). Funde com o que já tinha da MESMA oferta (mesmo valor) pelo
+    // critério acima; troca de valor = oferta nova, substitui tudo.
+    fun onOfferSeen(plat: String, snap: OfferSnapshot) {
+        val existing = lastOfferByPlat[plat]
+        lastOfferByPlat[plat] = if (existing == null || existing.value != snap.value) {
+            snap
+        } else {
+            OfferSnapshot(
+                value = snap.value ?: existing.value,
+                dinamico = if (snap.dinamico > 0) snap.dinamico else existing.dinamico,
+                kmPickup = snap.kmPickup ?: existing.kmPickup,
+                kmTrip = snap.kmTrip ?: existing.kmTrip,
+                durPickupSec = snap.durPickupSec ?: existing.durPickupSec,
+                durTripSec = snap.durTripSec ?: existing.durTripSec,
+                origin = betterAddress(existing.origin, snap.origin),
+                dest = betterAddress(existing.dest, snap.dest)
+            )
+        }
+    }
+
+    // Endereço mais completo lido DURANTE buscar/corrida (não só na oferta) —
+    // é o que garante a retroalimentação: número de casa que só aparece na
+    // tela de navegação, por exemplo, substitui o endereço mais genérico da
+    // oferta.
+    fun updateAddresses(plat: String, origin: String?, dest: String?) {
+        val b = buffer ?: return
+        if (b.platform != plat) return
+        if (origin != null) b.originAddress = betterAddress(b.originAddress, origin)
+        if (dest != null) b.destAddress = betterAddress(b.destAddress, dest)
+    }
+
+    // Nome do passageiro: one-shot — só preenche se ainda estava vazio (não
+    // existe "nome mais completo", é uma substituição única quando aparece).
+    fun setPassengerNameIfEmpty(plat: String, name: String?) {
+        val b = buffer ?: return
+        if (b.platform != plat) return
+        if (b.passengerName.isNullOrBlank() && !name.isNullOrBlank()) b.passengerName = name.trim()
+    }
+
+    fun markCash(plat: String) {
+        val b = buffer ?: return
+        if (b.platform != plat) return
+        b.dinheiro = true
+    }
+
+    fun onStateTransition(ctx: Context, plat: String, prev: String, next: String) {
+        val now = System.currentTimeMillis()
+        val km = GpsService.totalKm
+
+        fun startBuffer(startKm: Double, alsoStartTrip: Boolean) {
+            val offer = lastOfferByPlat[plat]
+            buffer = Buffer(
+                platform = plat,
+                offerValue = offer?.value,
+                offerDinamico = offer?.dinamico ?: 0.0,
+                offerKmPickup = offer?.kmPickup,
+                offerKmTrip = offer?.kmTrip,
+                offerDurPickupSec = offer?.durPickupSec,
+                offerDurTripSec = offer?.durTripSec,
+                originAddress = offer?.origin,
+                destAddress = offer?.dest,
+                acceptedAt = now,
+                pickupStartedAt = now,
+                pickupStartKm = startKm,
+                tripStartedAt = if (alsoStartTrip) now else 0L,
+                tripStartKm = if (alsoStartTrip) startKm else 0.0
+            )
+        }
+
+        when {
+            prev == "online" && next == "buscar" -> {
+                startBuffer(km, alsoStartTrip = false)
+            }
+            prev == "buscar" && next == "corrida" -> {
+                val b = buffer
+                if (b != null && b.platform == plat) {
+                    b.tripStartedAt = now
+                    b.tripStartKm = km
+                } else {
+                    // Rede de segurança: chegou em "corrida" sem termos visto o
+                    // "buscar" (debounce pode ter engolido o passo intermediário).
+                    // Sem km de buscar pra comparar, mas não perde o resto.
+                    startBuffer(km, alsoStartTrip = true)
+                }
+            }
+            prev == "corrida" && next == "online" -> {
+                val b = buffer
+                buffer = null
+                if (b != null && b.platform == plat) {
+                    b.tripEndedAt = now
+                    b.tripEndKm = km
+                    push(ctx, b)
+                }
+            }
+            prev == "buscar" && next == "online" -> {
+                // Cancelado antes de embarcar — não é uma corrida, descarta.
+                buffer = null
+            }
+            prev == "corrida" && next == "buscar" -> {
+                // Overlap: próxima corrida aceita antes da anterior fechar de
+                // vez (confirmado em log real). Fecha a anterior com o que já
+                // tem (melhor esforço) e começa a nova do zero.
+                val b = buffer
+                if (b != null && b.platform == plat) {
+                    b.tripEndedAt = now
+                    b.tripEndKm = km
+                    push(ctx, b)
+                }
+                startBuffer(km, alsoStartTrip = false)
+            }
+        }
+    }
+
+    private fun push(ctx: Context, b: Buffer) {
+        thread(isDaemon = true) {
+            try {
+                val prefs = ctx.getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
+                val userId = prefs.getString(GpsService.KEY_USER_ID, null) ?: return@thread
+
+                val realKmPickup = (b.tripStartKm - b.pickupStartKm).coerceAtLeast(0.0)
+                val realKmTrip = (b.tripEndKm - b.tripStartKm).coerceAtLeast(0.0)
+                val status = if (b.offerValue != null && b.tripStartedAt > 0 && b.tripEndedAt > 0)
+                    "confirmada" else "capturada"
+
+                val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+                    .apply { timeZone = TimeZone.getTimeZone("UTC") }
+                fun iso(ms: Long): Any = if (ms > 0) sdf.format(Date(ms)) else JSONObject.NULL
+
+                val body = JSONObject().apply {
+                    put("user_id", userId)
+                    put("platform", if (b.platform == "UBER") "uber" else "99")
+                    put("passenger_name", b.passengerName ?: JSONObject.NULL)
+                    put("origin_address", b.originAddress ?: JSONObject.NULL)
+                    put("dest_address", b.destAddress ?: JSONObject.NULL)
+                    put("offer_value", b.offerValue ?: JSONObject.NULL)
+                    put("offer_dinamico", b.offerDinamico)
+                    put("offer_km_pickup", b.offerKmPickup ?: JSONObject.NULL)
+                    put("offer_km_trip", b.offerKmTrip ?: JSONObject.NULL)
+                    put("offer_duration_pickup_sec", b.offerDurPickupSec ?: JSONObject.NULL)
+                    put("offer_duration_trip_sec", b.offerDurTripSec ?: JSONObject.NULL)
+                    put("real_km_pickup", realKmPickup)
+                    put("real_km_trip", realKmTrip)
+                    put("dinheiro", b.dinheiro)
+                    put("accepted_at", iso(b.acceptedAt))
+                    put("pickup_started_at", iso(b.pickupStartedAt))
+                    put("trip_started_at", iso(b.tripStartedAt))
+                    put("trip_ended_at", iso(b.tripEndedAt))
+                    put("status", status)
+                }
+
+                val url = URL("${TripReaderService.SUPABASE_URL}/rest/v1/auto_trips")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.connectTimeout = 8000; conn.readTimeout = 8000
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("apikey", TripReaderService.SUPABASE_ANON)
+                conn.setRequestProperty("Authorization", "Bearer ${TripReaderService.SUPABASE_ANON}")
+                conn.setRequestProperty("Prefer", "return=minimal")
+                conn.outputStream.use { it.write(body.toString().toByteArray()) }
+                conn.responseCode
+                conn.disconnect()
+            } catch (_: Exception) {
+                // sem rede/erro — a corrida real não é perdida (o motorista já a
+                // fez), só não vira registro automático desta vez.
+            }
+        }
+    }
+}

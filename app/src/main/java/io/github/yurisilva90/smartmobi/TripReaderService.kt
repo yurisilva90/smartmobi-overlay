@@ -495,11 +495,19 @@ class TripReaderService : AccessibilityService() {
     }
 
     // ── Parser de oferta com base nos prints reais da 99 ──
+    // kmPickup/kmTrip/minPickup/minTrip: pernas SEPARADAS (não somadas) —
+    // confirmado em print real da Uber (15/07/2026): "7 min (2.5 km)" até
+    // buscar + "3 minutos (0.9 km)" até o destino, sempre nessa ordem (1ª
+    // perna lida = buscar, 2ª = corrida). km/min continuam sendo a SOMA das
+    // duas, usados só pro card visual (Flash).
     private data class Offer(
         val valor: Double?, val km: Double?, val min: Int?,
         val rkmDirect: Double?, val nota: Double?,
         val origem: String? = null, val destino: String? = null,
-        val legsFound: Int = 0
+        val legsFound: Int = 0,
+        val kmPickup: Double? = null, val kmTrip: Double? = null,
+        val minPickup: Int? = null, val minTrip: Int? = null,
+        val dinamico: Double = 0.0
     )
 
     private fun parseOffer(texts: List<String>): Offer {
@@ -529,11 +537,15 @@ class TripReaderService : AccessibilityService() {
         //  99 tipo B ("Escolher"):       "(10 min 3,1 km)"   — min E dist dentro dos mesmos parênteses
         //  Uber ("Selecionar"):          "4 min (1.2 km)" / "5 minutos (1.6 km)" — "minutos" por extenso, ponto decimal
         var totMin = 0; var totKm = 0.0; var legs = 0
+        // Ordem de leitura preservada: legsList[0] = 1ª perna (buscar),
+        // legsList[1] = 2ª perna (corrida) — é assim que a tela mostra,
+        // sempre buscar primeiro, corrida embaixo.
+        val legsList = ArrayList<Pair<Int, Double>>()
         fun addLeg(minsStr: String, distStr: String, unit: String) {
             val mins = minsStr.toIntOrNull() ?: return
             val dist = distStr.replace(",", ".").toDoubleOrNull() ?: return
             val km2 = if (unit == "m") dist / 1000.0 else dist
-            if (mins in 1..90 && km2 in 0.05..80.0) { totMin += mins; totKm += km2; legs++ }
+            if (mins in 1..90 && km2 in 0.05..80.0) { totMin += mins; totKm += km2; legs++; legsList.add(mins to km2) }
         }
         Regex("""(\d{1,3})\s*min(?:utos)?\s*\((\d+(?:[.,]\d+)?)\s*(m|km)\)""").findAll(low)
             .forEach { addLeg(it.groupValues[1], it.groupValues[2], it.groupValues[3]) }
@@ -542,6 +554,17 @@ class TripReaderService : AccessibilityService() {
 
         var km: Double? = if (legs > 0 && totKm > 0) totKm else null
         val min: Int? = if (legs > 0 && totMin > 0) totMin else extractMin(low)?.toIntOrNull()
+        val kmPickup = legsList.getOrNull(0)?.second
+        val kmTrip = legsList.getOrNull(1)?.second
+        val minPickup = legsList.getOrNull(0)?.first
+        val minTrip = legsList.getOrNull(1)?.first
+
+        // dinâmico: CONFIRMADO EM PRINT REAL (13/07/2026) — notificação com
+        // "Origem: S R$1,45 Tarifa base dinâmica incl." (ver looksLikeAddress
+        // abaixo, mesmo caso que ensinou a rejeitar essa linha como endereço).
+        val dinamico = Regex("""r\$\s*([\d.]+,\d{2})\s*tarifa base din[aâ]mica""").find(low)?.let {
+            moneyToDouble(it.groupValues[1])
+        } ?: 0.0
 
         // fallback de valor: se não achou "aceitar por", pega o R$ que for
         // consistente com rkm direto × km (evita pegar ganhos do dia) — é
@@ -620,7 +643,7 @@ class TripReaderService : AccessibilityService() {
         val origem = addrCandidates.getOrNull(0)
         val destino = addrCandidates.getOrNull(1)
 
-        return Offer(valor, km, min, rkmDirect, nota, origem, destino, legs)
+        return Offer(valor, km, min, rkmDirect, nota, origem, destino, legs, kmPickup, kmTrip, minPickup, minTrip, dinamico)
     }
 
     private fun isOfferScreen(low: String): Boolean {
@@ -686,6 +709,17 @@ class TripReaderService : AccessibilityService() {
         if (valor == null || valor <= 0.0 || valor > 2000.0 || km == null || km <= 0.0 || km > 150.0) {
             bmp?.recycle(); return
         }
+
+        // Alimenta o buffer de captura automática com TODA leitura válida —
+        // independente da lógica de estabilidade do card visual abaixo (essa
+        // é só pra não "piscar" na tela; a captura quer o dado mais completo,
+        // mesmo que só apareça numa releitura que o card visual descartou).
+        AutoTripCapture.onOfferSeen(plat, AutoTripCapture.OfferSnapshot(
+            value = valor, dinamico = offer.dinamico,
+            kmPickup = offer.kmPickup, kmTrip = offer.kmTrip,
+            durPickupSec = offer.minPickup?.let { it * 60 }, durTripSec = offer.minTrip?.let { it * 60 },
+            origin = offer.origem, dest = offer.destino
+        ))
 
         // A mesma oferta (mesmo valor, MESMA PLATAFORMA) não pode "regredir"
         // pra uma leitura com menos pernas do que uma que já conseguimos ler
@@ -870,7 +904,32 @@ class TripReaderService : AccessibilityService() {
         // Uber não usa o flag reachedPickup (Destino de/Encerrar já
         // distinguem os estados sozinhos) — só o resultado importa aqui.
         val raw = if (ev.matched) ev.state else "online"
-        applyTripSubStateDebounced(raw)
+        applyTripSubStateDebounced(raw, "UBER")
+
+        // ── Captura automática: nome do passageiro + endereço, Uber ──────
+        // "Destino de {nome}" é o único texto confirmado presente em TODAS
+        // as variações de tela da corrida (ver comentário acima) — mesma
+        // âncora usada pro estado "corrida" serve pro nome, one-shot.
+        val joined = texts.joinToString(" ")
+        uberDestinoDeRe.find(joined)?.groupValues?.getOrNull(1)?.trim()?.let {
+            if (it.isNotEmpty()) AutoTripCapture.setPassengerNameIfEmpty("UBER", it)
+        }
+        // Endereço mais completo visto na tela de navegação — funde com o
+        // que já tinha da oferta (mais completo vence, ver AutoTripCapture).
+        extractBestAddressCandidate(texts)?.let { addr ->
+            when (raw) {
+                "buscar"  -> AutoTripCapture.updateAddresses("UBER", addr, null)
+                "corrida" -> AutoTripCapture.updateAddresses("UBER", null, addr)
+            }
+        }
+        // Dinheiro: CONFIRMADO em corrida real — "Quanto você recebeu em
+        // dinheiro?" só aparece como pergunta final, logo antes de
+        // "Pagamento realizado". Nunca usa "O cliente pagará em dinheiro"
+        // (aparece durante a navegação, não confirma que foi pago assim de
+        // verdade) nem o rótulo da aba "Dinheiro" do Coletar pagamento.
+        if (joined.contains("Quanto você recebeu em dinheiro", ignoreCase = true)) {
+            AutoTripCapture.markCash("UBER")
+        }
     }
 
     // ── Detecta Online/Buscar/Corrida — 99 ────────────────────────────
@@ -951,7 +1010,7 @@ class TripReaderService : AccessibilityService() {
             nn99ReachedPickup = false
             nn99KnownDestAddr = null
             nn99LastActiveSignalMs = System.currentTimeMillis()
-            applyTripSubStateDebounced("online")
+            applyTripSubStateDebounced("online", "99")
             // Só desliga quando o debounce CONFIRMOU de verdade — continua
             // votando a cada leitura enquanto "Buscando" aparecer (bug do
             // v1.0.54 corrigido no v1.0.55: desligava no primeiro voto).
@@ -1012,12 +1071,18 @@ class TripReaderService : AccessibilityService() {
             // nunca mais "chuta" online só por falta de sinal.
             raw = confirmedTripSubState
         }
-        applyTripSubStateDebounced(raw)
+        applyTripSubStateDebounced(raw, "99")
+
+        // ── Captura automática — 99: dinheiro NÃO confirmado ainda ───────
+        // Diferente da Uber, ainda não temos um texto validado em dado real
+        // pra "recebi em dinheiro" na 99 (ver princípio: nunca hardcodar
+        // padrão de tela sem confirmação em trip_reader_log). Fica como
+        // dinheiro=false até validar — não é pra chutar aqui.
     }
 
     // Debounce compartilhado por Uber e 99 — exige N leituras seguidas e
     // consistentes antes de confirmar a troca (evita "piscar" por ruído).
-    private fun applyTripSubStateDebounced(raw: String) {
+    private fun applyTripSubStateDebounced(raw: String, plat: String) {
         val windowSize = RuleEngine.config("trip_state_debounce_window", TRIP_STATE_DEBOUNCE_WINDOW.toDouble()).toInt().coerceAtLeast(1)
         val required = RuleEngine.config("trip_state_debounce", TRIP_STATE_DEBOUNCE.toDouble()).toInt().coerceAtLeast(1)
 
@@ -1027,9 +1092,30 @@ class TripReaderService : AccessibilityService() {
         val counts = tripSubStateHistory.groupingBy { it }.eachCount()
         val best = counts.maxByOrNull { it.value } ?: return
         if (best.value >= required && confirmedTripSubState != best.key) {
+            val prev = confirmedTripSubState
             confirmedTripSubState = best.key
             MainActivity.floatingWidget?.updateTripState(best.key)
+            // Captura automática: só reage a transição CONFIRMADA (pós-debounce),
+            // nunca a leituras cruas — evita abrir/fechar registro por ruído.
+            AutoTripCapture.onStateTransition(this, plat, prev, best.key)
         }
+    }
+
+    // ── Captura automática: endereço mais completo visto em tela (Uber) ──
+    // Reaproveita o mesmo espírito de looksLikeAddress() do parser de oferta
+    // (rejeita R$, status solto, distância/tempo solto), simplificado pra
+    // texto de navegação corrida. Pega o candidato mais longo da leitura.
+    private val uberDestinoDeRe = Regex("""Destino de\s+([A-ZÀ-Ý][\wÀ-ÿ'’-]*(?:\s+[A-ZÀ-Ý][\wÀ-ÿ'’-]*){0,2})""")
+    private fun extractBestAddressCandidate(texts: List<String>): String? {
+        return texts.asSequence()
+            .map { it.trim() }
+            .filter { s ->
+                s.length in 12..90 && s.contains(",") && !s.contains("R$") &&
+                !Regex("""^\d""").containsMatchIn(s) &&
+                !s.contains("tarifa", ignoreCase = true) &&
+                !s.contains("destino de", ignoreCase = true)
+            }
+            .maxByOrNull { it.length }
     }
 
     private fun fmtBr(v: Double): String {
