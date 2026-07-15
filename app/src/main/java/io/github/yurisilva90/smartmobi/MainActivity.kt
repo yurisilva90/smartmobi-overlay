@@ -83,7 +83,7 @@ class MainActivity : AppCompatActivity() {
         setupWebView()
         webView.setBackgroundColor(Color.parseColor("#0F172A"))
         webView.loadUrl(URL)
-        Handler(Looper.getMainLooper()).postDelayed({ splashDone = true; maybeHideSplash() }, 2000)
+        Handler(Looper.getMainLooper()).postDelayed({ splashDone = true; maybeHideSplash() }, 400)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -167,10 +167,14 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebView() {
-        webView.clearCache(true)
         webView.settings.apply {
             javaScriptEnabled = true; domStorageEnabled = true; databaseEnabled = true
-            cacheMode = WebSettings.LOAD_NO_CACHE; setSupportZoom(false)
+            // LOAD_DEFAULT respeita os headers de cache do GitHub Pages (ETag/max-age),
+            // permitindo reuso em disco e revalidação rápida (304) em vez de rebaixar o
+            // index.html inteiro (~1,5MB) toda vez que o processo é morto em segundo
+            // plano e o app reabre — antes era LOAD_NO_CACHE + clearCache(true) no
+            // onCreate, que forçava download completo em TODO cold start.
+            cacheMode = WebSettings.LOAD_DEFAULT; setSupportZoom(false)
             displayZoomControls = false; builtInZoomControls = false
             useWideViewPort = true; loadWithOverviewMode = true; allowFileAccess = true
             setGeolocationEnabled(true); setGeolocationDatabasePath(filesDir.absolutePath)
