@@ -16,12 +16,15 @@ import android.provider.Settings
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
-import android.view.WindowManager
 import android.webkit.*
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 
 class MainActivity : AppCompatActivity() {
 
@@ -45,7 +48,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         instance = this
         pendingScreen = intent.getStringExtra("open_screen")
-        window.setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         supportActionBar?.hide()
 
         val root = FrameLayout(this)
@@ -59,6 +62,20 @@ class MainActivity : AppCompatActivity() {
         splashView = buildSplash()
         root.addView(splashView, FrameLayout.LayoutParams(-1, -1))
         setContentView(root)
+
+        // Substitui a antiga FLAG_FULLSCREEN (conflitava com adjustResize e escondia
+        // campo de texto atrás do teclado). Aqui escondemos a status bar via
+        // WindowInsetsController (não bloqueia o resize) e empurramos o conteúdo pra
+        // cima manualmente quando o teclado abre, comparando com o inset da nav bar.
+        val insetsController = WindowCompat.getInsetsController(window, window.decorView)
+        insetsController.hide(WindowInsetsCompat.Type.statusBars())
+        insetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+            val navBottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
+            view.setPadding(0, 0, 0, maxOf(imeBottom, navBottom))
+            insets
+        }
 
         requestAppPermissions()
         requestOverlayPermission()
