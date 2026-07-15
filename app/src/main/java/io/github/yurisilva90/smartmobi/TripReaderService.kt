@@ -488,6 +488,13 @@ class TripReaderService : AccessibilityService() {
         } catch (_: Exception) {}
         if (texts.isEmpty()) return
         val plat = if (UBER_PKGS.contains(pkg)) "UBER" else "99"
+        // Segundo gatilho da ponte OCR->status (ver checkNn99OcrStatusBridge):
+        // corrida cancelada também precisa voltar pra Online, e essa
+        // notificação chega por um canal totalmente separado de tela —
+        // não depende de acessibilidade nem de OCR pra ela mesma.
+        if (plat == "99" && texts.any { nn99CanceladaRe.containsMatchIn(it) }) {
+            nn99ArmBuscandoListener()
+        }
         log("\n───── [NOTIF $plat] ${fmt.format(Date())}\n" + texts.joinToString("\n") { "   $it" })
         sendToCloud(plat, pkg, "NOTIFICATION", "NOTIF", extractMoney(texts.joinToString("  ")), null, null, texts)
         // Se a notificação tiver dado suficiente, tenta o card por ela também
@@ -900,17 +907,20 @@ class TripReaderService : AccessibilityService() {
     // CONFIRMADO EM LOG REAL (15/07/2026, corrida da Jessica): a tela de
     // avaliação ("Como foi sua corrida"/"Avaliar como anônimo") só chega
     // pela leitura de OCR — nunca pela acessibilidade, que fica muda nesse
-    // trecho (confirmado: 6min sem nenhuma leitura de acessibilidade
-    // durante uma tela de "Buscando" real, print do usuário em mãos).
-    // "Buscando" também só chega por OCR. Sem essa ponte, o status ficava
-    // preso em "Corrida" até a rede de segurança por tempo salvar sozinha
-    // (minutos depois).
-    // Fica de olho no OCR só numa janela curta depois de ver a avaliação
-    // (não o tempo todo) — de propósito, pra não expor o status ao risco
-    // de ler texto de outro app aparecendo por cima (ver v1.0.49-53).
-    // Cobertura confirmada: 28 de 30 finalizações reais mostraram a tela
-    // de avaliação nos 5min seguintes (~93%) — os ~7% restantes (corridas
-    // muito curtas) continuam cobertos pela rede de segurança por tempo.
+    // trecho. "Buscando" também só chega por OCR.
+    // AJUSTE (15/07/2026): a rede de segurança por tempo foi REMOVIDA
+    // (ver detectAndApply99TripSubState). Motivo: reduzida pra 30s a
+    // pedido, ela passou a disparar durante a espera legítima pelo
+    // passageiro (tela de chat/"Passaremos a cobrar taxa de espera" não
+    // bate nenhuma regra pela via limpa, então >30s sem sinal ali é
+    // normal, não corrida encerrada) — confirmado em log real, motorista
+    // ainda buscando, status caiu pra Online sozinho. Agora a ÚNICA saída
+    // de Buscar/Corrida pra Online é essa ponte, armada por dois gatilhos
+    // independentes:
+    //   1. Avaliação (OCR) — cobre o fim normal da corrida (~93% dos casos)
+    //   2. Notificação "corrida cancelada" (canal separado, sem depender
+    //      de tela nenhuma) — cobre o resto (corrida cancelada antes de
+    //      chegar na avaliação)
     private var nn99WaitingBuscandoViaOcr = false
     private var nn99WaitingBuscandoSinceMs = 0L
     private val NN99_WAITING_BUSCANDO_TIMEOUT_MS = 5 * 60_000L
@@ -918,18 +928,27 @@ class TripReaderService : AccessibilityService() {
         """Como foi sua corrida|Avaliar como anônimo""", RegexOption.IGNORE_CASE
     )
     private val nn99BuscandoOcrRe = Regex("""Buscando""", RegexOption.IGNORE_CASE)
+    private val nn99CanceladaRe = Regex("""corrida cancelada""", RegexOption.IGNORE_CASE)
+
+    // Liga a escuta de "Buscando" via OCR — chamado pelos dois gatilhos
+    // (avaliação dentro do OCR, ou notificação de cancelamento).
+    private fun nn99ArmBuscandoListener() {
+        if (nn99WaitingBuscandoViaOcr) return
+        nn99WaitingBuscandoViaOcr = true
+        nn99WaitingBuscandoSinceMs = System.currentTimeMillis()
+    }
 
     private fun checkNn99OcrStatusBridge(plat: String, joinedOcrText: String) {
         if (plat != "99") return
         if (!nn99WaitingBuscandoViaOcr) {
             if (nn99AvaliacaoOcrRe.containsMatchIn(joinedOcrText)) {
-                nn99WaitingBuscandoViaOcr = true
-                nn99WaitingBuscandoSinceMs = System.currentTimeMillis()
+                nn99ArmBuscandoListener()
             }
             return
         }
-        // já esperando — desiste depois do timeout e deixa a rede de
-        // segurança por tempo (30s, config remota) resolver sozinha.
+        // já esperando — desiste depois do timeout (5min é generoso o
+        // bastante pra não bater em espera real nenhuma; se estourar,
+        // fica no último estado confirmado até algum sinal novo chegar).
         if (System.currentTimeMillis() - nn99WaitingBuscandoSinceMs > NN99_WAITING_BUSCANDO_TIMEOUT_MS) {
             nn99WaitingBuscandoViaOcr = false
             return
@@ -939,16 +958,9 @@ class TripReaderService : AccessibilityService() {
             nn99KnownDestAddr = null
             nn99LastActiveSignalMs = System.currentTimeMillis()
             applyTripSubStateDebounced("online")
-            // BUG CONFIRMADO EM LOG REAL (15/07/2026): a versão anterior
-            // desligava a escuta na primeira vez que via "Buscando" — um
-            // voto só não é suficiente pro debounce de "3 de 5" (v1.0.53)
-            // confirmar a troca, e como a escuta já tinha desligado, nunca
-            // mais tentava de novo. "Buscando" reapareceu dezenas de vezes
-            // nos 2min seguintes e o widget nunca saiu de "Corrida".
-            // Agora só desliga quando o debounce CONFIRMOU de verdade —
-            // continua votando a cada leitura, igual as outras trocas de
-            // status (que funcionam porque são alimentadas várias vezes
-            // seguidas, nunca uma vez só).
+            // Só desliga quando o debounce CONFIRMOU de verdade — continua
+            // votando a cada leitura enquanto "Buscando" aparecer (bug do
+            // v1.0.54 corrigido no v1.0.55: desligava no primeiro voto).
             if (confirmedTripSubState == "online") {
                 nn99WaitingBuscandoViaOcr = false
             }
@@ -987,26 +999,15 @@ class TripReaderService : AccessibilityService() {
             nn99LastActiveSignalMs = System.currentTimeMillis()
             raw = ev.state
         } else {
-            // BUG CONFIRMADO (13/07/2026): corrida do Anderson terminou de
-            // verdade, mas o status ficou preso em "Corrida" — a tela final
-            // nunca bateu com nenhuma regra conhecida, e o fallback (mantém
-            // o último estado) segurava "corrida" indefinidamente. Rede de
-            // segurança: se faz mais tempo que `99_safety_timeout_ms` (config
-            // remota, default 60s) que nenhuma regra bateu de verdade E o
-            // status não é online, assume que a corrida encerrou
-            // silenciosamente e volta sozinho.
-            val safetyMs = RuleEngine.config("99_safety_timeout_ms", 60_000.0).toLong()
-            raw = if (confirmedTripSubState != "online" && nn99LastActiveSignalMs > 0 &&
-                System.currentTimeMillis() - nn99LastActiveSignalMs > safetyMs) {
-                nn99ReachedPickup = false
-                nn99KnownDestAddr = null
-                "online"
-            } else {
-                // Texto sem sinal claro (tela de transição/carregando/chat
-                // com o passageiro) — mantém o último estado confirmado em
-                // vez de forçar online, pra não gerar flapping.
-                confirmedTripSubState
-            }
+            // REMOVIDO (15/07/2026): a rede de segurança por tempo aqui.
+            // CONFIRMADO EM LOG REAL: com 30s ela disparava durante a
+            // espera legítima pelo passageiro (chat/"taxa de espera" não
+            // batem regra nenhuma pela via limpa — >30s ali é normal, não
+            // corrida encerrada). A única saída de Buscar/Corrida pra
+            // Online agora é a ponte de OCR acima (checkNn99OcrStatusBridge),
+            // armada pela avaliação ou pela notificação de cancelamento —
+            // nunca mais "chuta" online só por falta de sinal.
+            raw = confirmedTripSubState
         }
         applyTripSubStateDebounced(raw)
     }
