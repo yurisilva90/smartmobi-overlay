@@ -87,6 +87,24 @@ class TripReaderService : AccessibilityService() {
     private val main = Handler(Looper.getMainLooper())
     private val flashCard by lazy { FlashCard(this) }
     private var lastFlashSig = ""
+    private var lastFlashSigSetMs = 0L
+    // Guard usado tanto no polling (pollForeground) quanto no evento de
+    // acessibilidade: só pausa a varredura de status Online/Buscar/Corrida
+    // enquanto a oferta é recente o bastante pra ainda ser a mesma decisão
+    // rápida que motivou a trava original (mesma janela do auto-hide visual
+    // do FlashCard, 15s, +5s de margem).
+    // BUG CONFIRMADO EM LOG REAL (14/07/2026): "Radar de Viagens"/"Modo
+    // Destino" da Uber mantém uma oferta candidata em tela por MINUTOS
+    // enquanto o motorista ainda está buscando — isOfferScreen() continua
+    // batendo o tempo todo nesse modo, lastFlashSig nunca zera (só zera
+    // quando a tela PARA de parecer oferta), e o status Online/Buscar/
+    // Corrida ficava PRESO no último valor confirmado a viagem inteira
+    // (visto: travado em "Corrida" por mais de 4 minutos com o motorista
+    // genuinamente buscando). Depois da janela abaixo, mesmo que a tela
+    // ainda pareça oferta, volta a varrer o status normalmente.
+    private val FLASH_STATUS_GUARD_MS = 20_000L
+    private fun offerGuardActive(): Boolean =
+        lastFlashSig.isNotEmpty() && System.currentTimeMillis() - lastFlashSigSetMs < FLASH_STATUS_GUARD_MS
     private var lastRealState = "?"
     // INVESTIGAÇÃO (13/07/2026): achado um buraco de 36min sem nenhum card,
     // com ofertas reais e válidas confirmadas no OCR (texto limpo, formato
@@ -187,7 +205,7 @@ class TripReaderService : AccessibilityService() {
         //    no mesmo tick de 600ms que o OCR do Flash sobrecarrega a thread
         //    principal e é o que tava causando o FlashCard piscar. Status do
         //    botão flutuante nunca deve competir com o Flash pela UI thread.
-        if (lastFlashSig.isNotEmpty()) return
+        if (offerGuardActive()) return
         when (fgPlat) {
             "UBER" -> scanUberTripState()
             "99"   -> scanNN99TripState()
@@ -319,7 +337,7 @@ class TripReaderService : AccessibilityService() {
         // Guard igual ao do pollForeground: com oferta ativa (lastFlashSig
         // setado pelo processRealOffer logo acima), o texto da tela pode vir
         // misturado com o card de oferta — não mexe no status nesse momento.
-        if (lastFlashSig.isEmpty()) {
+        if (!offerGuardActive()) {
             if (realPlat == "UBER" && realTexts.isNotEmpty()) {
                 detectAndApplyTripSubState(realTexts)
             } else if (realPlat == "99" && realTexts.isNotEmpty()) {
@@ -675,6 +693,7 @@ class TripReaderService : AccessibilityService() {
         val sig = "$plat|$valor|$km|$min|${offer.nota}"
         if (sig == lastFlashSig) { bmp?.recycle(); return }
         lastFlashSig = sig
+        lastFlashSigSetMs = System.currentTimeMillis()
 
         val custoPorKm = cfg.optDouble("custoPorKm", 0.0)
         val kpisCfg = cfg.optJSONObject("kpis") ?: JSONObject()
