@@ -170,7 +170,7 @@ class FlashCard(private val context: Context) {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
-        metrics.forEach { m ->
+        metrics.forEachIndexed { idx, m ->
             val tile = LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_HORIZONTAL
@@ -201,6 +201,10 @@ class FlashCard(private val context: Context) {
             }
             tile.addView(n); tile.addView(l)
             metricsRow.addView(tile)
+            // Linha vertical fina entre os KPIs (mockup "Variação A", aprovado
+            // por Yuri em 16/07/2026) — sem ela os números ficavam colados e
+            // difíceis de separar de relance com 3-4 KPIs na tela.
+            if (idx < metrics.size - 1) metricsRow.addView(vDivider())
         }
         content.addView(metricsRow)
 
@@ -271,6 +275,19 @@ class FlashCard(private val context: Context) {
                     floatArrayOf(0f, 0f, r, r, r, r, 0f, 0f)
                 else floatArrayOf(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
             }
+        }
+    }
+
+    // Linha vertical fina entre KPIs — MATCH_PARENT de altura (estica pra
+    // acompanhar a linha inteira de métricas, já que metricsRow é
+    // WRAP_CONTENT e a altura real vem do tile mais alto), com uma margem
+    // pequena em cima/embaixo pra não encostar nas bordas.
+    private fun vDivider(): android.view.View {
+        return android.view.View(context).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(1), LinearLayout.LayoutParams.MATCH_PARENT).apply {
+                topMargin = dp(3); bottomMargin = dp(3)
+            }
+            setBackgroundColor(Color.parseColor("#26FFFFFF"))
         }
     }
 }
