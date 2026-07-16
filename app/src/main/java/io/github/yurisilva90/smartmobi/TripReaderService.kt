@@ -520,7 +520,8 @@ class TripReaderService : AccessibilityService() {
         val legsFound: Int = 0,
         val kmPickup: Double? = null, val kmTrip: Double? = null,
         val minPickup: Int? = null, val minTrip: Int? = null,
-        val dinamico: Double = 0.0
+        val dinamico: Double = 0.0,
+        val corridas: Int? = null, val paradas: Int = 0
     )
 
     private fun parseOffer(texts: List<String>): Offer {
@@ -609,14 +610,35 @@ class TripReaderService : AccessibilityService() {
         // "corrida(s)" — não no texto inteiro (senão pega R$/km por engano,
         // que também cai na faixa 1..5, tipo "R$1,31/km"). Uber também usa
         // formato "4,90 (1985)" — número + parênteses com contagem.
+        // corridas: o total de corridas do passageiro vem NA MESMA LINHA da
+        // nota (99: "4,80 630 corridas" — número solto antes da palavra;
+        // Uber: "4,90 (1985)" — número dentro dos parênteses). Lê os dois
+        // juntos, já que sempre aparecem colados na mesma linha.
         var nota: Double? = null
+        var corridas: Int? = null
         for (line in texts) {
             val l = line.lowercase(Locale.getDefault())
             if (l.contains("corrid") || l.contains("corda") || Regex("""[1-5][.,]\d{2}\s*\(\d+\)""").containsMatchIn(l)) {
                 Regex("""([1-5][.,]\d{2})""").find(line)?.let {
                     nota = it.groupValues[1].replace(",", ".").toDoubleOrNull()
                 }
-                if (nota != null) break
+                if (nota != null) {
+                    Regex("""(\d+)\s*corrid""").find(l)?.let { corridas = it.groupValues[1].toIntOrNull() }
+                    if (corridas == null) Regex("""\(\s*(\d+)\s*\)""").find(line)?.let {
+                        corridas = it.groupValues[1].toIntOrNull()
+                    }
+                    break
+                }
+            }
+        }
+
+        // paradas: exige um dígito colado antes de "parada(s)" — evita bater
+        // em nome de lugar tipo "Parada Modelo" que não tem número na frente.
+        // Só um sinal booleano por enquanto (não distingue 1 de 2+ paradas).
+        var paradas = 0
+        for (line in texts) {
+            Regex("""\b(\d{1,2})\s*paradas?\b""", RegexOption.IGNORE_CASE).find(line)?.let {
+                paradas = it.groupValues[1].toIntOrNull() ?: 0
             }
         }
 
@@ -666,7 +688,7 @@ class TripReaderService : AccessibilityService() {
         val origem = addrCandidates.getOrNull(0)
         val destino = addrCandidates.getOrNull(1)
 
-        return Offer(valor, km, min, rkmDirect, nota, origem, destino, legs, kmPickup, kmTrip, minPickup, minTrip, dinamico)
+        return Offer(valor, km, min, rkmDirect, nota, origem, destino, legs, kmPickup, kmTrip, minPickup, minTrip, dinamico, corridas, paradas)
     }
 
     private fun isOfferScreen(low: String): Boolean {
@@ -814,14 +836,28 @@ class TripReaderService : AccessibilityService() {
         }
         if (metrics.isEmpty()) { bmp?.recycle(); return }
 
-        val overallGrade = when {
+        val kpiGrade = when {
             gradesForOverall.contains("r") -> "r"
             gradesForOverall.contains("a") -> "a"
             else -> "g"
         }
 
+        // PEDIDO (16/07/2026): duas regras que recusam a corrida mesmo com
+        // KPIs financeiros bons — parada extra e passageiro muito novo.
+        // Ambas podem valer ao mesmo tempo (motivo junta as duas nesse caso).
+        // "corridas" só bloqueia quando o dado realmente veio (offer.corridas
+        // != null) — sem confirmação positiva de poucas corridas, não recusa
+        // à toa por falha de leitura do OCR.
+        val recusarComParada = cfg.optBoolean("recusarComParada", false)
+        val minCorridas = cfg.optInt("minCorridas", 0)
+        val motivos = ArrayList<String>()
+        if (recusarComParada && offer.paradas > 0) motivos.add("Tem parada")
+        if (minCorridas > 0 && offer.corridas != null && offer.corridas < minCorridas) motivos.add("Passageiro novo")
+        val declineReason = if (motivos.isNotEmpty()) motivos.joinToString(" · ") else null
+        val overallGrade = if (declineReason != null) "r" else kpiGrade
+
         // Loga a oferta detectada (pra auditoria da precisão do parser)
-        sendToCloud(plat, "offer-parser", "OFERTA_DETECTADA v=$valor km=$km min=$min rkm=$rkm nota=${offer.nota}",
+        sendToCloud(plat, "offer-parser", "OFERTA_DETECTADA v=$valor km=$km min=$min rkm=$rkm nota=${offer.nota} corridas=${offer.corridas} paradas=${offer.paradas} motivo=$declineReason",
             "OFERTA", extractMoney(joined), km.toString(), min?.toString(), texts)
 
         // Print da tela + dados do card — EXATAMENTE no momento em que o card
@@ -839,6 +875,7 @@ class TripReaderService : AccessibilityService() {
                 metrics = metrics,
                 totalMin = min ?: 0,
                 totalKm = km,
+                declineReason = declineReason,
                 autoHideMs = 15000L
             )
         }
@@ -854,6 +891,14 @@ class TripReaderService : AccessibilityService() {
         return JSONObject().apply {
             put("enabled", true)
             put("custoPorKm", 0.0)
+            // PEDIDO (16/07/2026): recusa automática por parada extra e por
+            // passageiro com poucas corridas — independe da nota dos KPIs
+            // financeiros. Ainda sem seletor no app web pra ligar/desligar
+            // isso na hora; valores abaixo são o ponto de partida (Yuri pediu
+            // "menos de 5" como exemplo). Quando o seletor existir na PWA,
+            // ele escreve esses dois campos aqui.
+            put("recusarComParada", true)
+            put("minCorridas", 5)
             put("kpis", JSONObject().apply {
                 put("rkm", JSONObject().apply { put("enabled", true); put("red", 1.2); put("green", 2.0) })
                 put("rhora", JSONObject().apply { put("enabled", true); put("red", 25.0); put("green", 45.0) })

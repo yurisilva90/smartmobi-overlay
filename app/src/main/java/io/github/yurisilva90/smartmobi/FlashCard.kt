@@ -54,11 +54,16 @@ class FlashCard(private val context: Context) {
             }
         }
     }
-    private fun speakGrade(grade: String) {
+    private fun speakGrade(grade: String, reason: String? = null) {
         val phrase = when (grade) {
             "g" -> "Aceitar corrida"
             "a" -> "Analisar corrida"
-            else -> "Recusar corrida"
+            // PEDIDO (16/07/2026): quando a recusa é por regra (parada,
+            // passageiro novo) e não só pelos KPIs financeiros, o áudio diz
+            // o motivo — "Tem parada" / "Passageiro novo" — junto da recusa,
+            // pra não parecer que os KPIs deram ruim quando na verdade
+            // podiam estar bons.
+            else -> if (reason != null) "Recusar corrida, $reason" else "Recusar corrida"
         }
         ensureTts()
         if (!ttsReady) { pendingPhrase = phrase; return }
@@ -98,7 +103,7 @@ class FlashCard(private val context: Context) {
     // platform: "99" ou "UBER". overallGrade: pior nota entre as métricas ativas.
     // metrics: até 4, sempre numa linha só. autoHideMs é só rede de segurança —
     // o normal é o TripReaderService chamar hide() sozinho quando a oferta some (~1s).
-    fun show(platform: String, overallGrade: String, metrics: List<Metric>, totalMin: Int, totalKm: Double, autoHideMs: Long = 20000L) {
+    fun show(platform: String, overallGrade: String, metrics: List<Metric>, totalMin: Int, totalKm: Double, declineReason: String? = null, autoHideMs: Long = 20000L) {
         if (metrics.isEmpty()) return
         handler.removeCallbacks(hideRunnable)
         handler.post {
@@ -111,7 +116,7 @@ class FlashCard(private val context: Context) {
             handler.postDelayed(hideRunnable, autoHideMs)
             // Só fala quando o card estava escondido — evita repetir a fala
             // toda vez que o OCR refina km/min da mesma oferta já mostrada.
-            if (wasHidden) speakGrade(overallGrade)
+            if (wasHidden) speakGrade(overallGrade, declineReason)
         }
     }
 
