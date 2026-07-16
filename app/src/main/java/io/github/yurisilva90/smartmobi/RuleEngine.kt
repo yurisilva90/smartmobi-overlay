@@ -73,7 +73,7 @@ object RuleEngine {
         [
           {"key":"uber_encerrar","platform":"uber","priority":10,"pattern":"\\bencerrar\\s+\\S","result":"corrida"},
           {"key":"uber_destino_de","platform":"uber","priority":20,"pattern":"\\bDestino de\\b","result":"corrida"},
-          {"key":"uber_tail","platform":"uber","priority":30,"pattern":"\\bColetar pagamento\\b|\\bPagamento realizado\\b|\\bComo foi a viagem\\b|\\bNão é possível ficar offline\\b","result":"corrida"},
+          {"key":"uber_tail","platform":"uber","priority":30,"pattern":"\\bColetar pagamento\\b|\\bPagamento realizado\\b|\\bComo foi a viagem\\b","result":"corrida"},
           {"key":"uber_iniciar","platform":"uber","priority":40,"pattern":"\\biniciar\\s+\\S","result":"buscar"},
           {"key":"uber_reforco","platform":"uber","priority":50,"pattern":"\\bEncontro com\\b|\\bAguardando usuário\\b|\\bUsuário notificado\\b","result":"buscar"},
           {"key":"nn99_avaliacao","platform":"99","priority":10,"pattern":"Como foi sua corrida|Avaliar como anônimo|Valor da corrida","result":"online","set_reached_pickup":false,"reset_known_addr":true},
