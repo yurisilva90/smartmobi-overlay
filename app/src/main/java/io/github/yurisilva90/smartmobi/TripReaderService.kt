@@ -115,6 +115,19 @@ class TripReaderService : AccessibilityService() {
     private fun offerGuardActive(): Boolean =
         lastFlashSig.isNotEmpty() && System.currentTimeMillis() - lastFlashSigSetMs < FLASH_STATUS_GUARD_MS
     private var lastRealState = "?"
+    // ── Anti-flicker: oferta chegando DURANTE corrida ativa ─────────────
+    // CONFIRMADO EM LOG REAL (13/07/2026, corrida do Raymundo, Uber): a
+    // mesma oferta (R$20,68) chegou a mostrar/esconder 7 vezes em 7
+    // segundos. Causa: em corrida a oferta é um card por CIMA da tela de
+    // navegação — o OCR lê os dois misturados (endereço, "Corrida",
+    // cronômetro da corrida atual junto com o texto da oferta nova), então
+    // isOfferScreen() bate numa passada e falha na seguinte só por ruído,
+    // mesmo com a oferta genuinamente ainda na tela. hideFlashIfActive()
+    // rodava na PRIMEIRA falha — agora exige N falhas SEGUIDAS antes de
+    // esconder de verdade. A 600ms/leitura, grace=2 ainda esconde em
+    // ~1.2s quando a oferta sai de verdade — não é perceptível como atraso.
+    private var offerMissStreak = 0
+    private val OFFER_HIDE_GRACE = 2
     // INVESTIGAÇÃO (13/07/2026): achado um buraco de 36min sem nenhum card,
     // com ofertas reais e válidas confirmadas no OCR (texto limpo, formato
     // Uber padrão) durante esse tempo. Causa provável: essas duas variáveis
@@ -571,9 +584,19 @@ class TripReaderService : AccessibilityService() {
         // esse caminho que resolve o tipo B (99 "Escolher") e a Uber
         // ("Selecionar"), que não têm o texto "aceitar por"
         if (valor == null) {
-            val monies = extractMoney(joined).mapNotNull { moneyToDouble(it) }
+            val monies = extractMoney(joined).mapNotNull { moneyToDouble(it) }.filter { it > 0 }
             valor = if (rkmDirect != null && km != null) {
-                monies.firstOrNull { it > 0 && kotlin.math.abs(it / km!! - rkmDirect) / rkmDirect < 0.35 }
+                monies.firstOrNull { kotlin.math.abs(it / km!! - rkmDirect) / rkmDirect < 0.35 }
+            } else if (km != null && km > 0) {
+                // BUG CONFIRMADO EM LOG REAL (13/07/2026, corrida do Raymundo):
+                // sem R$/km direto, o antigo "pega o primeiro R$ que aparecer"
+                // pegava o GANHO TOTAL DO DIA (ex: "R$ 54,01", fixo no topo da
+                // tela de navegação) como se fosse o valor da oferta nova que
+                // chegou por cima — só acontece em corrida, onde a tela de
+                // fundo tem esse valor sempre visível junto do card. Faixa
+                // generosa de R$/km (cobre de promoção barata a dinâmica alta)
+                // descarta esse tipo de valor de fundo antes de aceitar.
+                monies.firstOrNull { (it / km!!) in 0.4..12.0 } ?: monies.firstOrNull()
             } else monies.firstOrNull()
         }
 
@@ -691,14 +714,18 @@ class TripReaderService : AccessibilityService() {
         val low = joined.lowercase(Locale.getDefault())
 
         if (!isOfferScreen(low)) {
-            // Esconde na hora — não espera reconhecer qual é o próximo estado.
-            // É isso que garante o card sumir rápido quando a oferta sai da tela.
+            // Não esconde na primeira falha — ver comentário de offerMissStreak
+            // na declaração. Só esconde depois de OFFER_HIDE_GRACE falhas
+            // seguidas, o que ainda é rápido (~1.2s) mas tolera o ruído da
+            // navegação por baixo durante corrida ativa.
             bmp?.recycle()
-            if (lastFlashSig.isNotEmpty()) hideFlashIfActive()
+            offerMissStreak++
+            if (lastFlashSig.isNotEmpty() && offerMissStreak >= OFFER_HIDE_GRACE) hideFlashIfActive()
             val state = inferState(low)
             if (state != "?") lastRealState = state
             return
         }
+        offerMissStreak = 0
         lastRealState = "OFERTA"
 
         val offer = parseOffer(texts)
@@ -841,6 +868,7 @@ class TripReaderService : AccessibilityService() {
     private fun hideFlashIfActive() {
         if (lastFlashSig.isNotEmpty()) {
             lastFlashSig = ""
+            offerMissStreak = 0
             lastOfferValorByPlat.clear()
             bestLegsForOfferByPlat.clear()
             main.post { flashCard.hide() }
