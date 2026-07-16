@@ -175,7 +175,7 @@ class ScreenOcrService : Service() {
                     for (block in result.textBlocks) {
                         for (line in block.lines) {
                             val t = line.text.trim()
-                            if (t.isNotEmpty()) lines.add(t)
+                            if (t.isNotEmpty()) lines.add(normalizeOcrText(t))
                         }
                     }
                     busy = false
@@ -183,6 +183,27 @@ class ScreenOcrService : Service() {
                 }
                 .addOnFailureListener { e -> busy = false; bmp?.recycle(); onError?.invoke("mlkit: ${e.message}") }
         }
+    }
+
+    // ── Correção de erros sistemáticos de OCR ──────────────────────────
+    // CONFIRMADO EM LOG REAL (15/07/2026): em várias ofertas da 99, o ML
+    // Kit leu "R$" como "RS" (ex: "RS7,90", "RS8,64", "RS12,20") e
+    // "serviço" sem cedilha ("Taxa de servico") — o suficiente pra NENHUM
+    // padrão de isOfferScreen()/parseOffer() bater, mesmo com a oferta
+    // genuína e legível na tela. O motorista não via card nem ouvia som
+    // nenhum. Corrige aqui, uma vez, na origem — todo o resto do parser
+    // (isOfferScreen, parseOffer, extractMoney) já funciona a partir daqui
+    // sem precisar de tolerância espalhada em cada regex.
+    private val rsMoneyRe = Regex("""(?i)\bRS(?=\d)""")
+    private val servicoRe = Regex("""(?i)servico""")
+    private fun normalizeOcrText(s: String): String {
+        var out = s
+        // Forma lambda do replace() — evita o parse de "$" como referência
+        // de grupo de regex (Regex.replace(input, "R$") quebraria em
+        // runtime: "$" sozinho não é uma referência de grupo válida).
+        out = rsMoneyRe.replace(out) { "R$" }
+        out = servicoRe.replace(out) { "serviço" }
+        return out
     }
 
     override fun onDestroy() {
