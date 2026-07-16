@@ -61,7 +61,6 @@ class TripReaderService : AccessibilityService() {
             "rkm"    to "R$/KM",
             "rhora"  to "R$/HORA",
             "rmin"   to "R$/MIN",
-            "nota"   to "NOTA",
             "margem" to "% LUCRO",
             "lucro"  to "R$ LUCRO"
         )
@@ -834,7 +833,6 @@ class TripReaderService : AccessibilityService() {
             }
             metrics.add(FlashCard.Metric(label, fmtVal, grade))
         }
-        if (metrics.isEmpty()) { bmp?.recycle(); return }
 
         val kpiGrade = when {
             gradesForOverall.contains("r") -> "r"
@@ -842,22 +840,55 @@ class TripReaderService : AccessibilityService() {
             else -> "g"
         }
 
-        // PEDIDO (16/07/2026): duas regras que recusam a corrida mesmo com
-        // KPIs financeiros bons — parada extra e passageiro muito novo.
-        // Ambas podem valer ao mesmo tempo (motivo junta as duas nesse caso).
-        // "corridas" só bloqueia quando o dado realmente veio (offer.corridas
-        // != null) — sem confirmação positiva de poucas corridas, não recusa
-        // à toa por falha de leitura do OCR.
+        // PEDIDO (16-17/07/2026): grupo "Recusas" — recusa a corrida mesmo com
+        // Indicadores financeiros bons. Todas podem valer ao mesmo tempo
+        // (motivo junta todas as que bateram, separadas por " · ").
+        // "corridas"/"nota" só bloqueiam quando o dado realmente veio (!= null)
+        // — sem confirmação positiva, não recusa à toa por falha de OCR.
         val recusarComParada = cfg.optBoolean("recusarComParada", false)
-        val minCorridas = cfg.optInt("minCorridas", 0)
+        val recusas = cfg.optJSONObject("recusas") ?: JSONObject()
+        val rNota = recusas.optJSONObject("nota")
+        val rPassageiroNovo = recusas.optJSONObject("passageiroNovo")
+        val rDistancia = recusas.optJSONObject("distancia")
+        val rEndereco = recusas.optJSONObject("endereco")
+
         val motivos = ArrayList<String>()
         if (recusarComParada && offer.paradas > 0) motivos.add("Tem parada")
-        if (minCorridas > 0 && offer.corridas != null && offer.corridas < minCorridas) motivos.add("Passageiro novo")
-        val declineReason = if (motivos.isNotEmpty()) motivos.joinToString(" · ") else null
+        if (rNota != null && rNota.optBoolean("enabled", false) && offer.nota != null
+            && offer.nota < rNota.optDouble("value", 4.5)) motivos.add("Nota baixa")
+        if (rPassageiroNovo != null && rPassageiroNovo.optBoolean("enabled", false) && offer.corridas != null
+            && offer.corridas < rPassageiroNovo.optInt("value", 5)) motivos.add("Passageiro novo")
+        if (rDistancia != null && rDistancia.optBoolean("enabled", false) && offer.kmPickup != null
+            && offer.kmPickup > rDistancia.optDouble("value", 3.0)) motivos.add("Buscar longe")
+        if (rEndereco != null && rEndereco.optBoolean("enabled", false)) {
+            val bloqueados = rEndereco.optJSONArray("list")
+            if (bloqueados != null && bloqueados.length() > 0) {
+                val origemL = offer.origem?.lowercase(Locale.getDefault()) ?: ""
+                val destinoL = offer.destino?.lowercase(Locale.getDefault()) ?: ""
+                for (i in 0 until bloqueados.length()) {
+                    val item = bloqueados.optString(i, "").lowercase(Locale.getDefault()).trim()
+                    if (item.isEmpty()) continue
+                    // Embarque OU destino — pedido explícito (16/07/2026): antes só
+                    // olhava o embarque, mas o motorista quer bloquear pra onde a
+                    // corrida VAI também, não só de onde ela sai.
+                    if ((origemL.isNotEmpty() && origemL.contains(item)) ||
+                        (destinoL.isNotEmpty() && destinoL.contains(item))) {
+                        motivos.add("Endereço bloqueado"); break
+                    }
+                }
+            }
+        }
+        val declineReason = if (motivos.isNotEmpty()) motivos.distinct().joinToString(" · ") else null
         val overallGrade = if (declineReason != null) "r" else kpiGrade
+        // Move o corte de "sem métrica nenhuma pra mostrar" pra DEPOIS das
+        // recusas (bug real corrigido 17/07/2026): antes esse corte vinha
+        // ANTES do bloco de recusas — se o motorista desligasse todos os
+        // Indicadores, o corte cortava a leitura inteira e as recusas nunca
+        // rodavam, mesmo estando ligadas.
+        if (metrics.isEmpty() && declineReason == null) { bmp?.recycle(); return }
 
         // Loga a oferta detectada (pra auditoria da precisão do parser)
-        sendToCloud(plat, "offer-parser", "OFERTA_DETECTADA v=$valor km=$km min=$min rkm=$rkm nota=${offer.nota} corridas=${offer.corridas} paradas=${offer.paradas} motivo=$declineReason",
+        sendToCloud(plat, "offer-parser", "OFERTA_DETECTADA v=$valor km=$km min=$min rkm=$rkm nota=${offer.nota} corridas=${offer.corridas} paradas=${offer.paradas} kmPickup=${offer.kmPickup} motivo=$declineReason",
             "OFERTA", extractMoney(joined), km.toString(), min?.toString(), texts)
 
         // Print da tela + dados do card — EXATAMENTE no momento em que o card
@@ -891,21 +922,26 @@ class TripReaderService : AccessibilityService() {
         return JSONObject().apply {
             put("enabled", true)
             put("custoPorKm", 0.0)
-            // PEDIDO (16/07/2026): recusa automática por parada extra e por
-            // passageiro com poucas corridas — independe da nota dos KPIs
-            // financeiros. Ainda sem seletor no app web pra ligar/desligar
-            // isso na hora; valores abaixo são o ponto de partida (Yuri pediu
-            // "menos de 5" como exemplo). Quando o seletor existir na PWA,
-            // ele escreve esses dois campos aqui.
+            // Parada extra continua fora do grupo "recusas" (pedido de
+            // 16/07/2026, antes do agrupamento existir) — só um bool solto.
             put("recusarComParada", true)
-            put("minCorridas", 5)
+            // PEDIDO (17/07/2026): "Indicadores" (métricas no card) e
+            // "Recusas" (regras de bloqueio automático) viraram grupos
+            // separados na tela do app. Nota do passageiro saiu dos
+            // indicadores — não é mais um número colorido no card, agora só
+            // funciona como recusa (nota abaixo do valor configurado).
             put("kpis", JSONObject().apply {
                 put("rkm", JSONObject().apply { put("enabled", true); put("red", 1.2); put("green", 2.0) })
                 put("rhora", JSONObject().apply { put("enabled", true); put("red", 25.0); put("green", 45.0) })
                 put("rmin", JSONObject().apply { put("enabled", false); put("red", 0.6); put("green", 1.0) })
-                put("nota", JSONObject().apply { put("enabled", false); put("red", 4.5); put("green", 4.8) })
                 put("margem", JSONObject().apply { put("enabled", true); put("red", 15.0); put("green", 40.0) })
                 put("lucro", JSONObject().apply { put("enabled", true); put("red", 5.0); put("green", 15.0) })
+            })
+            put("recusas", JSONObject().apply {
+                put("nota", JSONObject().apply { put("enabled", false); put("value", 4.5) })
+                put("passageiroNovo", JSONObject().apply { put("enabled", true); put("value", 5) })
+                put("distancia", JSONObject().apply { put("enabled", false); put("value", 3.0) })
+                put("endereco", JSONObject().apply { put("enabled", true); put("list", org.json.JSONArray()) })
             })
         }
     }

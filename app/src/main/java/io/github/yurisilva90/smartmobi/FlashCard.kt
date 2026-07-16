@@ -104,14 +104,18 @@ class FlashCard(private val context: Context) {
     // metrics: até 4, sempre numa linha só. autoHideMs é só rede de segurança —
     // o normal é o TripReaderService chamar hide() sozinho quando a oferta some (~1s).
     fun show(platform: String, overallGrade: String, metrics: List<Metric>, totalMin: Int, totalKm: Double, declineReason: String? = null, autoHideMs: Long = 20000L) {
-        if (metrics.isEmpty()) return
+        // Antes exigia pelo menos 1 métrica pra mostrar o card. Com o grupo
+        // "Recusas" (17/07/2026), uma oferta pode ser recusada mesmo com
+        // todos os Indicadores desligados — nesse caso o card mostra só a
+        // barra vermelha + o motivo, sem nenhum número em cima.
+        if (metrics.isEmpty() && declineReason == null) return
         handler.removeCallbacks(hideRunnable)
         handler.post {
             val wasHidden = container == null
             container?.let { try { wm.removeView(it) } catch (_: Exception) {} }
             val cardWidthPx = widthFor(metrics.size)
             params.width = cardWidthPx
-            container = buildCard(platform, overallGrade, metrics, totalMin, totalKm, cardWidthPx)
+            container = buildCard(platform, overallGrade, metrics, totalMin, totalKm, cardWidthPx, declineReason)
             try { wm.addView(container, params) } catch (e: Exception) { e.printStackTrace() }
             handler.postDelayed(hideRunnable, autoHideMs)
             // Só fala quando o card estava escondido — evita repetir a fala
@@ -137,7 +141,7 @@ class FlashCard(private val context: Context) {
         return "${min}m"
     }
 
-    private fun buildCard(platform: String, overallGrade: String, metrics: List<Metric>, totalMin: Int, totalKm: Double, cardWidthPx: Int): FrameLayout {
+    private fun buildCard(platform: String, overallGrade: String, metrics: List<Metric>, totalMin: Int, totalKm: Double, cardWidthPx: Int, declineReason: String? = null): FrameLayout {
         val gradeColor = colorOf(overallGrade)
 
         val root = FrameLayout(context).apply {
@@ -170,56 +174,59 @@ class FlashCard(private val context: Context) {
             setPadding(dp(11), dp(10), dp(11), dp(9))
         }
 
-        // Métricas numa linha só — números grandes (tamanho Gigu).
-        val metricsRow = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-        }
-        metrics.forEachIndexed { idx, m ->
-            val tile = LinearLayout(context).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER_HORIZONTAL
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        // Métricas numa linha só — números grandes (tamanho Gigu). Quando não
+        // tem nenhum Indicador ligado (só recusa), pula essa linha inteira.
+        if (metrics.isNotEmpty()) {
+            val metricsRow = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
             }
-            val n = TextView(context).apply {
-                text = m.value; textSize = 31f
-                setTextColor(colorOf(m.grade)); setTypeface(Typeface.DEFAULT_BOLD)
-                gravity = Gravity.CENTER
-                maxLines = 1
-                // BUG CONFIRMADO (14/07/2026): valor calculado certo no banco
-                // ("69,23"), mas a caixa é largura fixa (dividida entre as
-                // métricas) e a fonte era tamanho fixo (31sp) sem proteção —
-                // quando o número era largo (R$/HORA costuma ter mais dígitos
-                // que R$/KM) e não cabia, o Android cortava sem avisar,
-                // geralmente a última casa decimal. Autosize encolhe a fonte
-                // até caber, sem cortar nada — 31sp continua sendo o tamanho
-                // normal quando já cabe.
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    setAutoSizeTextTypeUniformWithConfiguration(18, 31, 1, TypedValue.COMPLEX_UNIT_SP)
+            metrics.forEachIndexed { idx, m ->
+                val tile = LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                 }
+                val n = TextView(context).apply {
+                    text = m.value; textSize = 31f
+                    setTextColor(colorOf(m.grade)); setTypeface(Typeface.DEFAULT_BOLD)
+                    gravity = Gravity.CENTER
+                    maxLines = 1
+                    // BUG CONFIRMADO (14/07/2026): valor calculado certo no banco
+                    // ("69,23"), mas a caixa é largura fixa (dividida entre as
+                    // métricas) e a fonte era tamanho fixo (31sp) sem proteção —
+                    // quando o número era largo (R$/HORA costuma ter mais dígitos
+                    // que R$/KM) e não cabia, o Android cortava sem avisar,
+                    // geralmente a última casa decimal. Autosize encolhe a fonte
+                    // até caber, sem cortar nada — 31sp continua sendo o tamanho
+                    // normal quando já cabe.
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        setAutoSizeTextTypeUniformWithConfiguration(18, 31, 1, TypedValue.COMPLEX_UNIT_SP)
+                    }
+                }
+                val l = TextView(context).apply {
+                    text = m.label; textSize = 6.8f
+                    setTextColor(Color.parseColor("#8A8A99")); setTypeface(Typeface.DEFAULT_BOLD)
+                    gravity = Gravity.CENTER; setPadding(0, dp(3), 0, 0)
+                    maxLines = 1
+                }
+                tile.addView(n); tile.addView(l)
+                metricsRow.addView(tile)
+                // Linha vertical fina entre os KPIs (mockup "Variação A", aprovado
+                // por Yuri em 16/07/2026) — sem ela os números ficavam colados e
+                // difíceis de separar de relance com 3-4 KPIs na tela.
+                if (idx < metrics.size - 1) metricsRow.addView(vDivider())
             }
-            val l = TextView(context).apply {
-                text = m.label; textSize = 6.8f
-                setTextColor(Color.parseColor("#8A8A99")); setTypeface(Typeface.DEFAULT_BOLD)
-                gravity = Gravity.CENTER; setPadding(0, dp(3), 0, 0)
-                maxLines = 1
-            }
-            tile.addView(n); tile.addView(l)
-            metricsRow.addView(tile)
-            // Linha vertical fina entre os KPIs (mockup "Variação A", aprovado
-            // por Yuri em 16/07/2026) — sem ela os números ficavam colados e
-            // difíceis de separar de relance com 3-4 KPIs na tela.
-            if (idx < metrics.size - 1) metricsRow.addView(vDivider())
-        }
-        content.addView(metricsRow)
+            content.addView(metricsRow)
 
-        val div = FrameLayout(context).apply {
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).apply {
-                topMargin = dp(9); bottomMargin = dp(7)
+            val div = FrameLayout(context).apply {
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).apply {
+                    topMargin = dp(9); bottomMargin = dp(7)
+                }
+                setBackgroundColor(Color.parseColor("#1FFFFFFF"))
             }
-            setBackgroundColor(Color.parseColor("#1FFFFFFF"))
+            content.addView(div)
         }
-        content.addView(div)
 
         // Linha de baixo: logo + tempo + km juntos. Texto branco, 50% maior
         // que o padrão anterior, sem a palavra "Total".
@@ -252,13 +259,35 @@ class FlashCard(private val context: Context) {
             setTextColor(Color.WHITE); setTypeface(Typeface.DEFAULT_BOLD)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
+        bottomRow.addView(tTime)
+
+        // Motivo da recusa (parada / passageiro novo / nota baixa / buscar
+        // longe / endereço bloqueado) — mockup "espaço central" aprovado por
+        // Yuri (17/07/2026). Fica vazio quando não é recusa por regra (card
+        // normal, igual sempre foi). Autosize porque "Parada · Novo ·
+        // Endereço" às vezes não cabe no espaço entre o tempo e o km.
+        if (!declineReason.isNullOrBlank()) {
+            val tReason = TextView(context).apply {
+                text = declineReason; textSize = 9.5f
+                setTextColor(Color.parseColor("#EF4444")); setTypeface(Typeface.DEFAULT_BOLD)
+                gravity = Gravity.CENTER
+                maxLines = 1
+                setPadding(dp(4), 0, dp(4), 0)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.4f)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    setAutoSizeTextTypeUniformWithConfiguration(7, 9.5f.toInt(), 1, TypedValue.COMPLEX_UNIT_SP)
+                }
+            }
+            bottomRow.addView(tReason)
+        }
+
         val tKm = TextView(context).apply {
             text = "%.1f km".format(totalKm); textSize = 15.75f
             setTextColor(Color.WHITE); setTypeface(Typeface.DEFAULT_BOLD)
             gravity = Gravity.END
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
-        bottomRow.addView(tTime); bottomRow.addView(tKm)
+        bottomRow.addView(tKm)
         content.addView(bottomRow)
 
         row.addView(content)
