@@ -1142,6 +1142,7 @@ class TripReaderService : AccessibilityService() {
         """Como foi sua corrida|Avaliar como anônimo""", RegexOption.IGNORE_CASE
     )
     private val nn99BuscandoOcrRe = Regex("""Buscando""", RegexOption.IGNORE_CASE)
+    private val nn99CobrarPagamentoRe = Regex("""Cobrar pagamento""", RegexOption.IGNORE_CASE)
 
     // Liga a escuta de "Buscando" via OCR — hoje só chamado pelo gatilho
     // da avaliação. (Gatilho por notificação de "corrida cancelada" foi
@@ -1169,6 +1170,21 @@ class TripReaderService : AccessibilityService() {
             nn99KnownDestAddr = null
             nn99LastActiveSignalMs = System.currentTimeMillis()
             applyTripSubStateDebounced("online", "99")
+        }
+
+        // AJUSTE (17/07/2026, a pedido, confirmado com print real): "Cobrar
+        // pagamento" só aparece perto do fim da corrida, com passageiro a
+        // bordo — é um sinal forte e só existe por OCR (confirmado antes:
+        // 868 ocorrências no histórico, 0 pela acessibilidade). Serve de
+        // reforço/rede de segurança: se o status ainda não é Corrida por
+        // qualquer motivo (inclusive o bug de sobreposição que ainda tamos
+        // investigando), esse texto corrige sozinho. Mesmo padrão do
+        // Buscando acima: continua "votando" a cada leitura até o debounce
+        // confirmar, nunca desiste na primeira.
+        if (confirmedTripSubState != "corrida" && nn99CobrarPagamentoRe.containsMatchIn(joinedOcrText)) {
+            nn99ReachedPickup = true
+            nn99LastActiveSignalMs = System.currentTimeMillis()
+            applyTripSubStateDebounced("corrida", "99")
         }
 
         if (!nn99WaitingBuscandoViaOcr) {
