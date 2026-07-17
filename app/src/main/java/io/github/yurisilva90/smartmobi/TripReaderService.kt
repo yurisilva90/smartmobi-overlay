@@ -1178,7 +1178,7 @@ class TripReaderService : AccessibilityService() {
             }
         }
 
-        val ev = RuleEngine.evaluate("99", texts, nn99ReachedPickup, addressChanged)
+        val ev = RuleEngine.evaluate("99", texts, nn99ReachedPickup, addressChanged, confirmedTripSubState == "online")
         val raw: String
         if (ev.matched) {
             nn99ReachedPickup = ev.newReachedPickup
