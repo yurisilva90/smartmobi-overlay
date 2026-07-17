@@ -872,13 +872,32 @@ class TripReaderService : AccessibilityService() {
                 val origemL = offer.origem?.lowercase(Locale.getDefault()) ?: ""
                 val destinoL = offer.destino?.lowercase(Locale.getDefault()) ?: ""
                 for (i in 0 until bloqueados.length()) {
-                    val item = bloqueados.optString(i, "").lowercase(Locale.getDefault()).trim()
+                    // PEDIDO (17/07/2026): cada item agora é {label, type} (o app
+                    // web já monta o label com rua OU bairro na frente, conforme o
+                    // tipo). Compatibilidade com config antiga: se ainda vier como
+                    // string solta, usa direto. Compara só o PRIMEIRO pedaço (antes
+                    // da vírgula) — cidade/estado no rótulo são só contexto pra
+                    // pessoa reconhecer na lista, não fazem parte da comparação,
+                    // porque o Uber/99 nunca mostram endereço completo formatado
+                    // assim na tela da oferta.
+                    val rawLabel = bloqueados.optJSONObject(i)?.optString("label")
+                        ?: bloqueados.optString(i, "")
+                    val item = rawLabel.lowercase(Locale.getDefault()).trim()
+                        .substringBefore(",").trim()
                     if (item.isEmpty()) continue
+                    // PEDIDO (17/07/2026): "Avenida X" cadastrado não batia com
+                    // "Av. X" na tela (e vice-versa) — tira o prefixo comum (de
+                    // rua OU de bairro) e compara só o nome próprio que sobra,
+                    // que não muda com a abreviação. Só usa o nome sem prefixo se
+                    // sobrar coisa suficiente (>=4 letras) — "Rua A" virando só
+                    // "a" bloquearia corrida à toa.
+                    val bare = addrPrefixRe.replace(item, "").trim()
+                    val matchKey = if (bare.length >= 4) bare else item
                     // Embarque OU destino — pedido explícito (16/07/2026): antes só
                     // olhava o embarque, mas o motorista quer bloquear pra onde a
                     // corrida VAI também, não só de onde ela sai.
-                    if ((origemL.isNotEmpty() && origemL.contains(item)) ||
-                        (destinoL.isNotEmpty() && destinoL.contains(item))) {
+                    if ((origemL.isNotEmpty() && origemL.contains(matchKey)) ||
+                        (destinoL.isNotEmpty() && destinoL.contains(matchKey))) {
                         motivos.add("Endereço bloqueado"); break
                     }
                 }
@@ -1280,6 +1299,17 @@ class TripReaderService : AccessibilityService() {
     // (rejeita R$, status solto, distância/tempo solto), simplificado pra
     // texto de navegação corrida. Pega o candidato mais longo da leitura.
     private val uberDestinoDeRe = Regex("""Destino de\s+([A-ZÀ-Ý][\wÀ-ÿ'’-]*(?:\s+[A-ZÀ-Ý][\wÀ-ÿ'’-]*){0,2})""")
+
+    // PEDIDO (17/07/2026): prefixo comum de rua e de bairro, forma completa OU
+    // abreviada — "Avenida"/"Av."/"Av", "Rua"/"R.", "Jardim"/"Jd.", etc. Usado
+    // pra tirar o prefixo antes de comparar endereço bloqueado, já que o
+    // Uber/99 podem abreviar diferente do que ficou salvo.
+    private val addrPrefixRe = Regex(
+        """^(rua|r\.|avenida|av\.?|travessa|trav\.?|estrada|est\.?|alameda|al\.?|rodovia|rod\.?|""" +
+        """pra[cç]a|p[cç]a\.?|largo|jardim|jd\.?|parque|pq\.?|vila|vl\.?|conjunto|cj\.?|""" +
+        """loteamento|residencial|res\.?)\s+""",
+        RegexOption.IGNORE_CASE
+    )
     private fun extractBestAddressCandidate(texts: List<String>): String? {
         return texts.asSequence()
             .map { it.trim() }
