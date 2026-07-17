@@ -129,7 +129,8 @@ object RuleEngine {
                 val rulesBody = httpGet(
                     "${TripReaderService.SUPABASE_URL}/rest/v1/state_detection_rules" +
                         "?active=eq.true&select=key,platform,priority,pattern,result,set_reached_pickup," +
-                        "only_if_not_reached_pickup,reset_known_addr&order=platform.asc,priority.asc"
+                        "only_if_not_reached_pickup,reset_known_addr,requires_addr_changed," +
+                        "requires_currently_online&order=platform.asc,priority.asc"
                 ) ?: return@thread // sem rede/erro — mantém o que já está carregado, tenta de novo depois
 
                 val configBody = httpGet(
