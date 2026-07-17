@@ -5,9 +5,13 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.util.TypedValue
 import android.view.Gravity
@@ -15,7 +19,12 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Locale
+import kotlin.concurrent.thread
 
 // ══════════════════════════════════════════════════════════════════
 // MōB Flash — card flutuante de decisão rápida sobre a oferta.
@@ -40,22 +49,107 @@ class FlashCard(private val context: Context) {
     private var pendingPhrase: String? = null
     private var lastSpokenGrade: String? = null
     private var lastSpokenReason: String? = null
+    private val audioManager by lazy { context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager }
+
+    // PEDIDO (17/07/2026): "não tá tocando áudio em nenhuma" — até agora
+    // toda falha de TTS (engine não instalado, idioma faltando, exceção no
+    // speak) era 100% silenciosa: sem log, sem toast, nada. Sem log não dá
+    // pra saber se é o engine falhando de vez, volume/foco de áudio
+    // brigando com Waze/navegação por cima, ou outra coisa. Log manda pro
+    // mesmo trip_reader_log de sempre, então já dá pra consultar direto.
+    private fun ttsLog(tag: String) {
+        thread(isDaemon = true) {
+            try {
+                val prefs = context.getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
+                val userId = prefs.getString(GpsService.KEY_USER_ID, null)
+                val deviceId = try {
+                    Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+                } catch (_: Exception) { "unknown" }
+                val body = JSONObject().apply {
+                    put("device_id", deviceId)
+                    if (userId != null) put("user_id", userId)
+                    put("platform", "TTS")
+                    put("package", "flashcard")
+                    put("screen_class", tag)
+                    put("texts", JSONObject().apply {
+                        put("state", tag); put("money", JSONArray()); put("km", JSONObject.NULL)
+                        put("min", JSONObject.NULL); put("raw", JSONArray())
+                    })
+                }
+                val conn = URL("${TripReaderService.SUPABASE_URL}/rest/v1/trip_reader_log").openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.connectTimeout = 6000; conn.readTimeout = 6000
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("apikey", TripReaderService.SUPABASE_ANON)
+                conn.setRequestProperty("Authorization", "Bearer ${TripReaderService.SUPABASE_ANON}")
+                conn.outputStream.use { it.write(body.toString().toByteArray()) }
+                conn.responseCode
+                conn.disconnect()
+            } catch (_: Exception) {}
+        }
+    }
+
     private fun ensureTts() {
         if (tts != null) return
         tts = TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
-                tts?.language = Locale("pt", "BR")
+                val langResult = tts?.setLanguage(Locale("pt", "BR"))
                 ttsReady = true
+                ttsLog("TTS_INIT_OK lang=$langResult")
                 // A 1ª oferta da sessão às vezes chegava antes do motor de
                 // TTS terminar de iniciar, e a fala era simplesmente
                 // descartada. Agora guarda e fala assim que fica pronto.
                 pendingPhrase?.let { p ->
-                    try { tts?.speak(p, TextToSpeech.QUEUE_FLUSH, null, "mob_flash_grade") } catch (_: Exception) {}
+                    speakNow(p)
                     pendingPhrase = null
                 }
+            } else {
+                // Antes: nada acontecia aqui — motorista nunca saberia que o
+                // motor de voz nem chegou a iniciar (sem áudio nenhum, sem
+                // pista de por quê).
+                ttsLog("TTS_INIT_FAIL status=$status")
             }
         }
     }
+
+    // Pede foco de áudio transiente antes de falar — sem isso, em alguns
+    // aparelhos a fala do TTS pode ficar inaudível/cortada quando o app de
+    // navegação (Waze, o próprio Uber/99) já está usando o canal de áudio
+    // pra dar instrução de rota no mesmo instante.
+    private var focusRequest: AudioFocusRequest? = null
+    private fun requestAudioFocus() {
+        val am = audioManager ?: return
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val attrs = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+                val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                    .setAudioAttributes(attrs).build()
+                focusRequest = req
+                am.requestAudioFocus(req)
+            } else {
+                @Suppress("DEPRECATION")
+                am.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun speakNow(phrase: String) {
+        requestAudioFocus()
+        try {
+            val r = tts?.speak(phrase, TextToSpeech.QUEUE_FLUSH, null, "mob_flash_grade")
+            // ERROR (-1) aqui significa que o motor RECUSOU a fala na hora —
+            // engine ocupado, texto vazio, etc. Antes isso não gerava log
+            // nenhum; agora fica registrado com o texto que falhou.
+            if (r == TextToSpeech.ERROR) ttsLog("TTS_SPEAK_ERROR phrase=$phrase")
+        } catch (e: Exception) {
+            ttsLog("TTS_SPEAK_EXCEPTION ${e.message}")
+        }
+    }
+
     private fun speakGrade(grade: String, reason: String? = null) {
         val phrase = when (grade) {
             "g" -> "Aceitar corrida"
@@ -69,10 +163,13 @@ class FlashCard(private val context: Context) {
         }
         ensureTts()
         if (!ttsReady) { pendingPhrase = phrase; return }
-        try { tts?.speak(phrase, TextToSpeech.QUEUE_FLUSH, null, "mob_flash_grade") } catch (_: Exception) {}
+        speakNow(phrase)
     }
     fun shutdownTts() {
-        try { tts?.stop(); tts?.shutdown() } catch (_: Exception) {}
+        try {
+            focusRequest?.let { audioManager?.abandonAudioFocusRequest(it) }
+            tts?.stop(); tts?.shutdown()
+        } catch (_: Exception) {}
         tts = null; ttsReady = false; pendingPhrase = null
     }
 
@@ -105,7 +202,7 @@ class FlashCard(private val context: Context) {
     // platform: "99" ou "UBER". overallGrade: pior nota entre as métricas ativas.
     // metrics: até 4, sempre numa linha só. autoHideMs é só rede de segurança —
     // o normal é o TripReaderService chamar hide() sozinho quando a oferta some (~1s).
-    fun show(platform: String, overallGrade: String, metrics: List<Metric>, totalMin: Int, totalKm: Double, declineReason: String? = null, autoHideMs: Long = 20000L) {
+    fun show(platform: String, overallGrade: String, metrics: List<Metric>, totalMin: Int, totalKm: Double, declineReason: String? = null, declineReasonShort: String? = null, autoHideMs: Long = 20000L) {
         // Antes exigia pelo menos 1 métrica pra mostrar o card. Com o grupo
         // "Recusas" (17/07/2026), uma oferta pode ser recusada mesmo com
         // todos os Indicadores desligados — nesse caso o card mostra só a
@@ -117,7 +214,7 @@ class FlashCard(private val context: Context) {
             container?.let { try { wm.removeView(it) } catch (_: Exception) {} }
             val cardWidthPx = widthFor(metrics.size)
             params.width = cardWidthPx
-            container = buildCard(platform, overallGrade, metrics, totalMin, totalKm, cardWidthPx, declineReason)
+            container = buildCard(platform, overallGrade, metrics, totalMin, totalKm, cardWidthPx, declineReasonShort ?: declineReason)
             try { wm.addView(container, params) } catch (e: Exception) { e.printStackTrace() }
             handler.postDelayed(hideRunnable, autoHideMs)
             // BUG CONFIRMADO (17/07/2026): "só fala quando tava escondido"
@@ -284,14 +381,21 @@ class FlashCard(private val context: Context) {
         // Endereço" às vezes não cabe no espaço entre o tempo e o km.
         if (!declineReason.isNullOrBlank()) {
             val tReason = TextView(context).apply {
-                text = declineReason; textSize = 9.5f
+                text = declineReason; textSize = 15.75f
                 setTextColor(Color.parseColor("#EF4444")); setTypeface(Typeface.DEFAULT_BOLD)
                 gravity = Gravity.CENTER
                 maxLines = 1
                 setPadding(dp(4), 0, dp(4), 0)
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.4f)
+                // PEDIDO (17/07/2026): mesmo tamanho de "14m"/"4,4 km" — antes
+                // era 9.5sp e ficava pequeno demais pra ler de relance
+                // dirigindo (confirmado em foto real). Autosize só entra pra
+                // valer quando mais de 1 recusa bate ao mesmo tempo e o texto
+                // combinado ("PARADA · NOVO") não cabe no tamanho cheio —
+                // reduz até caber, nunca corta, igual já acontece nos números
+                // dos KPIs.
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    setAutoSizeTextTypeUniformWithConfiguration(7, 9.5f.toInt(), 1, TypedValue.COMPLEX_UNIT_SP)
+                    setAutoSizeTextTypeUniformWithConfiguration(8, 16, 1, TypedValue.COMPLEX_UNIT_SP)
                 }
             }
             bottomRow.addView(tReason)

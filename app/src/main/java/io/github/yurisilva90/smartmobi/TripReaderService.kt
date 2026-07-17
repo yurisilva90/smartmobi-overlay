@@ -884,7 +884,22 @@ class TripReaderService : AccessibilityService() {
                 }
             }
         }
-        val declineReason = if (motivos.isNotEmpty()) motivos.distinct().joinToString(" · ") else null
+        // PEDIDO (17/07/2026): fonte do motivo no card subiu pro tamanho do
+        // tempo/km (15.75sp — antes 9.5sp) pra ficar fácil de ler de relance.
+        // Nesse tamanho, a frase completa não cabe mais — usa uma versão
+        // curta só no CARD; o áudio continua com a frase inteira (não tem
+        // limite de espaço nenhum ali).
+        val motivosAbrev = mapOf(
+            "Tem parada" to "PARADA",
+            "Nota baixa" to "NOTA",
+            "Passageiro novo" to "NOVO",
+            "Buscar longe" to "LONGE",
+            "Endereço bloqueado" to "LOCAL"
+        )
+        val motivosDistintos = motivos.distinct()
+        val declineReason = if (motivosDistintos.isNotEmpty()) motivosDistintos.joinToString(" · ") else null
+        val declineReasonShort = if (motivosDistintos.isNotEmpty())
+            motivosDistintos.joinToString(" · ") { motivosAbrev[it] ?: it } else null
         val overallGrade = if (declineReason != null) "r" else kpiGrade
         // Move o corte de "sem métrica nenhuma pra mostrar" pra DEPOIS das
         // recusas (bug real corrigido 17/07/2026): antes esse corte vinha
@@ -913,6 +928,7 @@ class TripReaderService : AccessibilityService() {
                 totalMin = min ?: 0,
                 totalKm = km,
                 declineReason = declineReason,
+                declineReasonShort = declineReasonShort,
                 autoHideMs = 15000L
             )
         }
