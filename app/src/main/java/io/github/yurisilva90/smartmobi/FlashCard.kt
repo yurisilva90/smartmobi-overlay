@@ -38,6 +38,8 @@ class FlashCard(private val context: Context) {
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var pendingPhrase: String? = null
+    private var lastSpokenGrade: String? = null
+    private var lastSpokenReason: String? = null
     private fun ensureTts() {
         if (tts != null) return
         tts = TextToSpeech(context) { status ->
@@ -118,9 +120,21 @@ class FlashCard(private val context: Context) {
             container = buildCard(platform, overallGrade, metrics, totalMin, totalKm, cardWidthPx, declineReason)
             try { wm.addView(container, params) } catch (e: Exception) { e.printStackTrace() }
             handler.postDelayed(hideRunnable, autoHideMs)
-            // Só fala quando o card estava escondido — evita repetir a fala
-            // toda vez que o OCR refina km/min da mesma oferta já mostrada.
-            if (wasHidden) speakGrade(overallGrade, declineReason)
+            // BUG CONFIRMADO (17/07/2026): "só fala quando tava escondido"
+            // parecia certo (evita repetir a fala toda vez que o OCR só
+            // refina km/min da MESMA oferta) — mas também calava o áudio
+            // quando uma oferta DIFERENTE substituía a anterior na tela sem
+            // passar por hide() no meio (ex: card ainda aberto da oferta A
+            // quando a oferta B chega). Resultado: card trocava de número,
+            // motorista não ouvia nada. Agora fala quando o card tava
+            // escondido OU quando o veredito (cor + motivo) mudou — refino
+            // da mesma oferta continua mudo, oferta nova sempre fala.
+            val gradeChanged = overallGrade != lastSpokenGrade || declineReason != lastSpokenReason
+            if (wasHidden || gradeChanged) {
+                lastSpokenGrade = overallGrade
+                lastSpokenReason = declineReason
+                speakGrade(overallGrade, declineReason)
+            }
         }
     }
 
@@ -129,6 +143,8 @@ class FlashCard(private val context: Context) {
         handler.post {
             container?.let { try { wm.removeView(it) } catch (_: Exception) {} }
             container = null
+            lastSpokenGrade = null
+            lastSpokenReason = null
         }
     }
 
