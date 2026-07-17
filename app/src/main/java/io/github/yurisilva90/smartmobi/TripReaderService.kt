@@ -399,7 +399,13 @@ class TripReaderService : AccessibilityService() {
 
         val joined = allTexts.joinToString("  ")
         val low = joined.lowercase(Locale.getDefault())
-        val state = inferState(low)
+        // Diagnóstico temporário (17/07/2026, ver nn99Debug* perto de
+        // detectAndApply99TripSubState): substitui o "state" cosmético por
+        // um snapshot do caminho de decisão real, só pra 99. Reaproveita
+        // esse mesmo log já throttled — não grava linha extra nenhuma.
+        val state = if (plat == "99") {
+            "RPantes=$nn99DebugRPBefore RPdepois=$nn99DebugRPAfter addrMudou=$nn99DebugAddrChanged online=$nn99DebugCurrentlyOnline regra=$nn99DebugMatchedRule raw=$nn99DebugRaw"
+        } else inferState(low)
         val money = extractMoney(joined)
         val km = extractKm(low)
         val min = extractMin(low)
@@ -1064,6 +1070,18 @@ class TripReaderService : AccessibilityService() {
     private var nn99KnownDestAddr: String? = null
     private var nn99LastActiveSignalMs = 0L
 
+    // ── Diagnóstico temporário (17/07/2026) ──────────────────────────────
+    // Pra investigar o bug de sobreposição (Corrida virando Buscar sem
+    // motivo aparente no texto) — grava o CAMINHO DE DECISÃO completo, não
+    // só o resultado final. Reaproveita o log já existente (throttled a
+    // 700ms), não aumenta volume. Remover depois que o bug for resolvido.
+    private var nn99DebugRPBefore = false
+    private var nn99DebugRPAfter = false
+    private var nn99DebugAddrChanged = false
+    private var nn99DebugCurrentlyOnline = false
+    private var nn99DebugMatchedRule = "nenhuma"
+    private var nn99DebugRaw = "?"
+
     // ── 99: ponte OCR -> status quando a corrida termina ────────────────
     // CONFIRMADO EM LOG REAL (15/07/2026, corrida da Jessica): a tela de
     // avaliação ("Como foi sua corrida"/"Avaliar como anônimo") só chega
@@ -1178,6 +1196,7 @@ class TripReaderService : AccessibilityService() {
             }
         }
 
+        val rpBefore = nn99ReachedPickup
         val ev = RuleEngine.evaluate("99", texts, nn99ReachedPickup, addressChanged, confirmedTripSubState == "online")
         val raw: String
         if (ev.matched) {
@@ -1196,6 +1215,14 @@ class TripReaderService : AccessibilityService() {
             // nunca mais "chuta" online só por falta de sinal.
             raw = confirmedTripSubState
         }
+        // Diagnóstico (ver bloco de comentário acima) — snapshot completo
+        // do caminho de decisão dessa leitura específica.
+        nn99DebugRPBefore = rpBefore
+        nn99DebugRPAfter = nn99ReachedPickup
+        nn99DebugAddrChanged = addressChanged
+        nn99DebugCurrentlyOnline = confirmedTripSubState == "online"
+        nn99DebugMatchedRule = ev.matchedRuleKey ?: "nenhuma"
+        nn99DebugRaw = raw
         applyTripSubStateDebounced(raw, "99")
 
         // ── Captura automática — 99: endereço mais completo visto no

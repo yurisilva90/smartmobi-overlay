@@ -60,7 +60,8 @@ object RuleEngine {
         val state: String,
         val newReachedPickup: Boolean,
         val resetKnownAddr: Boolean,
-        val matched: Boolean
+        val matched: Boolean,
+        val matchedRuleKey: String? = null
     )
 
     private const val PREFS_NAME = "smartmobi_rules_cache_v1"
@@ -235,7 +236,7 @@ object RuleEngine {
                 if (reachedPickup) "corrida" else "buscar"
             } else rule.result
             val newFlag = rule.setReachedPickup ?: reachedPickup
-            return Evaluation(state, newFlag, rule.resetKnownAddr, true)
+            return Evaluation(state, newFlag, rule.resetKnownAddr, true, rule.key)
         }
         return Evaluation("", reachedPickup, false, false)
     }
