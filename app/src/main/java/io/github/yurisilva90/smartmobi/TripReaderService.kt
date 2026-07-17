@@ -1192,28 +1192,23 @@ class TripReaderService : AccessibilityService() {
         // vírgula, é longa) mudar de verdade — não só truncamento de OCR,
         // por isso compara só os 18 primeiros caracteres — trata como
         // "acabou de pegar o passageiro" mesmo sem ver a tela de espera.
-        // AJUSTE (15/07/2026): a decisão de "isso é pickup normal (vira
-        // corrida) ou é corrida nova sobrepondo uma corrida anterior presa
-        // (vira buscar)" agora é dado, não código — ver regra
-        // nn99_aceite_pickup_novo (requires_addr_changed) na tabela
-        // state_detection_rules. Aqui só calcula e expõe SE mudou.
+        // AJUSTE (17/07/2026, a pedido do Yuri): removida a heurística de
+        // "endereço mudou = pickup novo" — confirmado em log real (corrida
+        // Yhara→tania) que ela causava oscilação buscar/corrida quando o
+        // OCR lia o mesmo endereço com ruído (ex: "•" solto na frente
+        // deslocando a comparação dos 18 primeiros caracteres, fazendo o
+        // app achar que o endereço tinha mudado quando não mudou). A
+        // avaliação ("Como foi sua corrida"/"Valor da corrida") já é sinal
+        // suficiente e confiável pra fechar a corrida atual; dali em
+        // diante os sinais normais de buscar (Chegue antes de/Iniciar
+        // corrida/Cheguei no embarque) cobrem a corrida seguinte sem
+        // precisar de heurística de endereço. Ainda guarda o endereço
+        // conhecido só pra eventual diagnóstico — não decide mais nada.
         val addrLine = texts.firstOrNull { it.length >= 20 && it.contains(",") && !it.contains("R$") }
-        var addressChanged = false
-        if (addrLine != null) {
-            val known = nn99KnownDestAddr
-            if (known == null) {
-                nn99KnownDestAddr = addrLine
-            } else if (!addrLine.take(18).equals(known.take(18), ignoreCase = true)) {
-                addressChanged = true
-                nn99ReachedPickup = true // padrão: pickup normal. Uma regra de
-                // prioridade mais alta (nn99_aceite_pickup_novo) pode
-                // sobrescrever isso logo abaixo se for corrida nova de verdade.
-                nn99KnownDestAddr = addrLine
-            }
-        }
+        if (addrLine != null) nn99KnownDestAddr = addrLine
 
         val rpBefore = nn99ReachedPickup
-        val ev = RuleEngine.evaluate("99", texts, nn99ReachedPickup, addressChanged, confirmedTripSubState == "online")
+        val ev = RuleEngine.evaluate("99", texts, nn99ReachedPickup, currentlyOnline = confirmedTripSubState == "online")
         val raw: String
         if (ev.matched) {
             nn99ReachedPickup = ev.newReachedPickup
@@ -1235,17 +1230,16 @@ class TripReaderService : AccessibilityService() {
         // do caminho de decisão dessa leitura específica.
         nn99DebugRPBefore = rpBefore
         nn99DebugRPAfter = nn99ReachedPickup
-        nn99DebugAddrChanged = addressChanged
+        nn99DebugAddrChanged = false // heurística removida (17/07/2026)
         nn99DebugCurrentlyOnline = confirmedTripSubState == "online"
         nn99DebugMatchedRule = ev.matchedRuleKey ?: "nenhuma"
         nn99DebugRaw = raw
         applyTripSubStateDebounced(raw, "99")
 
         // ── Captura automática — 99: endereço mais completo visto no
-        // cabeçalho de navegação (mesmo campo usado acima pra detectar
-        // troca de endereço) — funde com o que já tinha da oferta (mais
-        // completo vence, ver AutoTripCapture). Buscar = endereço de
-        // origem/embarque; corrida = endereço de destino.
+        // cabeçalho de navegação — funde com o que já tinha da oferta
+        // (mais completo vence, ver AutoTripCapture). Buscar = endereço
+        // de origem/embarque; corrida = endereço de destino.
         if (addrLine != null) {
             when (raw) {
                 "buscar"  -> AutoTripCapture.updateAddresses("99", addrLine, null)
