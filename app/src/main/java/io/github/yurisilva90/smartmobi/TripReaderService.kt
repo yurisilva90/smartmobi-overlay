@@ -1143,6 +1143,7 @@ class TripReaderService : AccessibilityService() {
     )
     private val nn99BuscandoOcrRe = Regex("""Buscando""", RegexOption.IGNORE_CASE)
     private val nn99CobrarPagamentoRe = Regex("""Cobrar pagamento""", RegexOption.IGNORE_CASE)
+    private val nn99FinalizarCorridaRe = Regex("""Finalizar corrida""", RegexOption.IGNORE_CASE)
 
     // Liga a escuta de "Buscando" via OCR — hoje só chamado pelo gatilho
     // da avaliação. (Gatilho por notificação de "corrida cancelada" foi
@@ -1182,6 +1183,17 @@ class TripReaderService : AccessibilityService() {
         // Buscando acima: continua "votando" a cada leitura até o debounce
         // confirmar, nunca desiste na primeira.
         if (confirmedTripSubState != "corrida" && nn99CobrarPagamentoRe.containsMatchIn(joinedOcrText)) {
+            nn99ReachedPickup = true
+            nn99LastActiveSignalMs = System.currentTimeMillis()
+            applyTripSubStateDebounced("corrida", "99")
+        }
+
+        // AJUSTE (18/07/2026, a pedido): mesmo reforço, mas pro botão
+        // "Finalizar corrida" — cobre o MEIO da corrida (Cobrar pagamento
+        // só aparece pertinho do fim). Tela de navegação pode estar
+        // minimizada (barra inferior só) sem esse texto — nesse caso não
+        // reforça nada, mas também não atrapalha (só fica de olho).
+        if (confirmedTripSubState != "corrida" && nn99FinalizarCorridaRe.containsMatchIn(joinedOcrText)) {
             nn99ReachedPickup = true
             nn99LastActiveSignalMs = System.currentTimeMillis()
             applyTripSubStateDebounced("corrida", "99")

@@ -53,7 +53,14 @@ object AutoTripCapture {
         var tripStartedAt: Long = 0L,
         var tripStartKm: Double = 0.0,
         var tripEndedAt: Long = 0L,
-        var tripEndKm: Double = 0.0
+        var tripEndKm: Double = 0.0,
+        // Posição real (GpsService) no instante do embarque e do
+        // desembarque — geocodificada (reversa) só no push(), já em
+        // background, pra comparar com o endereço que veio da tela.
+        var gpsOriginLat: Double = 0.0,
+        var gpsOriginLng: Double = 0.0,
+        var gpsDestLat: Double = 0.0,
+        var gpsDestLng: Double = 0.0
     )
 
     // Última oferta válida vista por plataforma, ANTES do aceite — vira o
@@ -157,11 +164,15 @@ object AutoTripCapture {
                 if (b != null && b.platform == plat) {
                     b.tripStartedAt = now
                     b.tripStartKm = km
+                    b.gpsOriginLat = GpsService.lastLat
+                    b.gpsOriginLng = GpsService.lastLng
                 } else {
                     // Rede de segurança: chegou em "corrida" sem termos visto o
                     // "buscar" (debounce pode ter engolido o passo intermediário).
                     // Sem km de buscar pra comparar, mas não perde o resto.
                     startBuffer(km, alsoStartTrip = true)
+                    buffer?.gpsOriginLat = GpsService.lastLat
+                    buffer?.gpsOriginLng = GpsService.lastLng
                 }
             }
             prev == "corrida" && next == "online" -> {
@@ -170,6 +181,8 @@ object AutoTripCapture {
                 if (b != null && b.platform == plat) {
                     b.tripEndedAt = now
                     b.tripEndKm = km
+                    b.gpsDestLat = GpsService.lastLat
+                    b.gpsDestLng = GpsService.lastLng
                     push(ctx, b)
                 }
             }
@@ -185,6 +198,8 @@ object AutoTripCapture {
                 if (b != null && b.platform == plat) {
                     b.tripEndedAt = now
                     b.tripEndKm = km
+                    b.gpsDestLat = GpsService.lastLat
+                    b.gpsDestLng = GpsService.lastLng
                     push(ctx, b)
                 }
                 startBuffer(km, alsoStartTrip = false)
@@ -203,6 +218,13 @@ object AutoTripCapture {
                 val status = if (b.offerValue != null && b.tripStartedAt > 0 && b.tripEndedAt > 0)
                     "confirmada" else "capturada"
 
+                // Já estamos numa thread em background (isDaemon) — pode
+                // bloquear aqui sem travar a leitura de tela. Endereço real,
+                // pra comparar com o que veio da oferta/navegação (mesmo
+                // espírito do km/tempo real x previsto).
+                val gpsOriginAddress = GpsService.reverseGeocodeFull(b.gpsOriginLat, b.gpsOriginLng)
+                val gpsDestAddress = GpsService.reverseGeocodeFull(b.gpsDestLat, b.gpsDestLng)
+
                 val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
                     .apply { timeZone = TimeZone.getTimeZone("UTC") }
                 fun iso(ms: Long): Any = if (ms > 0) sdf.format(Date(ms)) else JSONObject.NULL
@@ -213,6 +235,8 @@ object AutoTripCapture {
                     put("passenger_name", b.passengerName ?: JSONObject.NULL)
                     put("origin_address", b.originAddress ?: JSONObject.NULL)
                     put("dest_address", b.destAddress ?: JSONObject.NULL)
+                    put("gps_origin_address", gpsOriginAddress ?: JSONObject.NULL)
+                    put("gps_dest_address", gpsDestAddress ?: JSONObject.NULL)
                     put("offer_value", b.offerValue ?: JSONObject.NULL)
                     put("offer_dinamico", b.offerDinamico)
                     put("offer_km_pickup", b.offerKmPickup ?: JSONObject.NULL)

@@ -177,6 +177,38 @@ class GpsService : Service(), LocationListener {
         // dia que começou ali. -1.0/"" = nenhuma virada capturada ainda.
         var kmAtMidnight: Double = -1.0
         var midnightSnapshotDate: String = ""
+        // Última posição válida conhecida — exposta pro AutoTripCapture
+        // geocodificar (reverso) o endereço real de embarque/desembarque.
+        // 0.0/0.0 = nenhum fix ainda.
+        var lastLat: Double = 0.0
+        var lastLng: Double = 0.0
+
+        // Geocodificação reversa completa (rua + número + bairro), pro
+        // AutoTripCapture comparar com o endereço que veio da tela. Mais
+        // rica que geocodificarRua() (que só devolve o nome da rua, usado
+        // no recurso de alertas) — roda numa thread já em background
+        // (chamada de dentro de AutoTripCapture.push, que já é async).
+        fun reverseGeocodeFull(lat: Double, lon: Double): String? {
+            if (lat == 0.0 && lon == 0.0) return null
+            return try {
+                val url = URL("https://nominatim.openstreetmap.org/reverse?lat=$lat&lon=$lon&zoom=18&format=json&accept-language=pt&addressdetails=1")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.setRequestProperty("User-Agent", "SmartMobi/1.0")
+                conn.connectTimeout = 6000; conn.readTimeout = 6000
+                val json = JSONObject(conn.inputStream.bufferedReader().readText())
+                val addr = json.optJSONObject("address") ?: return json.optString("display_name").takeIf { it.isNotBlank() }
+                val rua = addr.optString("road").takeIf { it.isNotBlank() }
+                    ?: addr.optString("pedestrian").takeIf { it.isNotBlank() }
+                val numero = addr.optString("house_number").takeIf { it.isNotBlank() }
+                val bairro = addr.optString("suburb").takeIf { it.isNotBlank() }
+                    ?: addr.optString("neighbourhood").takeIf { it.isNotBlank() }
+                listOfNotNull(
+                    if (rua != null && numero != null) "$rua, $numero" else rua,
+                    bairro
+                ).joinToString(" - ").takeIf { it.isNotBlank() }
+                    ?: json.optString("display_name").takeIf { it.isNotBlank() }
+            } catch (e: Exception) { null }
+        }
 
         fun saveUserCredentials(ctx: Context, userId: String, accessToken: String) {
             ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
@@ -350,6 +382,7 @@ class GpsService : Service(), LocationListener {
         val isGps = location.provider == LocationManager.GPS_PROVIDER
         if (isGps) lastGpsFixTime = now
         if (!isGps && (lastGpsFixTime == 0L || now - lastGpsFixTime < 45000)) return
+        lastLat = location.latitude; lastLng = location.longitude
 
         // Rastrear velocidade para detectar parado
         val prev = lastLocation
