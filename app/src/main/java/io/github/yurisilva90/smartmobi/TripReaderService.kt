@@ -1155,6 +1155,8 @@ class TripReaderService : AccessibilityService() {
         nn99WaitingBuscandoSinceMs = System.currentTimeMillis()
     }
 
+    private val nn99ChegueAntesOcrRe = Regex("""Chegue antes de\s*\d{1,2}:\d{2}""", RegexOption.IGNORE_CASE)
+
     private fun checkNn99OcrStatusBridge(plat: String, joinedOcrText: String) {
         if (plat != "99") return
 
@@ -1173,6 +1175,16 @@ class TripReaderService : AccessibilityService() {
             applyTripSubStateDebounced("online", "99")
         }
 
+        // BUG CONFIRMADO EM CORRIDA REAL (18/07/2026, corrida da Stephanie):
+        // "Finalizar corrida" apareceu em UMA leitura de OCR no meio de
+        // nomes de rua/POI do mapa — falso positivo — e forçou Corrida
+        // mesmo com "Chegue antes de 23:48" bem visível na tela (print real
+        // confirmado). GATE OBRIGATÓRIO: nenhum reforço de OCR abaixo pode
+        // forçar Corrida se "Chegue antes de HH:MM" estiver no mesmo texto
+        // — essa frase SEMPRE significa Buscar, sem exceção (regra do
+        // Yuri), então ela sempre vence sobre qualquer reforço.
+        val temChegueAntes = nn99ChegueAntesOcrRe.containsMatchIn(joinedOcrText)
+
         // AJUSTE (17/07/2026, a pedido, confirmado com print real): "Cobrar
         // pagamento" só aparece perto do fim da corrida, com passageiro a
         // bordo — é um sinal forte e só existe por OCR (confirmado antes:
@@ -1182,7 +1194,7 @@ class TripReaderService : AccessibilityService() {
         // investigando), esse texto corrige sozinho. Mesmo padrão do
         // Buscando acima: continua "votando" a cada leitura até o debounce
         // confirmar, nunca desiste na primeira.
-        if (confirmedTripSubState != "corrida" && nn99CobrarPagamentoRe.containsMatchIn(joinedOcrText)) {
+        if (confirmedTripSubState != "corrida" && !temChegueAntes && nn99CobrarPagamentoRe.containsMatchIn(joinedOcrText)) {
             nn99ReachedPickup = true
             nn99LastActiveSignalMs = System.currentTimeMillis()
             applyTripSubStateDebounced("corrida", "99")
@@ -1193,7 +1205,7 @@ class TripReaderService : AccessibilityService() {
         // só aparece pertinho do fim). Tela de navegação pode estar
         // minimizada (barra inferior só) sem esse texto — nesse caso não
         // reforça nada, mas também não atrapalha (só fica de olho).
-        if (confirmedTripSubState != "corrida" && nn99FinalizarCorridaRe.containsMatchIn(joinedOcrText)) {
+        if (confirmedTripSubState != "corrida" && !temChegueAntes && nn99FinalizarCorridaRe.containsMatchIn(joinedOcrText)) {
             nn99ReachedPickup = true
             nn99LastActiveSignalMs = System.currentTimeMillis()
             applyTripSubStateDebounced("corrida", "99")
