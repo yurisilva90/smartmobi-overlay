@@ -147,6 +147,11 @@ class TripReaderService : AccessibilityService() {
     // compacta depois disso já é "corrida", não "buscar". Reseta ao voltar
     // pra Aguardando/Buscando.
     private var nn99ReachedPickup = false
+    // Rastreio de diagnóstico: qual foi o último gatilho que decidiu o
+    // valor de nn99ReachedPickup (pedido do Yuri, 18/07/2026 — facilita
+    // investigar troca de status depois, sem precisar reconstruir tudo
+    // manualmente lendo texto cru).
+    private var nn99ReachedPickupReason = "init"
 
     override fun onServiceConnected() {
         val info = AccessibilityServiceInfo().apply {
@@ -404,7 +409,7 @@ class TripReaderService : AccessibilityService() {
         // um snapshot do caminho de decisão real, só pra 99. Reaproveita
         // esse mesmo log já throttled — não grava linha extra nenhuma.
         val state = if (plat == "99") {
-            "RPantes=$nn99DebugRPBefore RPdepois=$nn99DebugRPAfter addrMudou=$nn99DebugAddrChanged online=$nn99DebugCurrentlyOnline regra=$nn99DebugMatchedRule raw=$nn99DebugRaw"
+            "RPantes=$nn99DebugRPBefore RPdepois=$nn99DebugRPAfter addrMudou=$nn99DebugAddrChanged online=$nn99DebugCurrentlyOnline regra=$nn99DebugMatchedRule gatilhoRP=$nn99ReachedPickupReason raw=$nn99DebugRaw"
         } else inferState(low)
         val money = extractMoney(joined)
         val km = extractKm(low)
@@ -1170,6 +1175,7 @@ class TripReaderService : AccessibilityService() {
         // tela ou gravação extra nenhuma.
         if (confirmedTripSubState == "buscar" && nn99BuscandoOcrRe.containsMatchIn(joinedOcrText)) {
             nn99ReachedPickup = false
+            nn99ReachedPickupReason = "ocr:buscando"
             nn99KnownDestAddr = null
             nn99LastActiveSignalMs = System.currentTimeMillis()
             applyTripSubStateDebounced("online", "99")
@@ -1196,6 +1202,7 @@ class TripReaderService : AccessibilityService() {
         // confirmar, nunca desiste na primeira.
         if (confirmedTripSubState != "corrida" && !temChegueAntes && nn99CobrarPagamentoRe.containsMatchIn(joinedOcrText)) {
             nn99ReachedPickup = true
+            nn99ReachedPickupReason = "ocr:cobrar_pagamento"
             nn99LastActiveSignalMs = System.currentTimeMillis()
             applyTripSubStateDebounced("corrida", "99")
         }
@@ -1207,6 +1214,7 @@ class TripReaderService : AccessibilityService() {
         // reforça nada, mas também não atrapalha (só fica de olho).
         if (confirmedTripSubState != "corrida" && !temChegueAntes && nn99FinalizarCorridaRe.containsMatchIn(joinedOcrText)) {
             nn99ReachedPickup = true
+            nn99ReachedPickupReason = "ocr:finalizar_corrida"
             nn99LastActiveSignalMs = System.currentTimeMillis()
             applyTripSubStateDebounced("corrida", "99")
         }
@@ -1226,6 +1234,7 @@ class TripReaderService : AccessibilityService() {
         }
         if (nn99BuscandoOcrRe.containsMatchIn(joinedOcrText)) {
             nn99ReachedPickup = false
+            nn99ReachedPickupReason = "ocr:buscando_armado"
             nn99KnownDestAddr = null
             nn99LastActiveSignalMs = System.currentTimeMillis()
             applyTripSubStateDebounced("online", "99")
@@ -1248,29 +1257,52 @@ class TripReaderService : AccessibilityService() {
         // embarque" nem a tela de espera — nn99ReachedPickup nunca ligava,
         // o status ficava preso em "buscar" a viagem inteira. Sinal de
         // reforço: se a linha de endereço completo (rua+número+bairro, tem
-        // vírgula, é longa) mudar de verdade — não só truncamento de OCR,
-        // por isso compara só os 18 primeiros caracteres — trata como
-        // "acabou de pegar o passageiro" mesmo sem ver a tela de espera.
-        // AJUSTE (17/07/2026, a pedido do Yuri): removida a heurística de
-        // "endereço mudou = pickup novo" — confirmado em log real (corrida
-        // Yhara→tania) que ela causava oscilação buscar/corrida quando o
-        // OCR lia o mesmo endereço com ruído (ex: "•" solto na frente
-        // deslocando a comparação dos 18 primeiros caracteres, fazendo o
-        // app achar que o endereço tinha mudado quando não mudou). A
-        // avaliação ("Como foi sua corrida"/"Valor da corrida") já é sinal
-        // suficiente e confiável pra fechar a corrida atual; dali em
-        // diante os sinais normais de buscar (Chegue antes de/Iniciar
-        // corrida/Cheguei no embarque) cobrem a corrida seguinte sem
-        // precisar de heurística de endereço. Ainda guarda o endereço
-        // conhecido só pra eventual diagnóstico — não decide mais nada.
+        // vírgula, é longa) mudar de verdade, trata como "acabou de pegar
+        // o passageiro" mesmo sem ver a tela de espera.
+        //
+        // RESTAURADO (18/07/2026, a pedido, com a causa raiz corrigida):
+        // essa heurística tinha sido removida no dia 17 achando que era só
+        // "mais uma" fonte de sinal — só que na real ela é o MECANISMO
+        // PRINCIPAL de "buscar"→"corrida" pra corridas normais (sem
+        // sobreposição). Prova, confirmada por screen_class no banco: os
+        // textos "Iniciar corrida" / "Passaremos a cobrar taxa de espera"
+        // só existem via OCR (screen_class=OCR_TELA_NORMAL), NUNCA chegam
+        // na leitura de acessibilidade — a regra nn99_chegou_espera que
+        // dependia deles praticamente nunca disparava pelo caminho
+        // principal. Sem essa heurística de endereço, a única coisa que
+        // ainda flipava reachedPickup era o reforço de OCR (Cobrar
+        // pagamento/Finalizar corrida), só perto do fim — daí o "preso em
+        // Buscar" que o Yuri viu na corrida do Leandro (7 min presa).
+        //
+        // Causa raiz do bug de oscilação original (corrida Yhara→tania,
+        // 17/07): comparação de texto CRU, sensível a ruído de 1 caractere
+        // (ex: "•" grudado na frente deslocava tudo). Corrigido agora
+        // normalizando (tira espaço/pontuação solta do início) antes de
+        // comparar — mantém o mecanismo, tira só a fragilidade.
         val addrLine = texts.firstOrNull { it.length >= 20 && it.contains(",") && !it.contains("R$") }
-        if (addrLine != null) nn99KnownDestAddr = addrLine
+        var addressChanged = false
+        if (addrLine != null) {
+            val normalized = addrLine.trimStart(' ', '•', '-', '*', '·', '.', ',').trim()
+            val known = nn99KnownDestAddr
+            if (known == null) {
+                nn99KnownDestAddr = addrLine
+            } else {
+                val knownNorm = known.trimStart(' ', '•', '-', '*', '·', '.', ',').trim()
+                if (!normalized.take(18).equals(knownNorm.take(18), ignoreCase = true)) {
+                    addressChanged = true
+                    nn99ReachedPickup = true
+                    nn99ReachedPickupReason = "addr_changed"
+                    nn99KnownDestAddr = addrLine
+                }
+            }
+        }
 
         val rpBefore = nn99ReachedPickup
-        val ev = RuleEngine.evaluate("99", texts, nn99ReachedPickup, currentlyOnline = confirmedTripSubState == "online")
+        val ev = RuleEngine.evaluate("99", texts, nn99ReachedPickup, addrChanged = addressChanged, currentlyOnline = confirmedTripSubState == "online")
         val raw: String
         if (ev.matched) {
             nn99ReachedPickup = ev.newReachedPickup
+            nn99ReachedPickupReason = "rule:${ev.matchedRuleKey ?: "?"}"
             if (ev.resetKnownAddr) nn99KnownDestAddr = null
             nn99LastActiveSignalMs = System.currentTimeMillis()
             raw = ev.state
@@ -1286,10 +1318,14 @@ class TripReaderService : AccessibilityService() {
             raw = confirmedTripSubState
         }
         // Diagnóstico (ver bloco de comentário acima) — snapshot completo
-        // do caminho de decisão dessa leitura específica.
+        // do caminho de decisão dessa leitura específica. gatilho = o que
+        // decidiu por último o valor de reachedPickup (regra, endereço ou
+        // reforço de OCR) — pedido do Yuri (18/07/2026) pra facilitar
+        // investigação de troca de status sem precisar reconstruir tudo
+        // lendo texto cru.
         nn99DebugRPBefore = rpBefore
         nn99DebugRPAfter = nn99ReachedPickup
-        nn99DebugAddrChanged = false // heurística removida (17/07/2026)
+        nn99DebugAddrChanged = addressChanged
         nn99DebugCurrentlyOnline = confirmedTripSubState == "online"
         nn99DebugMatchedRule = ev.matchedRuleKey ?: "nenhuma"
         nn99DebugRaw = raw
