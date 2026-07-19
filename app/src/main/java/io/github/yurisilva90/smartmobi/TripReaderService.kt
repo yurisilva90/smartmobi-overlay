@@ -1302,7 +1302,14 @@ class TripReaderService : AccessibilityService() {
         val raw: String
         if (ev.matched) {
             nn99ReachedPickup = ev.newReachedPickup
-            nn99ReachedPickupReason = "rule:${ev.matchedRuleKey ?: "?"}"
+            // Só atualiza o motivo quando a flag REALMENTE mudou de valor —
+            // antes gravava "rule:X" em toda leitura que batia alguma
+            // regra, mesmo sem mexer na flag, apagando o motivo verdadeiro
+            // de uma troca anterior (dificultava achar a origem real, como
+            // no caso da Fabiane).
+            if (ev.newReachedPickup != rpBefore) {
+                nn99ReachedPickupReason = "rule:${ev.matchedRuleKey ?: "?"}"
+            }
             if (ev.resetKnownAddr) nn99KnownDestAddr = null
             nn99LastActiveSignalMs = System.currentTimeMillis()
             raw = ev.state
@@ -1364,6 +1371,22 @@ class TripReaderService : AccessibilityService() {
             val prev = confirmedTripSubState
             confirmedTripSubState = best.key
             MainActivity.floatingWidget?.updateTripState(best.key)
+            // BUG CONFIRMADO EM CORRIDA REAL (18/07/2026, corrida da
+            // Fabiane): o endereço "conhecido" não tinha sido limpo direito
+            // entre corridas (algum reset individual — Buscando/avaliação —
+            // podia ser "batido" por uma leitura de endereço solta no meio
+            // do caminho, deixando resíduo). O primeiro endereço da corrida
+            // NOVA parecia "diferente" desse resíduo e disparava a
+            // heurística de troca de endereço na hora errada (virava
+            // Corrida direto, sem nunca passar por Buscar). Corrigido na
+            // fonte única de verdade: toda vez que o status CONFIRMADO
+            // (pós-debounce, não leitura crua) vira Online na 99, limpa o
+            // endereço conhecido aqui — garante corrida nova sempre começa
+            // com endereço em branco, não importa qual mecanismo confirmou
+            // o Online.
+            if (plat == "99" && best.key == "online") {
+                nn99KnownDestAddr = null
+            }
             // Captura automática: só reage a transição CONFIRMADA (pós-debounce),
             // nunca a leituras cruas — evita abrir/fechar registro por ruído.
             AutoTripCapture.onStateTransition(this, plat, prev, best.key)
