@@ -1384,8 +1384,20 @@ class TripReaderService : AccessibilityService() {
             // endereço conhecido aqui — garante corrida nova sempre começa
             // com endereço em branco, não importa qual mecanismo confirmou
             // o Online.
+            // BUG NOVO CONFIRMADO (19/07/2026, log ao vivo): o ajuste da
+            // Fabiane só limpava o ENDEREÇO ao virar Online — mas a flag
+            // nn99ReachedPickup em si podia continuar presa em true de
+            // antes (viu no diagnóstico: RPantes=true já no primeiro
+            // instante de "online", muito antes de qualquer corrida nova
+            // começar). Resultado: corrida nova nascia direto em Corrida,
+            // porque a flag nunca tinha sido resetada de verdade, só o
+            // endereço. Corrigido juntando os dois resets no mesmo lugar —
+            // toda vez que o status confirmado vira Online, zera endereço
+            // E flag juntos, sempre.
             if (plat == "99" && best.key == "online") {
                 nn99KnownDestAddr = null
+                nn99ReachedPickup = false
+                nn99ReachedPickupReason = "online_confirmado"
             }
             // Captura automática: só reage a transição CONFIRMADA (pós-debounce),
             // nunca a leituras cruas — evita abrir/fechar registro por ruído.
