@@ -1149,6 +1149,16 @@ class TripReaderService : AccessibilityService() {
     private val nn99BuscandoOcrRe = Regex("""Buscando""", RegexOption.IGNORE_CASE)
     private val nn99CobrarPagamentoRe = Regex("""Cobrar pagamento""", RegexOption.IGNORE_CASE)
     private val nn99FinalizarCorridaRe = Regex("""Finalizar corrida""", RegexOption.IGNORE_CASE)
+    // NOVO (19/07/2026, a pedido, plano revisado com o Yuri): buscar/corrida
+    // na 99 passam a ser decididos 100% por pontes de OCR diretas — nunca
+    // mais por flag interna ou comparação de endereço. Esses três textos
+    // juntos são o sinal definitivo de "acabou de chegar/embarcar" —
+    // mesmos textos que a regra nn99_chegou_espera tentava pegar pela via
+    // de acessibilidade (nunca funcionava, só existem via OCR).
+    private val nn99ChegadaOcrRe = Regex(
+        """Passaremos a cobrar uma taxa de espera|Iniciar corrida|Você está perto do local de embarque|Calculando taxa de espera|Você receberá a taxa de espera total""",
+        RegexOption.IGNORE_CASE
+    )
 
     // Liga a escuta de "Buscando" via OCR — hoje só chamado pelo gatilho
     // da avaliação. (Gatilho por notificação de "corrida cancelada" foi
@@ -1190,6 +1200,35 @@ class TripReaderService : AccessibilityService() {
         // — essa frase SEMPRE significa Buscar, sem exceção (regra do
         // Yuri), então ela sempre vence sobre qualquer reforço.
         val temChegueAntes = nn99ChegueAntesOcrRe.containsMatchIn(joinedOcrText)
+
+        // NOVO (19/07/2026, a pedido): "Chegue antes de HH:MM" vira sinal
+        // DEFINITIVO de Buscar — o Yuri confirmou que esse texto só existe
+        // durante buscar, nunca durante corrida, então não precisa de
+        // nenhuma outra condição pra valer. Substitui de vez a regra
+        // nn99_chegue_antes (via acessibilidade, desativada) e a regra
+        // nn99_navegando/flag (também desativada) — buscar na 99 agora só
+        // nasce daqui. Mesmo padrão de "voto a cada leitura" das outras
+        // pontes — nunca desiste na primeira leitura.
+        if (temChegueAntes) {
+            nn99ReachedPickup = false
+            nn99ReachedPickupReason = "ocr:chegue_antes_de"
+            nn99LastActiveSignalMs = System.currentTimeMillis()
+            applyTripSubStateDebounced("buscar", "99")
+        }
+
+        // NOVO (19/07/2026, a pedido): mesmos textos que a regra
+        // nn99_chegou_espera tentava pegar pela via de acessibilidade
+        // (nunca funcionava — só existem via OCR, confirmado por
+        // screen_class no banco). Vira o sinal definitivo de "acabou de
+        // chegar/embarcar" — substitui a regra desativada. Mesmo gate das
+        // outras pontes de Corrida: nunca dispara se "Chegue antes de"
+        // estiver na mesma leitura.
+        if (!temChegueAntes && nn99ChegadaOcrRe.containsMatchIn(joinedOcrText)) {
+            nn99ReachedPickup = true
+            nn99ReachedPickupReason = "ocr:chegada"
+            nn99LastActiveSignalMs = System.currentTimeMillis()
+            applyTripSubStateDebounced("corrida", "99")
+        }
 
         // AJUSTE (17/07/2026, a pedido, confirmado com print real): "Cobrar
         // pagamento" só aparece perto do fim da corrida, com passageiro a
@@ -1251,50 +1290,24 @@ class TripReaderService : AccessibilityService() {
         RuleEngine.ensureLoaded(this)
         RuleEngine.refreshIfDue(this)
 
-        // BUG CONFIRMADO EM CORRIDA REAL (13/07/2026): o motorista foi pro
-        // chat com o passageiro logo que chegou, e o app trocou o endereço
-        // de navegação pro destino final SEM NUNCA mostrar "Cheguei no
-        // embarque" nem a tela de espera — nn99ReachedPickup nunca ligava,
-        // o status ficava preso em "buscar" a viagem inteira. Sinal de
-        // reforço: se a linha de endereço completo (rua+número+bairro, tem
-        // vírgula, é longa) mudar de verdade, trata como "acabou de pegar
-        // o passageiro" mesmo sem ver a tela de espera.
-        //
-        // RESTAURADO (18/07/2026, a pedido, com a causa raiz corrigida):
-        // essa heurística tinha sido removida no dia 17 achando que era só
-        // "mais uma" fonte de sinal — só que na real ela é o MECANISMO
-        // PRINCIPAL de "buscar"→"corrida" pra corridas normais (sem
-        // sobreposição). Prova, confirmada por screen_class no banco: os
-        // textos "Iniciar corrida" / "Passaremos a cobrar taxa de espera"
-        // só existem via OCR (screen_class=OCR_TELA_NORMAL), NUNCA chegam
-        // na leitura de acessibilidade — a regra nn99_chegou_espera que
-        // dependia deles praticamente nunca disparava pelo caminho
-        // principal. Sem essa heurística de endereço, a única coisa que
-        // ainda flipava reachedPickup era o reforço de OCR (Cobrar
-        // pagamento/Finalizar corrida), só perto do fim — daí o "preso em
-        // Buscar" que o Yuri viu na corrida do Leandro (7 min presa).
-        //
-        // Causa raiz do bug de oscilação original (corrida Yhara→tania,
-        // 17/07): comparação de texto CRU, sensível a ruído de 1 caractere
-        // (ex: "•" grudado na frente deslocava tudo). Corrigido agora
-        // normalizando (tira espaço/pontuação solta do início) antes de
-        // comparar — mantém o mecanismo, tira só a fragilidade.
+        // DESLIGADA (19/07/2026, a pedido — decisão final): confirmado 3x
+        // em corrida real (Yhara→tania, Fabiane, e mais uma direto na
+        // aceitação) que qualquer tentativa de deixar essa heurística seg-
+        // ura o bastante (resets em vários pontos, normalização de texto)
+        // sempre deixa uma janela onde dois endereços parecidos aparecem
+        // em sequência rápida (card de oferta, mapa, POI) antes da corrida
+        // ser aceita de verdade, e são lidos como "pickup novo" por
+        // engano. Buscar/Corrida na 99 agora são decididos 100% pelas
+        // pontes de OCR diretas (ver checkNn99OcrStatusBridge: Chegue
+        // antes de / chegada / Cobrar pagamento / Finalizar corrida) — não
+        // dependem mais de comparar endereço nem da flag sozinha. O bloco
+        // abaixo só guarda o endereço visto (usado pra atualizar o
+        // registro da captura automática mais adiante nessa função), não
+        // decide mais status nem mexe em nn99ReachedPickup.
         val addrLine = texts.firstOrNull { it.length >= 20 && it.contains(",") && !it.contains("R$") }
-        var addressChanged = false
-        if (addrLine != null) {
-            val normalized = addrLine.trimStart(' ', '•', '-', '*', '·', '.', ',').trim()
-            val known = nn99KnownDestAddr
-            if (known == null) {
-                nn99KnownDestAddr = addrLine
-            } else {
-                val knownNorm = known.trimStart(' ', '•', '-', '*', '·', '.', ',').trim()
-                if (!normalized.take(18).equals(knownNorm.take(18), ignoreCase = true)) {
-                    addressChanged = true
-                    nn99ReachedPickup = true
-                    nn99ReachedPickupReason = "addr_changed"
-                    nn99KnownDestAddr = addrLine
-                }
-            }
+        val addressChanged = false
+        if (addrLine != null && nn99KnownDestAddr == null) {
+            nn99KnownDestAddr = addrLine
         }
 
         val rpBefore = nn99ReachedPickup
