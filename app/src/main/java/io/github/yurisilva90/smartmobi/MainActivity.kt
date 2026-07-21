@@ -48,6 +48,12 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         instance = this
         pendingScreen = intent.getStringExtra("open_screen")
+        // Vigia do OCR: se o app estava fechado e o motorista tocou na
+        // notificação de "leitura de tela parou", o extra chega no onCreate
+        // (não no onNewIntent) — pede a captura assim que a tela montar.
+        if (intent.getBooleanExtra("re_request_capture", false)) {
+            Handler(Looper.getMainLooper()).postDelayed({ launchScreenCaptureRequest() }, 600)
+        }
         WindowCompat.setDecorFitsSystemWindows(window, false)
         supportActionBar?.hide()
 
@@ -94,6 +100,22 @@ class MainActivity : AppCompatActivity() {
             pendingScreen = screen
             maybeOpenPendingScreen()
         }
+        // Vigia do OCR (20/07/2026): toque na notificação de "leitura de
+        // tela parou" chega aqui com esse extra — reabre direto o pedido
+        // de permissão de captura, sem o motorista precisar caçar a tela
+        // de configuração do Flash.
+        if (intent.getBooleanExtra("re_request_capture", false)) {
+            launchScreenCaptureRequest()
+        }
+    }
+
+    // Mesmo fluxo do requestScreenCapture() do bridge JS — extraído pra ser
+    // reutilizado pelo vigia do OCR (notificação) sem duplicar código.
+    private fun launchScreenCaptureRequest() {
+        try {
+            val mpm = getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+            startActivityForResult(mpm.createScreenCaptureIntent(), 7301)
+        } catch (_: Exception) {}
     }
 
     private fun maybeOpenPendingScreen() {
@@ -312,12 +334,7 @@ class MainActivity : AppCompatActivity() {
 
             // Captura de tela pro OCR do MōB Flash (a oferta da 99 é imagem)
             @JavascriptInterface fun requestScreenCapture() {
-                runOnUiThread {
-                    try {
-                        val mpm = getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
-                        startActivityForResult(mpm.createScreenCaptureIntent(), 7301)
-                    } catch (_: Exception) {}
-                }
+                runOnUiThread { launchScreenCaptureRequest() }
             }
             @JavascriptInterface fun isScreenCaptureActive(): Boolean = ScreenOcrService.isActive
         }, "SmartMobiNative")

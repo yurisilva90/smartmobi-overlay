@@ -165,6 +165,14 @@ class FlashCard(private val context: Context) {
         if (!ttsReady) { pendingPhrase = phrase; return }
         speakNow(phrase)
     }
+    // Fala avulsa de alerta (usada pelo vigia do OCR no TripReaderService,
+    // 20/07/2026) — reusa o mesmo motor, foco de áudio e fila do anúncio
+    // de oferta, sem duplicar TTS em outro lugar.
+    fun speakAlert(phrase: String) {
+        ensureTts()
+        if (!ttsReady) { pendingPhrase = phrase; return }
+        speakNow(phrase)
+    }
     fun shutdownTts() {
         try {
             focusRequest?.let { audioManager?.abandonAudioFocusRequest(it) }

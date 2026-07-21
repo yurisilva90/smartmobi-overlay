@@ -453,8 +453,29 @@ class TripReaderService : AccessibilityService() {
                 lastOcrMissMs = now
                 sendToCloud(plat, "ocr", "OCR_INATIVO", "OCR_SEM_PERMISSAO", emptyList(), null, null, emptyList())
             }
+            // VIGIA DO OCR (20/07/2026, aprovado pelo Yuri): a permissão do
+            // MediaProjection cai calada com frequência — no log real,
+            // aconteceu em 5 dos últimos 7 dias, incluindo 2 HORAS dirigindo
+            // em 20/07 (10:45–12:45, 1.338 leituras cegas). Como buscar/
+            // corrida na 99 são 100% OCR, cair = detecção morta sem aviso
+            // nenhum. Depois de 20s de queda contínua, avisa uma vez por
+            // notificação (toque reabre o pedido de permissão) + voz.
+            if (ocrDownSinceMs == 0L) ocrDownSinceMs = now
+            if (!ocrAlertFired && now - ocrDownSinceMs > OCR_DOWN_ALERT_MS) {
+                ocrAlertFired = true
+                fireOcrDownAlert()
+            }
             return
         }
+        // OCR vivo de novo — limpa o alerta se tinha disparado.
+        if (ocrAlertFired) {
+            ocrAlertFired = false
+            try {
+                (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager)
+                    .cancel(NOTIF_ID_OCR_ALERT)
+            } catch (_: Exception) {}
+        }
+        ocrDownSinceMs = 0L
         val now = System.currentTimeMillis()
         if (now - lastOcrMs < 600) return
         lastOcrMs = now
@@ -1149,16 +1170,34 @@ class TripReaderService : AccessibilityService() {
     private val nn99BuscandoOcrRe = Regex("""Buscando""", RegexOption.IGNORE_CASE)
     private val nn99CobrarPagamentoRe = Regex("""Cobrar pagamento""", RegexOption.IGNORE_CASE)
     private val nn99FinalizarCorridaRe = Regex("""Finalizar corrida""", RegexOption.IGNORE_CASE)
-    // NOVO (19/07/2026, a pedido, plano revisado com o Yuri): buscar/corrida
-    // na 99 passam a ser decididos 100% por pontes de OCR diretas — nunca
-    // mais por flag interna ou comparação de endereço. Esses três textos
-    // juntos são o sinal definitivo de "acabou de chegar/embarcar" —
-    // mesmos textos que a regra nn99_chegou_espera tentava pegar pela via
-    // de acessibilidade (nunca funcionava, só existem via OCR).
-    private val nn99ChegadaOcrRe = Regex(
-        """Passaremos a cobrar uma taxa de espera|Iniciar corrida|Você está perto do local de embarque|Calculando taxa de espera|Você receberá a taxa de espera total""",
+    // REVISADO (20/07/2026, correção do Yuri): esses textos NÃO são mais
+    // sinal de Corrida. "A corrida só começa depois que fica Finalizar
+    // corrida, ou o navegador sem o Chegue antes de" — ou seja, chegar no
+    // embarque e ESPERAR o passageiro ainda é Buscar. Esses textos agora
+    // SEGURAM o status em Buscar (e zeram o contador de navegação abaixo),
+    // cobrindo exatamente a janela da espera: no log real de 20/07 a tela
+    // de espera mostra "Iniciar corrida" + km/h + SEM "Chegue antes de" —
+    // sem esse freio, o contador de navegação viraria Corrida no meio da
+    // espera por engano.
+    private val nn99EsperaOcrRe = Regex(
+        """Passaremos a cobrar uma taxa de espera|Iniciar corrida|Cheguei no embarque|Você está perto do local de embarque|Calculando taxa de espera|Você receberá a taxa de espera total""",
         RegexOption.IGNORE_CASE
     )
+
+    // NOVO (20/07/2026, regra definida pelo Yuri): Corrida = navegação
+    // ativa SEM "Chegue antes de" sustentada. A assinatura da navegação é
+    // o velocímetro "km/h" — confirmado no log real de 20/07: presente em
+    // TODAS as leituras de navegação (buscar e corrida) e AUSENTE em
+    // online/oferta/avaliação. O widget do MōB mostra só "km" (sem /h) e
+    // o FlashCard mostra "R$/KM" — nenhum contamina esse regex.
+    // Precisa de NN99_NAV_SEM_CHEGUE_CONSEC leituras SEGUIDAS porque o OCR
+    // perde o "Chegue antes de" em até 2 leituras consecutivas durante o
+    // buscar real (confirmado no mesmo log: ~15% das leituras, pior caso
+    // 2 seguidas) — 5 seguidas (~10s) dá margem de 2,5x sem atrasar a
+    // detecção de verdade.
+    private val nn99NavOcrRe = Regex("""\bkm/h\b""", RegexOption.IGNORE_CASE)
+    private var nn99NavSemChegueCount = 0
+    private val NN99_NAV_SEM_CHEGUE_CONSEC = 5
 
     // Liga a escuta de "Buscando" via OCR — hoje só chamado pelo gatilho
     // da avaliação. (Gatilho por notificação de "corrida cancelada" foi
@@ -1183,7 +1222,13 @@ class TripReaderService : AccessibilityService() {
         // de propósito: só mais uma comparação de texto na leitura de OCR
         // que já roda de qualquer forma a cada ~600ms — não gera leitura,
         // tela ou gravação extra nenhuma.
-        if (confirmedTripSubState == "buscar" && nn99BuscandoOcrRe.containsMatchIn(joinedOcrText)) {
+        // ESTENDIDO (20/07/2026): antes só valia com status "buscar" — se o
+        // passageiro cancelasse no MEIO da corrida, o status ficava preso em
+        // Corrida (cancelamento não passa pela tela de avaliação, então o
+        // gatilho armado abaixo nunca dispararia). Agora "Buscando" derruba
+        // buscar E corrida pra Online — protegido pelo mesmo debounce de
+        // maioria de 5 contra leitura solta errada.
+        if (confirmedTripSubState != "online" && nn99BuscandoOcrRe.containsMatchIn(joinedOcrText)) {
             nn99ReachedPickup = false
             nn99ReachedPickupReason = "ocr:buscando"
             nn99KnownDestAddr = null
@@ -1216,18 +1261,35 @@ class TripReaderService : AccessibilityService() {
             applyTripSubStateDebounced("buscar", "99")
         }
 
-        // NOVO (19/07/2026, a pedido): mesmos textos que a regra
-        // nn99_chegou_espera tentava pegar pela via de acessibilidade
-        // (nunca funcionava — só existem via OCR, confirmado por
-        // screen_class no banco). Vira o sinal definitivo de "acabou de
-        // chegar/embarcar" — substitui a regra desativada. Mesmo gate das
-        // outras pontes de Corrida: nunca dispara se "Chegue antes de"
-        // estiver na mesma leitura.
-        if (!temChegueAntes && nn99ChegadaOcrRe.containsMatchIn(joinedOcrText)) {
-            nn99ReachedPickup = true
-            nn99ReachedPickupReason = "ocr:chegada"
+        // REVISADO (20/07/2026, correção do Yuri): textos da chegada/espera
+        // deixam de ser Corrida — esperar o passageiro ainda é Buscar. A
+        // corrida só começa com "Finalizar corrida" (reforço abaixo) ou com
+        // o navegador SEM "Chegue antes de" sustentado (contador abaixo).
+        val temEspera = nn99EsperaOcrRe.containsMatchIn(joinedOcrText)
+        if (temEspera && !temChegueAntes) {
+            nn99ReachedPickupReason = "ocr:espera_embarque"
             nn99LastActiveSignalMs = System.currentTimeMillis()
-            applyTripSubStateDebounced("corrida", "99")
+            applyTripSubStateDebounced("buscar", "99")
+        }
+
+        // NOVO (20/07/2026, regra definida pelo Yuri): navegação ativa
+        // (km/h) sem NENHUM sinal de buscar (Chegue antes de / espera) e
+        // sem Buscando por NN99_NAV_SEM_CHEGUE_CONSEC leituras seguidas =
+        // Corrida. Qualquer sinal de buscar ou tela sem navegação zera o
+        // contador — nunca acumula através de buracos de leitura.
+        val temBuscando = nn99BuscandoOcrRe.containsMatchIn(joinedOcrText)
+        if (temChegueAntes || temEspera || temBuscando) {
+            nn99NavSemChegueCount = 0
+        } else if (nn99NavOcrRe.containsMatchIn(joinedOcrText)) {
+            nn99NavSemChegueCount++
+            if (nn99NavSemChegueCount >= NN99_NAV_SEM_CHEGUE_CONSEC) {
+                nn99ReachedPickup = true
+                nn99ReachedPickupReason = "ocr:nav_sem_chegue"
+                nn99LastActiveSignalMs = System.currentTimeMillis()
+                applyTripSubStateDebounced("corrida", "99")
+            }
+        } else {
+            nn99NavSemChegueCount = 0
         }
 
         // AJUSTE (17/07/2026, a pedido, confirmado com print real): "Cobrar
@@ -1239,7 +1301,7 @@ class TripReaderService : AccessibilityService() {
         // investigando), esse texto corrige sozinho. Mesmo padrão do
         // Buscando acima: continua "votando" a cada leitura até o debounce
         // confirmar, nunca desiste na primeira.
-        if (confirmedTripSubState != "corrida" && !temChegueAntes && nn99CobrarPagamentoRe.containsMatchIn(joinedOcrText)) {
+        if (confirmedTripSubState != "corrida" && !temChegueAntes && !temEspera && nn99CobrarPagamentoRe.containsMatchIn(joinedOcrText)) {
             nn99ReachedPickup = true
             nn99ReachedPickupReason = "ocr:cobrar_pagamento"
             nn99LastActiveSignalMs = System.currentTimeMillis()
@@ -1251,7 +1313,7 @@ class TripReaderService : AccessibilityService() {
         // só aparece pertinho do fim). Tela de navegação pode estar
         // minimizada (barra inferior só) sem esse texto — nesse caso não
         // reforça nada, mas também não atrapalha (só fica de olho).
-        if (confirmedTripSubState != "corrida" && !temChegueAntes && nn99FinalizarCorridaRe.containsMatchIn(joinedOcrText)) {
+        if (confirmedTripSubState != "corrida" && !temChegueAntes && !temEspera && nn99FinalizarCorridaRe.containsMatchIn(joinedOcrText)) {
             nn99ReachedPickup = true
             nn99ReachedPickupReason = "ocr:finalizar_corrida"
             nn99LastActiveSignalMs = System.currentTimeMillis()
@@ -1410,6 +1472,7 @@ class TripReaderService : AccessibilityService() {
             if (plat == "99" && best.key == "online") {
                 nn99KnownDestAddr = null
                 nn99ReachedPickup = false
+                nn99NavSemChegueCount = 0
                 nn99ReachedPickupReason = "online_confirmado"
             }
             // Captura automática: só reage a transição CONFIRMADA (pós-debounce),
@@ -1598,6 +1661,51 @@ class TripReaderService : AccessibilityService() {
     // jeito que foi pedido, pra não atrapalhar enquanto dirige.
     private val NOTIF_CHANNEL_ROUTE = "mob_flash_route"
     private var lastNotifKey = ""
+
+    // ── Vigia do OCR (20/07/2026) ────────────────────────────────────────
+    private val NOTIF_CHANNEL_OCR_ALERT = "mob_ocr_alert"
+    private val NOTIF_ID_OCR_ALERT = 4104
+    private val OCR_DOWN_ALERT_MS = 20_000L
+    private var ocrDownSinceMs = 0L
+    private var ocrAlertFired = false
+    private fun fireOcrDownAlert() {
+        try {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (nm.getNotificationChannel(NOTIF_CHANNEL_OCR_ALERT) == null) {
+                    nm.createNotificationChannel(NotificationChannel(
+                        NOTIF_CHANNEL_OCR_ALERT, "MōB — leitura de tela parou",
+                        NotificationManager.IMPORTANCE_HIGH
+                    ))
+                }
+            }
+            // Toque abre o MainActivity já pedindo a permissão de captura de
+            // novo — mesmo fluxo do requestScreenCapture() do bridge JS.
+            val tap = Intent(this, MainActivity::class.java).apply {
+                putExtra("re_request_capture", true)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
+            val pi = PendingIntent.getActivity(
+                this, 4104, tap,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Notification.Builder(this, NOTIF_CHANNEL_OCR_ALERT)
+            } else {
+                @Suppress("DEPRECATION") Notification.Builder(this)
+            }
+            builder.setContentTitle("Leitura de tela parou")
+                .setContentText("A detecção de corridas da 99 está cega. Toque para reativar.")
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentIntent(pi)
+                .setAutoCancel(true)
+            nm.notify(NOTIF_ID_OCR_ALERT, builder.build())
+        } catch (_: Exception) {}
+        try {
+            flashCard.speakAlert("Atenção: a leitura de tela do MōB parou. Toque na notificação para reativar.")
+        } catch (_: Exception) {}
+        sendToCloud("99", "ocr", "OCR_INATIVO", "OCR_ALERTA_DISPARADO", emptyList(), null, null, emptyList())
+    }
     private fun showRouteNotification(plat: String, offer: Offer) {
         val origem = offer.origem
         val destino = offer.destino
