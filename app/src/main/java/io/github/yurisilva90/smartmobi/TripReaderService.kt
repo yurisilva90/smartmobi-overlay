@@ -1209,7 +1209,12 @@ class TripReaderService : AccessibilityService() {
         nn99WaitingBuscandoSinceMs = System.currentTimeMillis()
     }
 
-    private val nn99ChegueAntesOcrRe = Regex("""Chegue antes de\s*\d{1,2}:\d{2}""", RegexOption.IGNORE_CASE)
+    // AJUSTE (22/07/2026, confirmado em log real): o ML Kit às vezes lê
+    // "Chegue" como "Cheque" (troca G/Q) — mesma corrida, 10:06:59 leu
+    // certo, 10:07:05 leu errado. Sem essa tolerância, o sinal mais
+    // importante da 99 (o único que garante Buscar) cai pra ~50% de
+    // acerto por puro ruído de OCR.
+    private val nn99ChegueAntesOcrRe = Regex("""Che[gq]ue\s*antes\s*de\s*\d{1,2}:\d{2}""", RegexOption.IGNORE_CASE)
 
     private fun checkNn99OcrStatusBridge(plat: String, joinedOcrText: String) {
         if (plat != "99") return
@@ -1388,30 +1393,35 @@ class TripReaderService : AccessibilityService() {
             if (ev.resetKnownAddr) nn99KnownDestAddr = null
             nn99LastActiveSignalMs = System.currentTimeMillis()
             raw = ev.state
+            // Diagnóstico (ver bloco de comentário acima).
+            nn99DebugRPBefore = rpBefore
+            nn99DebugRPAfter = nn99ReachedPickup
+            nn99DebugAddrChanged = addressChanged
+            nn99DebugCurrentlyOnline = confirmedTripSubState == "online"
+            nn99DebugMatchedRule = ev.matchedRuleKey ?: "nenhuma"
+            nn99DebugRaw = raw
+            applyTripSubStateDebounced(raw, "99")
         } else {
-            // REMOVIDO (15/07/2026): a rede de segurança por tempo aqui.
-            // CONFIRMADO EM LOG REAL: com 30s ela disparava durante a
-            // espera legítima pelo passageiro (chat/"taxa de espera" não
-            // batem regra nenhuma pela via limpa — >30s ali é normal, não
-            // corrida encerrada). A única saída de Buscar/Corrida pra
-            // Online agora é a ponte de OCR acima (checkNn99OcrStatusBridge),
-            // armada pela avaliação ou pela notificação de cancelamento —
-            // nunca mais "chuta" online só por falta de sinal.
+            // CORRIGIDO (22/07/2026, bug estrutural confirmado em log real):
+            // antes votava raw=confirmedTripSubState aqui — parecia neutro,
+            // mas não é: esse caminho roda a cada leitura de acessibilidade
+            // (várias por segundo, muito mais rápido que o OCR a cada ~2s).
+            // Cada voto "mantém o atual" entra no MESMO buffer de 5 que
+            // decide a troca de estado, então qualquer Corrida errada virava
+            // auto-reforçada — os votos "neutros" (que já são "corrida" após
+            // a troca) afogavam o Buscar real do OCR antes dele conseguir
+            // maioria de 3. Sem sinal de verdade (nem RuleEngine, nem as
+            // pontes de OCR em checkNn99OcrStatusBridge — essas votam direto,
+            // fora daqui), a leitura simplesmente NÃO vota. Buscar/Corrida
+            // na 99 passam a ser decididos só por quem tem sinal de fato.
             raw = confirmedTripSubState
+            nn99DebugRPBefore = rpBefore
+            nn99DebugRPAfter = nn99ReachedPickup
+            nn99DebugAddrChanged = addressChanged
+            nn99DebugCurrentlyOnline = confirmedTripSubState == "online"
+            nn99DebugMatchedRule = "nenhuma"
+            nn99DebugRaw = raw
         }
-        // Diagnóstico (ver bloco de comentário acima) — snapshot completo
-        // do caminho de decisão dessa leitura específica. gatilho = o que
-        // decidiu por último o valor de reachedPickup (regra, endereço ou
-        // reforço de OCR) — pedido do Yuri (18/07/2026) pra facilitar
-        // investigação de troca de status sem precisar reconstruir tudo
-        // lendo texto cru.
-        nn99DebugRPBefore = rpBefore
-        nn99DebugRPAfter = nn99ReachedPickup
-        nn99DebugAddrChanged = addressChanged
-        nn99DebugCurrentlyOnline = confirmedTripSubState == "online"
-        nn99DebugMatchedRule = ev.matchedRuleKey ?: "nenhuma"
-        nn99DebugRaw = raw
-        applyTripSubStateDebounced(raw, "99")
 
         // ── Captura automática — 99: endereço mais completo visto no
         // cabeçalho de navegação — funde com o que já tinha da oferta
