@@ -32,8 +32,21 @@ object AutoTripCapture {
         val durPickupSec: Int?,
         val durTripSec: Int?,
         val origin: String?,
-        val dest: String?
+        val dest: String?,
+        // NOVO (22/07/2026, cache de oferta pedido pelo Yuri): carimbo de
+        // quando essa oferta foi vista pela última vez — é o que permite
+        // invalidar oferta velha antes de grudar numa corrida errada (ver
+        // OFFER_MAX_AGE_MS abaixo).
+        val seenAt: Long = System.currentTimeMillis()
     )
+
+    // Janela máxima entre ver a oferta e ela virar Buscar de verdade. Cobre
+    // com folga tanto o aceite normal (segundos) quanto o caso de
+    // sobreposição (aceitar a próxima corrida ainda dentro da atual — pode
+    // levar alguns minutos até a anterior fechar). Acima disso, a oferta é
+    // velha demais pra confiar — melhor não vincular valor nenhum do que
+    // vincular o errado.
+    private const val OFFER_MAX_AGE_MS = 10 * 60 * 1000L
 
     private data class Buffer(
         val platform: String,
@@ -101,7 +114,11 @@ object AutoTripCapture {
                 durPickupSec = snap.durPickupSec ?: existing.durPickupSec,
                 durTripSec = snap.durTripSec ?: existing.durTripSec,
                 origin = betterAddress(existing.origin, snap.origin),
-                dest = betterAddress(existing.dest, snap.dest)
+                dest = betterAddress(existing.dest, snap.dest),
+                // Releitura da MESMA oferta = evidência de que ainda está na
+                // tela agora — atualiza o carimbo pra essa oferta continuar
+                // "fresca" enquanto o motorista está de fato olhando ela.
+                seenAt = snap.seenAt
             )
         }
     }
@@ -136,7 +153,16 @@ object AutoTripCapture {
         val km = GpsService.totalKm
 
         fun startBuffer(startKm: Double, alsoStartTrip: Boolean) {
-            val offer = lastOfferByPlat[plat]
+            // Só usa a oferta em cache se ainda estiver dentro da janela de
+            // validade — oferta velha demais (ver OFFER_MAX_AGE_MS) não
+            // gruda em corrida nenhuma; fica sem dado de oferta (igual a
+            // hoje quando nenhuma oferta foi vista), nunca com dado errado.
+            val cached = lastOfferByPlat[plat]
+            val offer = cached?.takeIf { System.currentTimeMillis() - it.seenAt <= OFFER_MAX_AGE_MS }
+            // Consome (limpa) o cache nesse ponto, usada ou não — uma vez
+            // que um "buscar" nasceu, essa oferta já cumpriu seu papel (ou
+            // expirou); nunca deve poder grudar numa corrida futura.
+            lastOfferByPlat.remove(plat)
             buffer = Buffer(
                 platform = plat,
                 offerValue = offer?.value,
