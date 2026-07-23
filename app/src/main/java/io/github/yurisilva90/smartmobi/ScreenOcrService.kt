@@ -130,19 +130,23 @@ class ScreenOcrService : Service() {
     // vira card, não em todo frame). Quem recebe o bitmap é responsável por
     // reciclar (bmp.recycle()) depois de usar.
     fun captureAndRecognize(onResult: (List<String>, Bitmap?) -> Unit, onError: ((String) -> Unit)? = null) {
-        // INVESTIGAÇÃO (13/07/2026): oferta chegando durante corrida ativa
-        // nunca foi capturada em ~90s de tentativas repetidas, mesmo com
-        // print manual confirmando que a tela realmente mostrava o card.
-        // Uma hipótese real: o listener do ML Kit (sucesso OU erro) às vezes
-        // não dispara nenhum dos dois — aí "busy" fica true pra sempre e
-        // TODA captura futura é ignorada silenciosamente, sem log de erro
-        // nenhum (por isso não aparecia nem como OCR_ERRO). Trava de
-        // segurança: se "busy" ficar travado por mais de 5s, destrava
-        // sozinho e segue a captura, em vez de continuar bloqueado.
+        // INVESTIGAÇÃO (13/07/2026, retomada em 23/07/2026 a pedido do Yuri):
+        // oferta chegando durante corrida ativa às vezes nunca é capturada,
+        // mesmo com print manual confirmando que a tela mostrava o card.
+        // Hipótese: o listener do ML Kit (sucesso OU erro) às vezes não
+        // dispara nenhum dos dois — "busy" fica travado e toda captura
+        // futura é IGNORADA EM SILÊNCIO, sem log nenhum (nem OCR_ERRO) — não
+        // dava pra saber se o app "estava cego" bem na hora do card ou se
+        // via e mesmo assim não reconhecia. Duas mudanças (23/07/2026):
+        // trava de segurança cai de 5s pra 1,5s — os frames normais
+        // completam bem mais rápido que isso, então 5s era tempo cego
+        // demais; e todo skip por estar ocupado agora chama onError
+        // (vira OCR_ERRO no log, já existente) — antes era invisível.
         if (busy) {
-            if (System.currentTimeMillis() - busySinceMs > 5000) {
+            if (System.currentTimeMillis() - busySinceMs > 1500) {
                 busy = false
             } else {
+                onError?.invoke("ocupado")
                 return
             }
         }
