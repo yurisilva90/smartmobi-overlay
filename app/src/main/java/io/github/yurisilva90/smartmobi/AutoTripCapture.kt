@@ -36,17 +36,19 @@ object AutoTripCapture {
         // NOVO (22/07/2026, cache de oferta pedido pelo Yuri): carimbo de
         // quando essa oferta foi vista pela última vez — é o que permite
         // invalidar oferta velha antes de grudar numa corrida errada (ver
-        // OFFER_MAX_AGE_MS abaixo).
+        // OFFER_MAX_AGE_NORMAL_MS / OFFER_MAX_AGE_OVERLAP_MS abaixo).
         val seenAt: Long = System.currentTimeMillis()
     )
 
-    // Janela máxima entre ver a oferta e ela virar Buscar de verdade. Cobre
-    // com folga tanto o aceite normal (segundos) quanto o caso de
-    // sobreposição (aceitar a próxima corrida ainda dentro da atual — pode
-    // levar alguns minutos até a anterior fechar). Acima disso, a oferta é
-    // velha demais pra confiar — melhor não vincular valor nenhum do que
-    // vincular o errado.
-    private const val OFFER_MAX_AGE_MS = 10 * 60 * 1000L
+    // Janela curta — aceite normal: oferta→aceite→buscar é questão de
+    // segundos. 30s já dá folga generosa pra qualquer atraso de leitura
+    // sem deixar uma oferta de minutos atrás grudar por engano.
+    private const val OFFER_MAX_AGE_NORMAL_MS = 30 * 1000L
+
+    // Janela longa — só pro caso de sobreposição (aceitar a próxima corrida
+    // ainda dentro da atual): aqui o intervalo real entre ver a oferta nova
+    // e a corrida anterior fechar pode ser de vários minutos.
+    private const val OFFER_MAX_AGE_OVERLAP_MS = 10 * 60 * 1000L
 
     private data class Buffer(
         val platform: String,
@@ -152,13 +154,13 @@ object AutoTripCapture {
         val now = System.currentTimeMillis()
         val km = GpsService.totalKm
 
-        fun startBuffer(startKm: Double, alsoStartTrip: Boolean) {
+        fun startBuffer(startKm: Double, alsoStartTrip: Boolean, maxAgeMs: Long) {
             // Só usa a oferta em cache se ainda estiver dentro da janela de
-            // validade — oferta velha demais (ver OFFER_MAX_AGE_MS) não
+            // validade pra esse tipo de transição — oferta velha demais não
             // gruda em corrida nenhuma; fica sem dado de oferta (igual a
             // hoje quando nenhuma oferta foi vista), nunca com dado errado.
             val cached = lastOfferByPlat[plat]
-            val offer = cached?.takeIf { System.currentTimeMillis() - it.seenAt <= OFFER_MAX_AGE_MS }
+            val offer = cached?.takeIf { System.currentTimeMillis() - it.seenAt <= maxAgeMs }
             // Consome (limpa) o cache nesse ponto, usada ou não — uma vez
             // que um "buscar" nasceu, essa oferta já cumpriu seu papel (ou
             // expirou); nunca deve poder grudar numa corrida futura.
@@ -183,7 +185,7 @@ object AutoTripCapture {
 
         when {
             prev == "online" && next == "buscar" -> {
-                startBuffer(km, alsoStartTrip = false)
+                startBuffer(km, alsoStartTrip = false, maxAgeMs = OFFER_MAX_AGE_NORMAL_MS)
             }
             prev == "buscar" && next == "corrida" -> {
                 val b = buffer
@@ -195,8 +197,8 @@ object AutoTripCapture {
                 } else {
                     // Rede de segurança: chegou em "corrida" sem termos visto o
                     // "buscar" (debounce pode ter engolido o passo intermediário).
-                    // Sem km de buscar pra comparar, mas não perde o resto.
-                    startBuffer(km, alsoStartTrip = true)
+                    // Ainda é um aceite normal (não sobreposição) — janela curta.
+                    startBuffer(km, alsoStartTrip = true, maxAgeMs = OFFER_MAX_AGE_NORMAL_MS)
                     buffer?.gpsOriginLat = GpsService.lastLat
                     buffer?.gpsOriginLng = GpsService.lastLng
                 }
@@ -228,7 +230,7 @@ object AutoTripCapture {
                     b.gpsDestLng = GpsService.lastLng
                     push(ctx, b)
                 }
-                startBuffer(km, alsoStartTrip = false)
+                startBuffer(km, alsoStartTrip = false, maxAgeMs = OFFER_MAX_AGE_OVERLAP_MS)
             }
         }
     }
