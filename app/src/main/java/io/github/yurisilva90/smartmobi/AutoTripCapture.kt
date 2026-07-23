@@ -233,6 +233,41 @@ object AutoTripCapture {
         }
     }
 
+    // ── Validação por GPS — pedido do Yuri (23/07/2026) ──────────────────
+    // Confirma se o endereço vindo da tela (oferta/navegação) bate com o
+    // endereço geocodificado a partir da posição REAL do GPS no instante da
+    // transição (embarque = buscar->corrida, desembarque = fim de corrida).
+    // Compara só a rua (primeiro segmento antes da vírgula/hífen), sem
+    // acento, sem prefixo tipo "rua"/"av" — mesmo espírito do blacklist de
+    // endereço em TripReaderService, mas isolado aqui pra não acoplar os
+    // dois arquivos por um regex.
+    private val streetPrefixRe = Regex(
+        """^(rua|r\.|avenida|av\.?|travessa|trav\.?|estrada|est\.?|alameda|al\.?|rodovia|rod\.?|""" +
+        """pra[cç]a|p[cç]a\.?|largo|jardim|jd\.?|parque|pq\.?|vila|vl\.?|conjunto|cj\.?|""" +
+        """loteamento|residencial|res\.?)\s+""",
+        RegexOption.IGNORE_CASE
+    )
+
+    private fun normalizedStreet(addr: String?): String? {
+        if (addr.isNullOrBlank()) return null
+        val firstSegment = addr.split(",", " - ").firstOrNull()?.trim() ?: return null
+        val noAccent = java.text.Normalizer.normalize(firstSegment, java.text.Normalizer.Form.NFD)
+            .replace(Regex("\\p{M}"), "")
+        val stripped = noAccent.replace(streetPrefixRe, "").trim().lowercase(Locale.getDefault())
+        // Menos de 4 caracteres não é confiável pra comparar (ruído de OCR
+        // vira falso match) — nesse caso, resultado é "não deu pra comparar".
+        return stripped.take(12).takeIf { it.length >= 4 }
+    }
+
+    // Retorna null quando não dá pra comparar (endereço faltando de um dos
+    // lados) — diferente de false (comparou e não bateu). Essa distinção
+    // importa: "não sei" não é a mesma coisa que "sei que é diferente".
+    private fun addressesLikelyMatch(screenAddr: String?, gpsAddr: String?): Boolean? {
+        val a = normalizedStreet(screenAddr) ?: return null
+        val b = normalizedStreet(gpsAddr) ?: return null
+        return a == b || a.startsWith(b) || b.startsWith(a)
+    }
+
     private fun push(ctx: Context, b: Buffer) {
         thread(isDaemon = true) {
             try {
@@ -251,6 +286,17 @@ object AutoTripCapture {
                 val gpsOriginAddress = GpsService.reverseGeocodeFull(b.gpsOriginLat, b.gpsOriginLng)
                 val gpsDestAddress = GpsService.reverseGeocodeFull(b.gpsDestLat, b.gpsDestLng)
 
+                // NOVO (23/07/2026, pedido do Yuri): confirma pelo GPS se a
+                // oferta vinculada bate com o local físico real de embarque/
+                // desembarque — sem isso, o app confia cegamente que a
+                // última oferta vista era mesmo a da corrida que aconteceu.
+                // Compara só o nome da rua (normalizado, sem acento, prefixo
+                // "rua"/"av"/etc removido — mesmo espírito do blacklist de
+                // endereço); não decide nada sozinho, só grava o resultado
+                // pra dar visibilidade e validação financeira.
+                val gpsMatchOrigin = addressesLikelyMatch(b.originAddress, gpsOriginAddress)
+                val gpsMatchDest = addressesLikelyMatch(b.destAddress, gpsDestAddress)
+
                 val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
                     .apply { timeZone = TimeZone.getTimeZone("UTC") }
                 fun iso(ms: Long): Any = if (ms > 0) sdf.format(Date(ms)) else JSONObject.NULL
@@ -263,6 +309,8 @@ object AutoTripCapture {
                     put("dest_address", b.destAddress ?: JSONObject.NULL)
                     put("gps_origin_address", gpsOriginAddress ?: JSONObject.NULL)
                     put("gps_dest_address", gpsDestAddress ?: JSONObject.NULL)
+                    put("gps_match_origin", gpsMatchOrigin?.let { it } ?: JSONObject.NULL)
+                    put("gps_match_dest", gpsMatchDest?.let { it } ?: JSONObject.NULL)
                     put("offer_value", b.offerValue ?: JSONObject.NULL)
                     put("offer_dinamico", b.offerDinamico)
                     put("offer_km_pickup", b.offerKmPickup ?: JSONObject.NULL)
