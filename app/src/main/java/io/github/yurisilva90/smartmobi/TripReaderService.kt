@@ -528,7 +528,18 @@ class TripReaderService : AccessibilityService() {
                 }
                 return@captureAndRecognize
             }
-            val joined = lines.joinToString("  ")
+            // CORRIGIDO (24/07/2026, confirmado em log real — corrida das
+            // 20:49 do dia 23/07): juntar com 2 espaços fixos quebrava
+            // qualquer regra de texto com frase de várias palavras sempre
+            // que o OCR cortava a frase bem no meio entre duas linhas —
+            // ex: "Passaremos a cobrar uma taxa de" / "espera do
+            // passageiro..." virava "...taxa de  espera..." (2 espaços),
+            // e a regra que procura "taxa de espera" (1 espaço) falhava
+            // silenciosamente. Resultado real: perdeu o sinal de "ainda
+            // esperando o passageiro" 5 vezes seguidas e virou Corrida
+            // antes da hora. Normaliza QUALQUER sequência de espaços pra
+            // um só — resolve pra todas as regras de uma vez, não só essa.
+            val joined = lines.joinToString(" ").replace(Regex("\\s+"), " ").trim()
             val low = joined.lowercase(Locale.getDefault())
             val isOffer = isOfferScreen(low)
             // Ponte OCR -> status (só 99): ver checkNn99OcrStatusBridge() pra
