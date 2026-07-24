@@ -17,6 +17,16 @@ import android.widget.TextView
 
 class FloatingWidget(private val context: Context) {
 
+    // CORRIGIDO (24/07/2026, confirmado pelo Yuri): abrir o app MōB (a PWA)
+    // chama updateFloatingStatus("running") pelo bridge JS, que cai em
+    // updateStatus() aqui embaixo — e esse método escreve nos MESMOS
+    // elementos visuais (status_tv/status_dot) que updateTripState()
+    // usa pra mostrar Buscar/Corrida. Resultado: só de abrir o app com uma
+    // corrida rolando, o rótulo voltava pra "Online" genérico por cima do
+    // Buscar/Corrida real. Guarda o último sub-status de corrida conhecido
+    // pra updateStatus() não pisar em cima dele.
+    private var lastTripSubStatus: String? = null
+
     private val wm      = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val handler = Handler(Looper.getMainLooper())
     private var container: LinearLayout? = null
@@ -62,6 +72,7 @@ class FloatingWidget(private val context: Context) {
     // casos o card continua mostrando Pausado/Offline normalmente.
     // Cores: Online=verde (igual sempre foi), Buscar=laranja, Corrida=azul.
     fun updateTripState(subStatus: String) {
+        lastTripSubStatus = subStatus
         handler.post {
             if (!GpsService.isRunning || GpsService.isPaused) return@post
             val (label, colorHex) = when (subStatus) {
@@ -86,6 +97,12 @@ class FloatingWidget(private val context: Context) {
 
     fun updateStatus(status: String) {
         // Apenas atualiza cores/labels — o estado de pausa real está no GpsService
+        // Se já tem Buscar/Corrida mostrado e o status que chegou é "running"
+        // (jornada rodando, sinal genérico — é o que dispara ao abrir o app),
+        // não pisa em cima do rótulo mais específico. Pausado/Offline sempre
+        // sobrescrevem, porque aí o conceito de Buscar/Corrida não se aplica.
+        if (status == "running" && (lastTripSubStatus == "buscar" || lastTripSubStatus == "corrida")) return
+        if (status == "stopped") lastTripSubStatus = null
         handler.post {
             val color = when(status) {
                 "running" -> "#22C55E"
