@@ -676,7 +676,17 @@ class TripReaderService : AccessibilityService() {
         // esse caminho que resolve o tipo B (99 "Escolher") e a Uber
         // ("Selecionar"), que não têm o texto "aceitar por"
         if (valor == null) {
+            // CORRIGIDO (24/07/2026, confirmado em log real): o R$/km já
+            // identificado (rkmDirect) NUNCA pode competir como candidato a
+            // valor TOTAL — antes disso não acontecia, mas numa leitura com
+            // ruído (perna virando "94min", descartada por passar de 90,
+            // km ficando pela metade), o valor do R$/km por coincidência
+            // batia no teste de tolerância abaixo (valor/km ≈ rkmDirect)
+            // e vencia o valor de verdade. Ex real: oferta R$7,90 com
+            // R$2,64/km — numa leitura ruidosa, R$2,64 (a taxa) foi
+            // salvo como se fosse o valor total da corrida.
             val monies = extractMoney(joined).mapNotNull { moneyToDouble(it) }.filter { it > 0 }
+                .filter { rkmDirect == null || kotlin.math.abs(it - rkmDirect) > 0.01 }
             valor = if (rkmDirect != null && km != null) {
                 monies.firstOrNull { kotlin.math.abs(it / km!! - rkmDirect) / rkmDirect < 0.35 }
             } else if (km != null && km > 0) {
@@ -761,6 +771,13 @@ class TripReaderService : AccessibilityService() {
             if (sl == "online" || sl == "buscando" || sl == "offline" || sl == "conectar") return false
             if (sl.contains("perfil essencial") || sl.contains("perfil premium") || sl.contains("perfil prata")) return false
             if (sl.contains("pgto. no app") || sl == "dinheiro" || sl == "negocia" || sl == "qr code") return false
+            // CORRIGIDO (24/07/2026, confirmado em log real: virou endereço
+            // "t5,009 corridasCPF verif." de verdade): linha de avaliação/
+            // corridas do passageiro nunca é endereço — mesma assinatura já
+            // usada pra extrair nota/corridas ali em cima (nota 1-5 com 2
+            // casas + "corrid") ou selo de verificação.
+            if (Regex("""[1-5][.,]\d{2}.{0,15}corrid""").containsMatchIn(sl)) return false
+            if (sl.contains("verif.") || sl.contains("cpf e cart")) return false
             return true
         }
         val legLineRe = Regex("""^\(?\s*\d{1,3}\s*min(?:utos)?""", RegexOption.IGNORE_CASE)
@@ -783,6 +800,16 @@ class TripReaderService : AccessibilityService() {
     }
 
     private fun isOfferScreen(low: String): Boolean {
+        // CORRIGIDO (24/07/2026, confirmado em log real: virou origem
+        // "corridasCPF verif." de tanta mistura): a tela "< Solicitações"
+        // mostra VÁRIAS ofertas diferentes empilhadas na mesma tela (cada
+        // uma com seu próprio valor/endereço/nota) — tratar isso como se
+        // fosse uma oferta só mistura campos de ofertas diferentes,
+        // produzindo dado sem sentido nenhum. Sem forma confiável de saber
+        // qual das várias o motorista vai escolher, melhor não capturar
+        // nada aqui — a oferta de verdade aparece limpa depois, quando ele
+        // escolhe uma (ou quando o card normal de oferta única aparece).
+        if (low.contains("solicitações") || low.contains("solicitacoes")) return false
         // 99 tipo A: "Aceitar por R$..." — o mais confiável
         if (low.contains("aceitar por")) return true
         if (low.contains("taxa de serviço") && Regex("""\d+\s*min\s*\(""").containsMatchIn(low)) return true

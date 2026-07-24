@@ -270,6 +270,23 @@ object AutoTripCapture {
         return a == b || a.startsWith(b) || b.startsWith(a)
     }
 
+    // Endereço da TELA continua prioritário sempre (pedido do Yuri,
+    // 24/07/2026) — isso aqui só COMPLETA quando falta o bairro, nunca
+    // substitui. "Falta bairro" = nem tem " - Bairro" (formato do GPS) nem
+    // tem pelo menos 3 pedaços separados por vírgula (padrão comum:
+    // Local/Rua, Número, Bairro) — sinal de que só veio rua/número crus.
+    // Bairro vem do endereço geocodificado pelo GPS (sempre no formato
+    // "Rua - Bairro"), pegando só o pedaço depois do último " - ".
+    private fun addBairroIfMissing(screenAddr: String?, gpsAddr: String?): String? {
+        if (screenAddr.isNullOrBlank()) return screenAddr
+        val hasDashBairro = screenAddr.contains(" - ")
+        val commaParts = screenAddr.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+        if (hasDashBairro || commaParts.size >= 3) return screenAddr
+        val gpsBairro = gpsAddr?.substringAfterLast(" - ")?.trim()
+        if (gpsBairro.isNullOrBlank()) return screenAddr
+        return "$screenAddr - $gpsBairro"
+    }
+
     private fun push(ctx: Context, b: Buffer) {
         thread(isDaemon = true) {
             try {
@@ -299,6 +316,12 @@ object AutoTripCapture {
                 val gpsMatchOrigin = addressesLikelyMatch(b.originAddress, gpsOriginAddress)
                 val gpsMatchDest = addressesLikelyMatch(b.destAddress, gpsDestAddress)
 
+                // Endereço final: o da TELA continua sendo a base (prioridade
+                // do Yuri, 24/07/2026) — só ganha o bairro complementado pelo
+                // GPS quando ele mesmo não trouxe nenhum.
+                val finalOriginAddress = addBairroIfMissing(b.originAddress, gpsOriginAddress)
+                val finalDestAddress = addBairroIfMissing(b.destAddress, gpsDestAddress)
+
                 val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
                     .apply { timeZone = TimeZone.getTimeZone("UTC") }
                 fun iso(ms: Long): Any = if (ms > 0) sdf.format(Date(ms)) else JSONObject.NULL
@@ -307,8 +330,8 @@ object AutoTripCapture {
                     put("user_id", userId)
                     put("platform", if (b.platform == "UBER") "uber" else "99")
                     put("passenger_name", b.passengerName ?: JSONObject.NULL)
-                    put("origin_address", b.originAddress ?: JSONObject.NULL)
-                    put("dest_address", b.destAddress ?: JSONObject.NULL)
+                    put("origin_address", finalOriginAddress ?: JSONObject.NULL)
+                    put("dest_address", finalDestAddress ?: JSONObject.NULL)
                     put("gps_origin_address", gpsOriginAddress ?: JSONObject.NULL)
                     put("gps_dest_address", gpsDestAddress ?: JSONObject.NULL)
                     put("gps_match_origin", gpsMatchOrigin?.let { it } ?: JSONObject.NULL)
