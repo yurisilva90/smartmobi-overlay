@@ -227,7 +227,16 @@ class TripReaderService : AccessibilityService() {
             val rect = Rect()
             for (w in windows) {
                 val wp = w.root?.packageName?.toString() ?: continue
-                if (w.type != AccessibilityWindowInfo.TYPE_APPLICATION || !w.isActive) continue
+                // AMPLIADO (24/07/2026, confirmado em log real via
+                // FGPLAT_NULO): o card de oferta durante corrida ativa
+                // aparece como janela TYPE_SYSTEM, não TYPE_APPLICATION —
+                // caía fora daqui, fgPlat ficava nulo, nada rodava (nem
+                // OCR, nem log nenhum). Seguro ampliar porque o filtro de
+                // pacote (NN_PKGS/UBER_PKGS) abaixo já exclui qualquer
+                // janela de sistema de outro app (Samsung, systemui etc) —
+                // só passa se for da 99/Uber mesmo.
+                if ((w.type != AccessibilityWindowInfo.TYPE_APPLICATION &&
+                     w.type != AccessibilityWindowInfo.TYPE_SYSTEM) || !w.isActive) continue
                 val cand = when {
                     NN_PKGS.contains(wp)   -> "99"
                     UBER_PKGS.contains(wp) -> "UBER"
