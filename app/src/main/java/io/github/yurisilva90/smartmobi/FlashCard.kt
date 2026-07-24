@@ -210,7 +210,7 @@ class FlashCard(private val context: Context) {
     // platform: "99" ou "UBER". overallGrade: pior nota entre as métricas ativas.
     // metrics: até 4, sempre numa linha só. autoHideMs é só rede de segurança —
     // o normal é o TripReaderService chamar hide() sozinho quando a oferta some (~1s).
-    fun show(platform: String, overallGrade: String, metrics: List<Metric>, totalMin: Int, totalKm: Double, declineReason: String? = null, declineReasonShort: String? = null, autoHideMs: Long = 20000L) {
+    fun show(platform: String, overallGrade: String, metrics: List<Metric>, totalMin: Int, totalKm: Double, declineReason: String? = null, declineReasonShort: String? = null, declineReasonSpoken: String? = null, autoHideMs: Long = 20000L) {
         // Antes exigia pelo menos 1 métrica pra mostrar o card. Com o grupo
         // "Recusas" (17/07/2026), uma oferta pode ser recusada mesmo com
         // todos os Indicadores desligados — nesse caso o card mostra só a
@@ -238,7 +238,12 @@ class FlashCard(private val context: Context) {
             if (wasHidden || gradeChanged) {
                 lastSpokenGrade = overallGrade
                 lastSpokenReason = declineReason
-                speakGrade(overallGrade, declineReason)
+                // CORRIGIDO (24/07/2026, pedido do Yuri): o texto do card
+                // junta vários motivos com "·" (ponto médio) — bonito no
+                // card, mas o motor de voz lê esse caractere como "ponto"
+                // em voz alta ("buscar longe ponto nota baixa"). Fala usa
+                // uma versão separada, com vírgula, que soa natural.
+                speakGrade(overallGrade, declineReasonSpoken ?: declineReason)
             }
         }
     }

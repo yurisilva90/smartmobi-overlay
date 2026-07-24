@@ -1005,6 +1005,10 @@ class TripReaderService : AccessibilityService() {
         val declineReason = if (motivosDistintos.isNotEmpty()) motivosDistintos.joinToString(" · ") else null
         val declineReasonShort = if (motivosDistintos.isNotEmpty())
             motivosDistintos.joinToString(" · ") { motivosAbrev[it] ?: it } else null
+        // Versão só pra fala (24/07/2026, pedido do Yuri): "·" fica bonito
+        // no card, mas o motor de voz lê o caractere em si como "ponto"
+        // ("buscar longe ponto nota baixa"). Vírgula soa natural.
+        val declineReasonSpoken = if (motivosDistintos.isNotEmpty()) motivosDistintos.joinToString(", ") else null
         val overallGrade = if (declineReason != null) "r" else kpiGrade
         // Move o corte de "sem métrica nenhuma pra mostrar" pra DEPOIS das
         // recusas (bug real corrigido 17/07/2026): antes esse corte vinha
@@ -1034,6 +1038,7 @@ class TripReaderService : AccessibilityService() {
                 totalKm = km,
                 declineReason = declineReason,
                 declineReasonShort = declineReasonShort,
+                declineReasonSpoken = declineReasonSpoken,
                 autoHideMs = 15000L
             )
         }
