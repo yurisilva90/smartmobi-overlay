@@ -185,6 +185,33 @@ class TripReaderService : AccessibilityService() {
         }
     }
 
+    // Diagnóstico do buraco de silêncio (ver comentário em pollForeground)
+    // — throttle de 2s, mesmo padrão dos outros logs de diagnóstico do
+    // arquivo, pra não inundar caso o buraco dure vários segundos.
+    private var lastFgPlatNullLogMs = 0L
+    private fun logFgPlatNull() {
+        val now = System.currentTimeMillis()
+        if (now - lastFgPlatNullLogMs < 2000) return
+        lastFgPlatNullLogMs = now
+        val detail = ArrayList<String>()
+        try {
+            for (w in windows) {
+                val wp = w.root?.packageName?.toString() ?: "?"
+                val typeStr = when (w.type) {
+                    AccessibilityWindowInfo.TYPE_APPLICATION -> "APPLICATION"
+                    AccessibilityWindowInfo.TYPE_SYSTEM -> "SYSTEM"
+                    AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY -> "A11Y_OVERLAY"
+                    AccessibilityWindowInfo.TYPE_INPUT_METHOD -> "INPUT_METHOD"
+                    AccessibilityWindowInfo.TYPE_SPLIT_SCREEN_DIVIDER -> "SPLIT_DIVIDER"
+                    else -> "OUTRO(${w.type})"
+                }
+                val rect = Rect(); w.getBoundsInScreen(rect)
+                detail.add("$wp type=$typeStr ativa=${w.isActive} area=${rect.width()*rect.height()}")
+            }
+        } catch (_: Exception) {}
+        sendToCloud("?", "?", "DIAG", "FGPLAT_NULO", emptyList(), null, null, detail)
+    }
+
     private fun pollForeground() {
         // BUG CONFIRMADO EM ANÁLISE REAL (13/07/2026): pegar a primeira janela
         // do loop (ordem de z-order) fazia uma PiP pequena da 99/Uber — que
@@ -211,7 +238,20 @@ class TripReaderService : AccessibilityService() {
                 if (area > bestArea) { bestArea = area; fgPlat = cand }
             }
         } catch (_: Exception) {}
-        if (fgPlat != null) requestOcrPass(fgPlat)
+        if (fgPlat != null) {
+            requestOcrPass(fgPlat)
+        } else if (GpsService.isRunning) {
+            // Diagnóstico (23/07/2026, print real do Yuri): oferta que
+            // aparece e some sem deixar rastro nenhum — confirmado em 2
+            // casos reais que são buracos totais de log (9,5s e 15,1s),
+            // exatamente quando ele tirou print de uma oferta. Hipótese:
+            // a janela desse card não bate no filtro (TYPE_APPLICATION +
+            // isActive) — cai fora do loop acima, fgPlat fica nulo, e como
+            // requestOcrPass só roda com fgPlat != null, NADA é tentado,
+            // nem logado. Loga aqui o que as janelas realmente são pra
+            // confirmar (ou derrubar) essa hipótese na próxima vez.
+            logFgPlatNull()
+        }
 
         // ── Status Online/Buscar/Corrida: por TEMPO, não só por evento ──────
         // Mesmo motivo do requestOcrPass já ser por polling: a tela de
