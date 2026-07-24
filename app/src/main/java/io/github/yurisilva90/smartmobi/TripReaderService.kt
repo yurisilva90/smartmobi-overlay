@@ -667,26 +667,27 @@ class TripReaderService : AccessibilityService() {
         // dinâmico: CONFIRMADO EM PRINT REAL (13/07/2026) — notificação com
         // "Origem: S R$1,45 Tarifa base dinâmica incl." (ver looksLikeAddress
         // abaixo, mesmo caso que ensinou a rejeitar essa linha como endereço).
-        // CORRIGIDO (24/07/2026, confirmado em log real, pedido do Yuri): a
-        // 99 tem DOIS tipos de bônus incluído, separados — "Tarifa base
-        // dinâmica" e "por espera longa" — cada oferta mostra 0, 1 ou os 2
-        // ao mesmo tempo (confirmado: várias ofertas reais só com "espera
-        // longa", nenhuma "tarifa base dinâmica" junto, e vice-versa). Antes
-        // só o primeiro que achasse contava — "espera longa" sozinha ficava
-        // sempre R$0,00. Agora soma os dois quando os dois aparecerem. Uber
-        // usa formato próprio ("+R$X,XX incluído"), sempre somado junto —
-        // nunca coexiste com os padrões da 99 na mesma oferta, então somar
-        // sem condicional é seguro.
+        // ATUALIZADO (24/07/2026, confirmado em varredura de dado real): a
+        // 99 tem pelo menos 4 frases diferentes pra bônus incluído — "Tarifa
+        // base dinâmica", "por espera longa", "por embarque distante" e
+        // "por deslocamento" — uma oferta pode ter 0, 1 ou vários ao mesmo
+        // tempo. Soma todos que aparecerem.
         val dinamicoBase = Regex("""r\$\s*([\d.]+,\d{2})\s*tarifa base din[aâ]mica""").find(low)?.let {
             moneyToDouble(it.groupValues[1])
         } ?: 0.0
         val dinamicoEspera = Regex("""r\$\s*([\d.]+,\d{2})\s*por espera longa""").find(low)?.let {
             moneyToDouble(it.groupValues[1])
         } ?: 0.0
+        val dinamicoEmbarque = Regex("""r\$\s*([\d.]+,\d{2})\s*por embarque distante""").find(low)?.let {
+            moneyToDouble(it.groupValues[1])
+        } ?: 0.0
+        val dinamicoDeslocamento = Regex("""r\$\s*([\d.]+,\d{2})\s*por deslocamento""").find(low)?.let {
+            moneyToDouble(it.groupValues[1])
+        } ?: 0.0
         val dinamicoUber = Regex("""\+\s*r\$\s*([\d.]+,\d{2})\s*inclu[ií]do""").find(low)?.let {
             moneyToDouble(it.groupValues[1])
         } ?: 0.0
-        val dinamico = dinamicoBase + dinamicoEspera + dinamicoUber
+        val dinamico = dinamicoBase + dinamicoEspera + dinamicoEmbarque + dinamicoDeslocamento + dinamicoUber
 
         // fallback de valor: se não achou "aceitar por", pega o R$ que for
         // consistente com rkm direto × km (evita pegar ganhos do dia) — é
@@ -1672,7 +1673,15 @@ class TripReaderService : AccessibilityService() {
     }
 
     private fun extractMoney(s: String): List<String> {
-        val re = Regex("""R\$\s?\d{1,4}(?:[.,]\d{2})?""")
+        // CORRIGIDO (24/07/2026, confirmado em dado real): os centavos eram
+        // opcionais aqui — quando o OCR engolia a vírgula (ex: "R$9,60"
+        // virava "R$96O", perdendo a vírgula e lendo o "0" como "O"), o
+        // "R$96" sozinho passava como candidato válido e virava valor da
+        // corrida (R$96 em vez de R$9,60). Corrida de app nunca vem sem
+        // centavos de verdade — exigir os 2 dígitos elimina esse tipo de
+        // leitura corrompida em vez de aceitar como se fosse um valor
+        // inteiro plausível.
+        val re = Regex("""R\$\s?\d{1,4}[.,]\d{2}""")
         return re.findAll(s).map { it.value }.distinct().toList()
     }
 

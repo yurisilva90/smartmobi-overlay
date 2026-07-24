@@ -132,8 +132,29 @@ object AutoTripCapture {
     fun updateAddresses(plat: String, origin: String?, dest: String?) {
         val b = buffer ?: return
         if (b.platform != plat) return
-        if (origin != null) b.originAddress = betterAddress(b.originAddress, origin)
-        if (dest != null) b.destAddress = betterAddress(b.destAddress, dest)
+        // CORRIGIDO (24/07/2026, confirmado em varredura de dado real — 7
+        // corridas num único dia com origem e destino IDÊNTICOS): a leitura
+        // ao vivo da navegação roteia o endereço pra origem ou destino
+        // usando o status confirmado NO MOMENTO — bem na hora exata da
+        // troca buscar→corrida, esse status pode estar um passo atrasado
+        // (debounce não é instantâneo), fazendo o endereço de destino (já
+        // na tela) ser gravado como se fosse origem, sobrescrevendo o
+        // endereço correto que já estava lá. Trava de segurança: nunca
+        // deixa a rua da origem ficar igual à rua do destino já registrado
+        // (e vice-versa) — corrida de verdade nunca embarca e desembarca
+        // na mesma rua.
+        val destStreet = normalizedStreet(b.destAddress)
+        val originStreet = normalizedStreet(b.originAddress)
+        if (origin != null) {
+            val newStreet = normalizedStreet(origin)
+            val matchesDest = newStreet != null && destStreet != null && newStreet == destStreet
+            if (!matchesDest) b.originAddress = betterAddress(b.originAddress, origin)
+        }
+        if (dest != null) {
+            val newStreet = normalizedStreet(dest)
+            val matchesOrigin = newStreet != null && originStreet != null && newStreet == originStreet
+            if (!matchesOrigin) b.destAddress = betterAddress(b.destAddress, dest)
+        }
     }
 
     // Nome do passageiro: one-shot — só preenche se ainda estava vazio (não
