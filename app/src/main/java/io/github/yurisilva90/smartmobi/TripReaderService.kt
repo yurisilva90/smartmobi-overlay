@@ -667,16 +667,26 @@ class TripReaderService : AccessibilityService() {
         // dinâmico: CONFIRMADO EM PRINT REAL (13/07/2026) — notificação com
         // "Origem: S R$1,45 Tarifa base dinâmica incl." (ver looksLikeAddress
         // abaixo, mesmo caso que ensinou a rejeitar essa linha como endereço).
-        // CORRIGIDO (24/07/2026, confirmado em log real): a 99 mostra
-        // "R$X,XX Tarifa base dinâmica incl.", a Uber mostra diferente —
-        // "+R$X,XX incluído" (confirmado em 3 ofertas Uber reais, sempre
-        // nesse formato). Sem esse segundo padrão, dinâmico da Uber ficava
-        // sempre zerado.
-        val dinamico = Regex("""r\$\s*([\d.]+,\d{2})\s*tarifa base din[aâ]mica""").find(low)?.let {
-            moneyToDouble(it.groupValues[1])
-        } ?: Regex("""\+\s*r\$\s*([\d.]+,\d{2})\s*inclu[ií]do""").find(low)?.let {
+        // CORRIGIDO (24/07/2026, confirmado em log real, pedido do Yuri): a
+        // 99 tem DOIS tipos de bônus incluído, separados — "Tarifa base
+        // dinâmica" e "por espera longa" — cada oferta mostra 0, 1 ou os 2
+        // ao mesmo tempo (confirmado: várias ofertas reais só com "espera
+        // longa", nenhuma "tarifa base dinâmica" junto, e vice-versa). Antes
+        // só o primeiro que achasse contava — "espera longa" sozinha ficava
+        // sempre R$0,00. Agora soma os dois quando os dois aparecerem. Uber
+        // usa formato próprio ("+R$X,XX incluído"), sempre somado junto —
+        // nunca coexiste com os padrões da 99 na mesma oferta, então somar
+        // sem condicional é seguro.
+        val dinamicoBase = Regex("""r\$\s*([\d.]+,\d{2})\s*tarifa base din[aâ]mica""").find(low)?.let {
             moneyToDouble(it.groupValues[1])
         } ?: 0.0
+        val dinamicoEspera = Regex("""r\$\s*([\d.]+,\d{2})\s*por espera longa""").find(low)?.let {
+            moneyToDouble(it.groupValues[1])
+        } ?: 0.0
+        val dinamicoUber = Regex("""\+\s*r\$\s*([\d.]+,\d{2})\s*inclu[ií]do""").find(low)?.let {
+            moneyToDouble(it.groupValues[1])
+        } ?: 0.0
+        val dinamico = dinamicoBase + dinamicoEspera + dinamicoUber
 
         // fallback de valor: se não achou "aceitar por", pega o R$ que for
         // consistente com rkm direto × km (evita pegar ganhos do dia) — é
