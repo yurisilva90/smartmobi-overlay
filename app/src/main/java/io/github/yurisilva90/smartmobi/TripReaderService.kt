@@ -667,7 +667,14 @@ class TripReaderService : AccessibilityService() {
         // dinâmico: CONFIRMADO EM PRINT REAL (13/07/2026) — notificação com
         // "Origem: S R$1,45 Tarifa base dinâmica incl." (ver looksLikeAddress
         // abaixo, mesmo caso que ensinou a rejeitar essa linha como endereço).
+        // CORRIGIDO (24/07/2026, confirmado em log real): a 99 mostra
+        // "R$X,XX Tarifa base dinâmica incl.", a Uber mostra diferente —
+        // "+R$X,XX incluído" (confirmado em 3 ofertas Uber reais, sempre
+        // nesse formato). Sem esse segundo padrão, dinâmico da Uber ficava
+        // sempre zerado.
         val dinamico = Regex("""r\$\s*([\d.]+,\d{2})\s*tarifa base din[aâ]mica""").find(low)?.let {
+            moneyToDouble(it.groupValues[1])
+        } ?: Regex("""\+\s*r\$\s*([\d.]+,\d{2})\s*inclu[ií]do""").find(low)?.let {
             moneyToDouble(it.groupValues[1])
         } ?: 0.0
 
@@ -766,7 +773,7 @@ class TripReaderService : AccessibilityService() {
             // se fosse endereço. Endereço de verdade nunca tem "R$" nem essas
             // palavras — rejeita explicitamente.
             if (sl.contains("r$")) return false // endereço nunca tem valor em R$
-            if (sl.contains("tarifa") || sl.contains("incl.")) return false
+            if (sl.contains("tarifa") || sl.contains("incl.") || sl.contains("incluído") || sl.contains("incluido")) return false
             if (sl.contains("taxa de espera") || sl.contains("espera longa")) return false
             if (sl == "online" || sl == "buscando" || sl == "offline" || sl == "conectar") return false
             if (sl.contains("perfil essencial") || sl.contains("perfil premium") || sl.contains("perfil prata")) return false
