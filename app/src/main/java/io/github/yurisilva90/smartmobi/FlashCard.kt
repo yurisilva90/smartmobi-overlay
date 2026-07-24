@@ -210,6 +210,8 @@ class FlashCard(private val context: Context) {
     // platform: "99" ou "UBER". overallGrade: pior nota entre as métricas ativas.
     // metrics: até 4, sempre numa linha só. autoHideMs é só rede de segurança —
     // o normal é o TripReaderService chamar hide() sozinho quando a oferta some (~1s).
+    private var lastShownSignature: String = ""
+
     fun show(platform: String, overallGrade: String, metrics: List<Metric>, totalMin: Int, totalKm: Double, declineReason: String? = null, declineReasonShort: String? = null, declineReasonSpoken: String? = null, autoHideMs: Long = 20000L) {
         // Antes exigia pelo menos 1 métrica pra mostrar o card. Com o grupo
         // "Recusas" (17/07/2026), uma oferta pode ser recusada mesmo com
@@ -219,11 +221,30 @@ class FlashCard(private val context: Context) {
         handler.removeCallbacks(hideRunnable)
         handler.post {
             val wasHidden = container == null
-            container?.let { try { wm.removeView(it) } catch (_: Exception) {} }
-            val cardWidthPx = widthFor(metrics.size)
-            params.width = cardWidthPx
-            container = buildCard(platform, overallGrade, metrics, totalMin, totalKm, cardWidthPx, declineReasonShort ?: declineReason)
-            try { wm.addView(container, params) } catch (e: Exception) { e.printStackTrace() }
+            // CORRIGIDO (24/07/2026, confirmado em log real — oferta de
+            // R$8,00 que "disparou várias vezes" e apareceu tarde/errada):
+            // antes desmontava e remontava o card INTEIRO (removeView +
+            // addView) em TODA leitura de OCR bem-sucedida — a cada ~1-2s
+            // enquanto a oferta fica na tela, mesmo quando nada mudou de
+            // verdade, só ruído de recorte do OCR. Combinado com a thread
+            // principal ocupada às vezes, isso podia deixar a atualização
+            // visual enfileirada e mostrar algo desatualizado bem na hora
+            // que a oferta real já tinha saído. Agora só remonta quando o
+            // veredito (cor), o motivo de recusa ou os valores das métricas
+            // realmente mudaram — leitura repetindo o mesmo número não
+            // redesenha nada, só renova o timer de auto-esconder (a oferta
+            // ainda está lá).
+            val signature = platform+"|"+overallGrade+"|"+
+                metrics.joinToString(",") { "${it.label}:${it.value}:${it.grade}" }+"|"+(declineReason ?: "")
+            val changed = wasHidden || signature != lastShownSignature
+            if (changed) {
+                container?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+                val cardWidthPx = widthFor(metrics.size)
+                params.width = cardWidthPx
+                container = buildCard(platform, overallGrade, metrics, totalMin, totalKm, cardWidthPx, declineReasonShort ?: declineReason)
+                try { wm.addView(container, params) } catch (e: Exception) { e.printStackTrace() }
+                lastShownSignature = signature
+            }
             handler.postDelayed(hideRunnable, autoHideMs)
             // BUG CONFIRMADO (17/07/2026): "só fala quando tava escondido"
             // parecia certo (evita repetir a fala toda vez que o OCR só
@@ -255,6 +276,7 @@ class FlashCard(private val context: Context) {
             container = null
             lastSpokenGrade = null
             lastSpokenReason = null
+            lastShownSignature = ""
         }
     }
 
