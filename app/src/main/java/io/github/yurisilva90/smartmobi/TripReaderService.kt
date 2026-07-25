@@ -176,8 +176,48 @@ class TripReaderService : AccessibilityService() {
         // canvas puro e não disparar TYPE_WINDOW_CONTENT_CHANGED nenhum.
         // É assim (por polling) que apps como o Gigu conseguem ler rápido.
         main.post(pollRunnable)
+        // Reporta a versão do APK rodando de verdade (pedido do Yuri,
+        // 24/07/2026) — mesmo objetivo do lado PWA: eu consigo conferir se
+        // uma instalação está desatualizada sem precisar perguntar.
+        main.post(object : Runnable {
+            override fun run() {
+                reportClientVersion()
+                main.postDelayed(this, 3 * 60 * 1000L)
+            }
+        })
     }
 
+    private fun reportClientVersion() {
+        thread(isDaemon = true) {
+            try {
+                val prefs = getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
+                val userId = prefs.getString(GpsService.KEY_USER_ID, null) ?: return@thread
+                val versionName = try {
+                    packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+                } catch (_: Exception) { "?" }
+                val body = JSONObject().apply {
+                    put("user_id", userId)
+                    put("platform", "android")
+                    put("version", versionName)
+                    put("updated_at", java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+                        .apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date()))
+                }
+                val url = URL("$SUPABASE_URL/rest/v1/client_versions")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.connectTimeout = 8000
+                conn.readTimeout = 8000
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("apikey", SUPABASE_ANON)
+                conn.setRequestProperty("Authorization", "Bearer $SUPABASE_ANON")
+                conn.setRequestProperty("Prefer", "resolution=merge-duplicates,return=minimal")
+                conn.outputStream.use { it.write(body.toString().toByteArray()) }
+                conn.responseCode
+                conn.disconnect()
+            } catch (_: Exception) {}
+        }
+    }
     private val pollRunnable = object : Runnable {
         override fun run() {
             try { pollForeground() } catch (_: Exception) {}
