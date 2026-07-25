@@ -100,11 +100,77 @@ object AutoTripCapture {
         }
     }
 
+    // Janela de "esperar mais um pouco" antes de considerar uma oferta
+    // parada há tempo como recusada/expirada — evita logar cedo demais uma
+    // oferta que ainda está sendo decidida.
+    private const val OFFER_STALE_MS = 45 * 1000L
+
+    // Grava UMA oferta recusada/expirada (pedido do Yuri, 24/07/2026) — só
+    // chamada quando temos certeza de que ela NÃO virou corrida: ou foi
+    // substituída por uma oferta diferente sem nunca ter sido aceita, ou
+    // ficou tempo demais na tela sem novidade nenhuma (flushStaleOffers).
+    // Nunca é chamada no caminho de aceite (startBuffer já consome/remove
+    // do cache antes disso), então tudo que cai aqui é seguramente "não
+    // virou corrida" — sem precisar comparar com auto_trips depois.
+    private fun logOfferSeen(ctx: Context, plat: String, snap: OfferSnapshot) {
+        thread(isDaemon = true) {
+            try {
+                val prefs = ctx.getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
+                val userId = prefs.getString(GpsService.KEY_USER_ID, null) ?: return@thread
+                val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+                    .apply { timeZone = TimeZone.getTimeZone("UTC") }
+                val body = JSONObject().apply {
+                    put("user_id", userId)
+                    put("platform", if (plat == "UBER") "uber" else "99")
+                    put("offer_value", snap.value ?: JSONObject.NULL)
+                    put("offer_dinamico", snap.dinamico)
+                    put("offer_km_pickup", snap.kmPickup ?: JSONObject.NULL)
+                    put("offer_km_trip", snap.kmTrip ?: JSONObject.NULL)
+                    put("offer_duration_pickup_sec", snap.durPickupSec ?: JSONObject.NULL)
+                    put("offer_duration_trip_sec", snap.durTripSec ?: JSONObject.NULL)
+                    put("origin_address", snap.origin ?: JSONObject.NULL)
+                    put("dest_address", snap.dest ?: JSONObject.NULL)
+                    put("seen_at", sdf.format(Date(snap.seenAt)))
+                }
+                val url = URL("${TripReaderService.SUPABASE_URL}/rest/v1/declined_offers")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.connectTimeout = 8000; conn.readTimeout = 8000
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("apikey", TripReaderService.SUPABASE_ANON)
+                conn.setRequestProperty("Authorization", "Bearer ${TripReaderService.SUPABASE_ANON}")
+                conn.setRequestProperty("Prefer", "return=minimal")
+                conn.outputStream.use { it.write(body.toString().toByteArray()) }
+                conn.responseCode
+                conn.disconnect()
+            } catch (_: Exception) {}
+        }
+    }
+
+    // Chamado periodicamente (TripReaderService) — oferta que ficou parada
+    // no cache por tempo demais sem nada acontecer (nem aceite, nem oferta
+    // nova substituindo) também conta como recusada/expirada.
+    fun flushStaleOffers(ctx: Context) {
+        val now = System.currentTimeMillis()
+        val stale = lastOfferByPlat.filterValues { now - it.seenAt > OFFER_STALE_MS }
+        stale.forEach { (plat, snap) ->
+            logOfferSeen(ctx, plat, snap)
+            lastOfferByPlat.remove(plat)
+        }
+    }
+
     // Chamado toda vez que um card de oferta válido é parseado (antes do
     // aceite). Funde com o que já tinha da MESMA oferta (mesmo valor) pelo
     // critério acima; troca de valor = oferta nova, substitui tudo.
-    fun onOfferSeen(plat: String, snap: OfferSnapshot) {
+    fun onOfferSeen(ctx: Context, plat: String, snap: OfferSnapshot) {
         val existing = lastOfferByPlat[plat]
+        if (existing != null && existing.value != snap.value) {
+            // Oferta diferente chegou por cima de uma que nunca foi
+            // aceita (aceite já teria removido do cache antes disso) —
+            // a anterior era mesmo recusada/expirada.
+            logOfferSeen(ctx, plat, existing)
+        }
         lastOfferByPlat[plat] = if (existing == null || existing.value != snap.value) {
             snap
         } else {

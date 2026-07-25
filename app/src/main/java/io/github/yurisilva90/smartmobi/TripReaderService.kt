@@ -185,6 +185,16 @@ class TripReaderService : AccessibilityService() {
                 main.postDelayed(this, 3 * 60 * 1000L)
             }
         })
+        // Ofertas vistas mas nunca aceitas nem substituídas por outra —
+        // recusadas/expiradas (pedido do Yuri, 24/07/2026). Checa a cada
+        // 15s, bem mais curto que a janela de 45s de "parada" (OFFER_STALE_MS
+        // no AutoTripCapture), pra não deixar acumular.
+        main.post(object : Runnable {
+            override fun run() {
+                try { AutoTripCapture.flushStaleOffers(this@TripReaderService) } catch (_: Exception) {}
+                main.postDelayed(this, 15 * 1000L)
+            }
+        })
     }
 
     private fun reportClientVersion() {
@@ -939,7 +949,7 @@ class TripReaderService : AccessibilityService() {
         // independente da lógica de estabilidade do card visual abaixo (essa
         // é só pra não "piscar" na tela; a captura quer o dado mais completo,
         // mesmo que só apareça numa releitura que o card visual descartou).
-        AutoTripCapture.onOfferSeen(plat, AutoTripCapture.OfferSnapshot(
+        AutoTripCapture.onOfferSeen(this, plat, AutoTripCapture.OfferSnapshot(
             value = valor, dinamico = offer.dinamico,
             kmPickup = offer.kmPickup, kmTrip = offer.kmTrip,
             durPickupSec = offer.minPickup?.let { it * 60 }, durTripSec = offer.minTrip?.let { it * 60 },
