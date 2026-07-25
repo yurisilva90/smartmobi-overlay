@@ -139,6 +139,11 @@ class TripReaderService : AccessibilityService() {
     // plataforma, elimina esse cruzamento.
     private val lastOfferValorByPlat = HashMap<String, Double>()
     private val bestLegsForOfferByPlat = HashMap<String, Int>()
+    // Feed social: evita postar o mesmo alerta de dinâmico repetidas vezes
+    // enquanto a MESMA oferta continua na tela (o app relê a tela várias
+    // vezes por segundo). Só posta de novo se o valor do dinâmico mudar
+    // pra essa plataforma (nova oferta ou bônus diferente).
+    private val lastDinamicoAlertByPlat = HashMap<String, Double>()
     // 99: a tela de navegação compacta (rua/distância/velocidade) é IDÊNTICA
     // indo buscar o passageiro e indo pro destino — só o endereço fixo no
     // topo muda, e não vale a pena comparar endereço pra isso. Em vez disso,
@@ -907,6 +912,62 @@ class TripReaderService : AccessibilityService() {
     }
 
     // ── MōB Flash real: só usa o texto do próprio app (99/Uber) ──
+    // Feed social: publica alerta automático de "Demanda alta" quando uma
+    // oferta chega com dinâmico > 0, na localização atual do motorista.
+    // PEDIDO (25/07/2026, Yuri) — vale tanto pra Uber quanto pra 99.
+    //
+    // Autenticação: usa o access_token real do usuário quando disponível
+    // (mesmo padrão do enviarSupabase de informes em GpsService.kt), caindo
+    // pra anon key só se não tiver token salvo — nesse caso a RLS do
+    // feed_posts rejeita o insert (exige auth.uid() = user_id) e o post
+    // simplesmente não sai, sem abrir brecha pra forjar posts de outros
+    // usuários (diferente de auto_trips/trip_reader_log, que são dados
+    // privados só visíveis ao próprio dono — feed_posts é público pra
+    // toda a comunidade, então aqui vale a autenticação real).
+    private fun postDynamicAlert(dinamico: Double) {
+        thread(isDaemon = true) {
+            try {
+                val prefs = getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
+                val userId = prefs.getString(GpsService.KEY_USER_ID, null) ?: return@thread
+                val authToken = prefs.getString(GpsService.KEY_ACCESS_TOKEN, null) ?: SUPABASE_ANON
+
+                val lat = GpsService.lastLat
+                val lng = GpsService.lastLng
+                val address = if (lat != 0.0 || lng != 0.0) GpsService.reverseGeocodeFull(lat, lng) else null
+
+                val valorFmt = String.format(Locale.US, "%.2f", dinamico).replace(".", ",")
+                val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+                    .apply { timeZone = TimeZone.getTimeZone("UTC") }
+
+                val body = JSONObject().apply {
+                    put("user_id", userId)
+                    put("type", "demanda")
+                    put("body", "Dinâmico R$" + valorFmt)
+                    put("source", "system")
+                    if (lat != 0.0 || lng != 0.0) { put("lat", lat); put("lng", lng) }
+                    put("address", address ?: JSONObject.NULL)
+                    put("expires_at", sdf.format(Date(System.currentTimeMillis() + 30 * 60000L)))
+                }
+
+                val url = URL("$SUPABASE_URL/rest/v1/feed_posts")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.connectTimeout = 8000
+                conn.readTimeout = 8000
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("apikey", SUPABASE_ANON)
+                conn.setRequestProperty("Authorization", "Bearer $authToken")
+                conn.setRequestProperty("Prefer", "return=minimal")
+                conn.outputStream.use { it.write(body.toString().toByteArray()) }
+                conn.responseCode
+                conn.disconnect()
+            } catch (_: Exception) {
+                // sem rede/token expirado — só não sai o alerta desta vez
+            }
+        }
+    }
+
     private fun processRealOffer(plat: String, texts: List<String>, bmp: Bitmap? = null) {
         // PEDIDO (13/07/2026): Flash só deve ficar ativo com a jornada
         // iniciada — antes disso ele rodava independente, mesmo sem GPS
@@ -976,6 +1037,16 @@ class TripReaderService : AccessibilityService() {
         if (sig == lastFlashSig) { bmp?.recycle(); return }
         lastFlashSig = sig
         lastFlashSigSetMs = System.currentTimeMillis()
+
+        // Feed social: oferta com dinâmico vira alerta automático de
+        // "Demanda alta" pra comunidade, na localização atual do motorista.
+        // PEDIDO (25/07/2026): "toda vez que tocar uma corrida, na
+        // localização que eu tiver, coloca o dinâmico que tá na oferta,
+        // tanto da Uber quanto da 99".
+        if (offer.dinamico > 0.0 && lastDinamicoAlertByPlat[plat] != offer.dinamico) {
+            lastDinamicoAlertByPlat[plat] = offer.dinamico
+            postDynamicAlert(offer.dinamico)
+        }
 
         val custoPorKm = cfg.optDouble("custoPorKm", 0.0)
         val kpisCfg = cfg.optJSONObject("kpis") ?: JSONObject()
