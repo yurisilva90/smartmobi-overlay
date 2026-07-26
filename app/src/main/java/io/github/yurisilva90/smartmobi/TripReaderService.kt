@@ -911,9 +911,11 @@ class TripReaderService : AccessibilityService() {
     }
 
     // ── MōB Flash real: só usa o texto do próprio app (99/Uber) ──
-    // Feed social: publica alerta automático de "Demanda alta" quando uma
+    // Feed social: publica alerta automático tipo "dinamico" quando uma
     // oferta chega com dinâmico > 0, na localização atual do motorista.
     // PEDIDO (25/07/2026, Yuri) — vale tanto pra Uber quanto pra 99.
+    // Correção (25/07/2026, Yuri): tipo próprio "dinamico", separado de
+    // "demanda" (que segue existindo só pra reporte manual de "tá tocando").
     //
     // Autenticação: usa o access_token real do usuário quando disponível
     // (mesmo padrão do enviarSupabase de informes em GpsService.kt), caindo
@@ -930,6 +932,13 @@ class TripReaderService : AccessibilityService() {
         v < 3.0 -> 0
         v < 8.0 -> 1
         else -> 2
+    }
+
+    // Label do post — mesma notação exibida nos botões de reporte manual
+    // (GpsService.escolherCenario), não a palavra da faixa ("moderado" etc).
+    private fun dinamicoRangeLabel(tier: Int): String = when (tier) {
+        2 -> "+R$10+"
+        else -> "+R$5"
     }
 
     private fun haversineKm(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {
@@ -952,14 +961,14 @@ class TripReaderService : AccessibilityService() {
                 val lng = GpsService.lastLng
                 val address = if (lat != 0.0 || lng != 0.0) GpsService.reverseGeocodeFull(lat, lng) else null
 
-                val valorFmt = String.format(Locale.US, "%.2f", dinamico).replace(".", ",")
+                val rangeLabel = dinamicoRangeLabel(dinamicoTier(dinamico))
                 val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
                     .apply { timeZone = TimeZone.getTimeZone("UTC") }
 
                 val body = JSONObject().apply {
                     put("user_id", userId)
-                    put("type", "demanda")
-                    put("body", "Dinâmico R$" + valorFmt)
+                    put("type", "dinamico")
+                    put("body", "Dinâmico " + rangeLabel)
                     put("source", "system")
                     if (lat != 0.0 || lng != 0.0) { put("lat", lat); put("lng", lng) }
                     put("address", address ?: JSONObject.NULL)
@@ -1055,8 +1064,8 @@ class TripReaderService : AccessibilityService() {
         lastFlashSig = sig
         lastFlashSigSetMs = System.currentTimeMillis()
 
-        // Feed social: oferta com dinâmico vira alerta automático de
-        // "Demanda alta" pra comunidade, na localização atual do motorista.
+        // Feed social: oferta com dinâmico vira alerta automático tipo
+        // "dinamico" pra comunidade, na localização atual do motorista.
         // PEDIDO (25/07/2026): "toda vez que tocar uma corrida, na
         // localização que eu tiver, coloca o dinâmico que tá na oferta,
         // tanto da Uber quanto da 99".
