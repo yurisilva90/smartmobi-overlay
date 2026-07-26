@@ -139,11 +139,10 @@ class TripReaderService : AccessibilityService() {
     // plataforma, elimina esse cruzamento.
     private val lastOfferValorByPlat = HashMap<String, Double>()
     private val bestLegsForOfferByPlat = HashMap<String, Int>()
-    // Feed social: evita postar o mesmo alerta de dinâmico repetidas vezes
-    // enquanto a MESMA oferta continua na tela (o app relê a tela várias
-    // vezes por segundo). Só posta de novo se o valor do dinâmico mudar
-    // pra essa plataforma (nova oferta ou bônus diferente).
-    private val lastDinamicoAlertByPlat = HashMap<String, Double>()
+    // Feed social: controla o filtro de faixa do alerta automático de
+    // dinâmico (ver dinamicoTier() e postDynamicAlert() mais abaixo).
+    private val lastDinamicoTierByPlat = HashMap<String, Int>()
+    private val lastDinamicoAlertLatLngByPlat = HashMap<String, DoubleArray>() // [lat, lng]
     // 99: a tela de navegação compacta (rua/distância/velocidade) é IDÊNTICA
     // indo buscar o passageiro e indo pro destino — só o endereço fixo no
     // topo muda, e não vale a pena comparar endereço pra isso. Em vez disso,
@@ -924,6 +923,24 @@ class TripReaderService : AccessibilityService() {
     // usuários (diferente de auto_trips/trip_reader_log, que são dados
     // privados só visíveis ao próprio dono — feed_posts é público pra
     // toda a comunidade, então aqui vale a autenticação real).
+    // Faixas do alerta automático de dinâmico — mesma referência dos botões
+    // de reporte manual em GpsService.escolherCenario() (R$0 / +R$5 / +R$10+):
+    // 0 = abaixo do piso, não vale alerta · 1 = moderado (~R$5) · 2 = alto (~R$10+)
+    private fun dinamicoTier(v: Double): Int = when {
+        v < 3.0 -> 0
+        v < 8.0 -> 1
+        else -> 2
+    }
+
+    private fun haversineKm(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {
+        if ((lat1 == 0.0 && lng1 == 0.0) || (lat2 == 0.0 && lng2 == 0.0)) return Double.MAX_VALUE
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLng = Math.toRadians(lng2 - lng1)
+        val a = Math.sin(dLat/2).let{it*it} + Math.cos(Math.toRadians(lat1)) *
+            Math.cos(Math.toRadians(lat2)) * Math.sin(dLng/2).let{it*it}
+        return 6371.0 * 2 * Math.asin(Math.sqrt(a))
+    }
+
     private fun postDynamicAlert(dinamico: Double) {
         thread(isDaemon = true) {
             try {
@@ -1043,9 +1060,26 @@ class TripReaderService : AccessibilityService() {
         // PEDIDO (25/07/2026): "toda vez que tocar uma corrida, na
         // localização que eu tiver, coloca o dinâmico que tá na oferta,
         // tanto da Uber quanto da 99".
-        if (offer.dinamico > 0.0 && lastDinamicoAlertByPlat[plat] != offer.dinamico) {
-            lastDinamicoAlertByPlat[plat] = offer.dinamico
-            postDynamicAlert(offer.dinamico)
+        //
+        // FILTRO DE FAIXA (pedido 25/07/2026, pra não poluir o feed): só
+        // dispara quando dá pra pelo menos a faixa "moderado" (>= R$3, mesmo
+        // piso que o Yuri lembrou), e só posta de novo pra essa plataforma
+        // se a faixa mudou desde o último post OU o motorista se afastou
+        // mais de ~2km de onde postou da última vez — assim uma oferta indo
+        // e voltando entre R$4 e R$6 (mesma faixa "moderado") não dispara
+        // post repetido, mas ir de R$5 pra R$12 (mudou de faixa) dispara, e
+        // se ele já saiu da região, o mesmo valor de novo ainda é notícia.
+        val tier = dinamicoTier(offer.dinamico)
+        if (tier > 0) {
+            val lastTier = lastDinamicoTierByPlat[plat]
+            val lastPos = lastDinamicoAlertLatLngByPlat[plat]
+            val movedFar = lastPos == null ||
+                haversineKm(lastPos[0], lastPos[1], GpsService.lastLat, GpsService.lastLng) > 2.0
+            if (tier != lastTier || movedFar) {
+                lastDinamicoTierByPlat[plat] = tier
+                lastDinamicoAlertLatLngByPlat[plat] = doubleArrayOf(GpsService.lastLat, GpsService.lastLng)
+                postDynamicAlert(offer.dinamico)
+            }
         }
 
         val custoPorKm = cfg.optDouble("custoPorKm", 0.0)
