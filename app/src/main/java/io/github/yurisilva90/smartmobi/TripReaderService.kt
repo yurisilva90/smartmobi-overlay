@@ -1442,6 +1442,15 @@ class TripReaderService : AccessibilityService() {
         """Como foi sua corrida|Avaliar como anônimo""", RegexOption.IGNORE_CASE
     )
     private val nn99BuscandoOcrRe = Regex("""Buscando""", RegexOption.IGNORE_CASE)
+    // CONFIRMADO EM LOG REAL (25/07/2026, relatado pelo Yuri): quando o
+    // motorista desconecta da 99 logo depois de terminar uma corrida, a
+    // tela nunca volta pro "Buscando" (só aparece pra quem tá online
+    // procurando) — mostra o botão "Conectar" no lugar. Sem esse gatilho,
+    // a corrida ficava PRESA em "corrida" pra sempre, porque o único jeito
+    // de confirmar a volta pro online era o "Buscando" nunca aparecer.
+    // Palavra isolada com limite de palavra — não bate em "desconectar"
+    // nem "continuar conectado" (letras finais diferentes).
+    private val nn99ConectarOcrRe = Regex("""\bConectar\b""", RegexOption.IGNORE_CASE)
     private val nn99CobrarPagamentoRe = Regex("""Cobrar pagamento""", RegexOption.IGNORE_CASE)
     private val nn99FinalizarCorridaRe = Regex("""Finalizar corrida""", RegexOption.IGNORE_CASE)
     // REVISADO (20/07/2026, correção do Yuri): esses textos NÃO são mais
@@ -1612,9 +1621,9 @@ class TripReaderService : AccessibilityService() {
             nn99WaitingBuscandoViaOcr = false
             return
         }
-        if (nn99BuscandoOcrRe.containsMatchIn(joinedOcrText)) {
+        if (nn99BuscandoOcrRe.containsMatchIn(joinedOcrText) || nn99ConectarOcrRe.containsMatchIn(joinedOcrText)) {
             nn99ReachedPickup = false
-            nn99ReachedPickupReason = "ocr:buscando_armado"
+            nn99ReachedPickupReason = if (nn99BuscandoOcrRe.containsMatchIn(joinedOcrText)) "ocr:buscando_armado" else "ocr:conectar_armado"
             nn99KnownDestAddr = null
             nn99LastActiveSignalMs = System.currentTimeMillis()
             applyTripSubStateDebounced("online", "99")
