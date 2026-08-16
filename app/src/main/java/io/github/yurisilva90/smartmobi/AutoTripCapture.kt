@@ -27,6 +27,7 @@ object AutoTripCapture {
     data class OfferSnapshot(
         val value: Double?,
         val dinamico: Double,
+        val multiplicador: Double? = null,
         val kmPickup: Double?,
         val kmTrip: Double?,
         val durPickupSec: Int?,
@@ -54,6 +55,7 @@ object AutoTripCapture {
         val platform: String,
         var offerValue: Double?,
         var offerDinamico: Double,
+        var offerMultiplicador: Double?,
         var offerKmPickup: Double?,
         var offerKmTrip: Double?,
         var offerDurPickupSec: Int?,
@@ -177,6 +179,7 @@ object AutoTripCapture {
             OfferSnapshot(
                 value = snap.value ?: existing.value,
                 dinamico = if (snap.dinamico > 0) snap.dinamico else existing.dinamico,
+                multiplicador = snap.multiplicador ?: existing.multiplicador,
                 kmPickup = snap.kmPickup ?: existing.kmPickup,
                 kmTrip = snap.kmTrip ?: existing.kmTrip,
                 durPickupSec = snap.durPickupSec ?: existing.durPickupSec,
@@ -256,6 +259,7 @@ object AutoTripCapture {
                 platform = plat,
                 offerValue = offer?.value,
                 offerDinamico = offer?.dinamico ?: 0.0,
+                offerMultiplicador = offer?.multiplicador,
                 offerKmPickup = offer?.kmPickup,
                 offerKmTrip = offer?.kmTrip,
                 offerDurPickupSec = offer?.durPickupSec,
@@ -425,6 +429,7 @@ object AutoTripCapture {
                     put("gps_match_dest", gpsMatchDest?.let { it } ?: JSONObject.NULL)
                     put("offer_value", b.offerValue ?: JSONObject.NULL)
                     put("offer_dinamico", b.offerDinamico)
+                    put("offer_multiplicador", b.offerMultiplicador ?: JSONObject.NULL)
                     put("offer_km_pickup", b.offerKmPickup ?: JSONObject.NULL)
                     put("offer_km_trip", b.offerKmTrip ?: JSONObject.NULL)
                     put("offer_duration_pickup_sec", b.offerDurPickupSec ?: JSONObject.NULL)

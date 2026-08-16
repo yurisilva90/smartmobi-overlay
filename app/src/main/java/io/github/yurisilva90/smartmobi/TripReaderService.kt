@@ -666,7 +666,8 @@ class TripReaderService : AccessibilityService() {
         val kmPickup: Double? = null, val kmTrip: Double? = null,
         val minPickup: Int? = null, val minTrip: Int? = null,
         val dinamico: Double = 0.0,
-        val corridas: Int? = null, val paradas: Int = 0
+        val corridas: Int? = null, val paradas: Int = 0,
+        val multiplicador: Double? = null
     )
 
     private fun parseOffer(texts: List<String>): Offer {
@@ -742,6 +743,19 @@ class TripReaderService : AccessibilityService() {
             moneyToDouble(it.groupValues[1])
         } ?: 0.0
         val dinamico = dinamicoBase + dinamicoEspera + dinamicoEmbarque + dinamicoDeslocamento + dinamicoUber
+
+        // multiplicador: CONFIRMADO EM DADO REAL (16/08/2026, varredura de
+        // trip_reader_log) — a 99 mostra um "1,1x" / "1,5x" colado bem perto
+        // do valor da oferta quando tem tarifa dinâmica ativa (ex: "R$7,90
+        // 1,1x"). O OCR às vezes lê um caractere de sujeira antes do número
+        // (ícone pequeno virando "4" ou "*"), por isso o regex não ancora no
+        // início. Só aparece quando há multiplicador de verdade — corrida
+        // sem dinâmico simplesmente não tem esse texto na tela, então fica
+        // null (não é 1.0x, é "não informado"). Uber não expõe esse número
+        // em lugar nenhum, só o valor em R$ (dinamicoUber acima).
+        val multiplicador = Regex("""(\d[.,]\d+)\s*x\b""").find(low)?.let {
+            it.groupValues[1].replace(",", ".").toDoubleOrNull()
+        }
 
         // fallback de valor: se não achou "aceitar por", pega o R$ que for
         // consistente com rkm direto × km (evita pegar ganhos do dia) — é
@@ -868,7 +882,7 @@ class TripReaderService : AccessibilityService() {
         val origem = addrCandidates.getOrNull(0)
         val destino = addrCandidates.getOrNull(1)
 
-        return Offer(valor, km, min, rkmDirect, nota, origem, destino, legs, kmPickup, kmTrip, minPickup, minTrip, dinamico, corridas, paradas)
+        return Offer(valor, km, min, rkmDirect, nota, origem, destino, legs, kmPickup, kmTrip, minPickup, minTrip, dinamico, corridas, paradas, multiplicador)
     }
 
     private fun isOfferScreen(low: String): Boolean {
@@ -1037,7 +1051,7 @@ class TripReaderService : AccessibilityService() {
         // é só pra não "piscar" na tela; a captura quer o dado mais completo,
         // mesmo que só apareça numa releitura que o card visual descartou).
         AutoTripCapture.onOfferSeen(this, plat, AutoTripCapture.OfferSnapshot(
-            value = valor, dinamico = offer.dinamico,
+            value = valor, dinamico = offer.dinamico, multiplicador = offer.multiplicador,
             kmPickup = offer.kmPickup, kmTrip = offer.kmTrip,
             durPickupSec = offer.minPickup?.let { it * 60 }, durTripSec = offer.minTrip?.let { it * 60 },
             origin = offer.origem, dest = offer.destino
