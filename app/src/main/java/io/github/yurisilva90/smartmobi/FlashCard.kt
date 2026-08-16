@@ -82,7 +82,8 @@ class FlashCard(private val context: Context) {
                 conn.doOutput = true
                 conn.setRequestProperty("Content-Type", "application/json")
                 conn.setRequestProperty("apikey", TripReaderService.SUPABASE_ANON)
-                conn.setRequestProperty("Authorization", "Bearer ${TripReaderService.SUPABASE_ANON}")
+                val authToken = prefs.getString(GpsService.KEY_ACCESS_TOKEN, null) ?: TripReaderService.SUPABASE_ANON
+                conn.setRequestProperty("Authorization", "Bearer $authToken")
                 conn.outputStream.use { it.write(body.toString().toByteArray()) }
                 conn.responseCode
                 conn.disconnect()

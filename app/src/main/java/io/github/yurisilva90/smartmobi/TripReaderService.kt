@@ -1929,13 +1929,14 @@ class TripReaderService : AccessibilityService() {
                 bmp.compress(Bitmap.CompressFormat.JPEG, 55, baos)
                 bmp.recycle()
                 val bytes = baos.toByteArray()
-                val fileName = "snap_${System.currentTimeMillis()}_${System.nanoTime() % 100000}.jpg"
-
                 val prefs = getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
-                val userId = prefs.getString(GpsService.KEY_USER_ID, null)
+                val userId = prefs.getString(GpsService.KEY_USER_ID, null) ?: return@thread
+                val fileName = "${userId}/snap_${System.currentTimeMillis()}_${System.nanoTime() % 100000}.jpg"
                 val deviceId = try {
                     Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
                 } catch (_: Exception) { "unknown" }
+
+                val authToken = prefs.getString(GpsService.KEY_ACCESS_TOKEN, null) ?: SUPABASE_ANON
 
                 // 1) sobe a imagem pro Storage
                 val storageUrl = URL("$SUPABASE_URL/storage/v1/object/flash-snapshots/$fileName")
@@ -1945,7 +1946,7 @@ class TripReaderService : AccessibilityService() {
                 conn.connectTimeout = 10000; conn.readTimeout = 10000
                 conn.setRequestProperty("Content-Type", "image/jpeg")
                 conn.setRequestProperty("apikey", SUPABASE_ANON)
-                conn.setRequestProperty("Authorization", "Bearer $SUPABASE_ANON")
+                conn.setRequestProperty("Authorization", "Bearer $authToken")
                 conn.outputStream.use { it.write(bytes) }
                 val code1 = conn.responseCode
                 conn.disconnect()
@@ -1975,7 +1976,7 @@ class TripReaderService : AccessibilityService() {
                 conn2.connectTimeout = 8000; conn2.readTimeout = 8000
                 conn2.setRequestProperty("Content-Type", "application/json")
                 conn2.setRequestProperty("apikey", SUPABASE_ANON)
-                conn2.setRequestProperty("Authorization", "Bearer $SUPABASE_ANON")
+                conn2.setRequestProperty("Authorization", "Bearer $authToken")
                 conn2.setRequestProperty("Prefer", "return=minimal")
                 conn2.outputStream.use { it.write(body.toString().toByteArray()) }
                 conn2.responseCode
@@ -2149,7 +2150,8 @@ class TripReaderService : AccessibilityService() {
                 conn.doOutput = true
                 conn.setRequestProperty("Content-Type", "application/json")
                 conn.setRequestProperty("apikey", SUPABASE_ANON)
-                conn.setRequestProperty("Authorization", "Bearer $SUPABASE_ANON")
+                val authToken = prefs.getString(GpsService.KEY_ACCESS_TOKEN, null) ?: SUPABASE_ANON
+                conn.setRequestProperty("Authorization", "Bearer $authToken")
                 conn.setRequestProperty("Prefer", "return=minimal")
                 conn.outputStream.use { it.write(body.toString().toByteArray()) }
                 conn.responseCode
