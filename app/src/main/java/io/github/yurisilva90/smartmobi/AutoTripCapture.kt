@@ -167,13 +167,31 @@ object AutoTripCapture {
     // critério acima; troca de valor = oferta nova, substitui tudo.
     fun onOfferSeen(ctx: Context, plat: String, snap: OfferSnapshot) {
         val existing = lastOfferByPlat[plat]
-        if (existing != null && existing.value != snap.value) {
+        // CORRIGIDO (16/08/2026, confirmado em log real — 35 corridas do 99
+        // com valor errado): antes, QUALQUER diferença de valor entre duas
+        // leituras já bastava pra tratar como "oferta nova", descartando
+        // por completo a leitura anterior (que podia ser a boa) e ficando
+        // só com a nova (que podia ser a ruidosa — ex: km não leu nessa
+        // passada, e o fallback de valor pegou "R$2,33 Tarifa base
+        // dinâmica" em vez do "R$14,70" real). Endereço não muda de uma
+        // leitura pra outra da MESMA oferta — só quando é oferta de
+        // verdade diferente. Agora só considera "oferta diferente" quando
+        // o valor E o endereço (rua) mudam junto; se só o valor mudou,
+        // trata como releitura ruidosa da mesma oferta e faz merge normal
+        // (mantendo o que já tinha de bom).
+        val sameAddress = existing != null && (
+            (existing.origin == null && snap.origin == null) ||
+            (normalizedStreet(existing.origin) != null &&
+                normalizedStreet(existing.origin) == normalizedStreet(snap.origin))
+        )
+        val isReallyDifferentOffer = existing != null && existing.value != snap.value && !sameAddress
+        if (isReallyDifferentOffer) {
             // Oferta diferente chegou por cima de uma que nunca foi
             // aceita (aceite já teria removido do cache antes disso) —
             // a anterior era mesmo recusada/expirada.
-            logOfferSeen(ctx, plat, existing)
+            logOfferSeen(ctx, plat, existing!!)
         }
-        lastOfferByPlat[plat] = if (existing == null || existing.value != snap.value) {
+        lastOfferByPlat[plat] = if (existing == null || isReallyDifferentOffer) {
             snap
         } else {
             OfferSnapshot(

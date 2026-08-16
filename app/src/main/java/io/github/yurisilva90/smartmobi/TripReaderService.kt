@@ -771,8 +771,23 @@ class TripReaderService : AccessibilityService() {
             // e vencia o valor de verdade. Ex real: oferta R$7,90 com
             // R$2,64/km — numa leitura ruidosa, R$2,64 (a taxa) foi
             // salvo como se fosse o valor total da corrida.
+            //
+            // CORRIGIDO (16/08/2026, confirmado em log real — 35 corridas
+            // do 99 gravadas com valor errado, ex: "R$2,33" em vez de
+            // "R$14,70"): o valor do "Tarifa base dinâmica incl." (e das
+            // outras 3 variantes de bônus) também precisa ser excluído dos
+            // candidatos. Sem km (legs não leram nessa leitura em
+            // particular), o fallback caía direto pro primeiro R$ que
+            // aparecesse — e "R$2,33 Tarifa base dinâmica incl." geralmente
+            // aparece bem no meio da tela, antes do valor total em telas
+            // mais compridas, ganhando por ordem de leitura.
+            val dinamicoValues = listOfNotNull(
+                dinamicoBase.takeIf { it > 0 }, dinamicoEspera.takeIf { it > 0 },
+                dinamicoEmbarque.takeIf { it > 0 }, dinamicoDeslocamento.takeIf { it > 0 }
+            )
             val monies = extractMoney(joined).mapNotNull { moneyToDouble(it) }.filter { it > 0 }
                 .filter { rkmDirect == null || kotlin.math.abs(it - rkmDirect) > 0.01 }
+                .filter { cand -> dinamicoValues.none { kotlin.math.abs(cand - it) < 0.01 } }
             valor = if (rkmDirect != null && km != null) {
                 monies.firstOrNull { kotlin.math.abs(it / km!! - rkmDirect) / rkmDirect < 0.35 }
             } else if (km != null && km > 0) {
