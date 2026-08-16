@@ -55,6 +55,18 @@ class TripReaderService : AccessibilityService() {
         const val SUPABASE_URL  = "https://jlsrpptslwfhmkvelaro.supabase.co"
         const val SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impsc3JwcHRzbHdmaG1rdmVsYXJvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4NjYxNzIsImV4cCI6MjA4OTQ0MjE3Mn0.4gD4dKx05QaOAAkY1gAx2HuH_CN31Xg3kkDMdvZ4kh0"
 
+        // Bloqueador de Play Store (16/08/2026, pedido do Yuri): o texto
+        // bruto da tela (raw) pode conter nome de passageiro (aparece nas
+        // telas de avaliação pós-corrida, embora nunca na oferta) e outros
+        // dados pessoais de terceiro sem necessidade real de ficar
+        // guardado. Por padrão NÃO vai mais pro Supabase — state/money/km/
+        // min continuam indo (não têm PII, bastam pra maioria dos
+        // diagnósticos). Se precisar depurar algo que só dá pra ver no
+        // texto cru, mudar pra true, buildar, pedir pro Yuri reproduzir, e
+        // desligar de novo depois — não deixar true em produção por muito
+        // tempo.
+        const val DEBUG_SEND_RAW_TEXT = false
+
         const val KEY_FLASH_CONFIG_JSON = "flash_config_json"
 
         val KPI_ORDER = listOf(
@@ -2138,7 +2150,7 @@ class TripReaderService : AccessibilityService() {
                         put("money", JSONArray(money))
                         put("km", km ?: JSONObject.NULL)
                         put("min", min ?: JSONObject.NULL)
-                        put("raw", JSONArray(texts))
+                        put("raw", if (DEBUG_SEND_RAW_TEXT) JSONArray(texts) else JSONArray())
                     })
                 }
 
