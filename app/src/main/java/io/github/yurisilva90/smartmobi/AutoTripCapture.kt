@@ -51,6 +51,19 @@ object AutoTripCapture {
     // e a corrida anterior fechar pode ser de vários minutos.
     private const val OFFER_MAX_AGE_OVERLAP_MS = 10 * 60 * 1000L
 
+    // CONFIRMADO EM LOG REAL (16/08/2026, corrida das 01:37 do dia 12/08):
+    // uma leitura ISOLADA de "buscar" apareceu 6s depois de já estar
+    // firmemente em "corrida" (a leitura seguinte já voltou a "corrida"
+    // normalmente) — ruído pontual de OCR, não um motorista de verdade
+    // saindo da corrida. Isso disparou o tratamento de overlap (corrida
+    // fechada + nova corrida aberta do zero), criando um registro fantasma
+    // com a mesma origem/valor da corrida real, poucos segundos de duração
+    // e ~0km rodados. Corrida de verdade nunca fecha em menos de 1 minuto
+    // depois do embarque — abaixo desse tempo, trata "corrida"→"buscar"
+    // como ruído e ignora a transição (mantém o buffer da corrida atual
+    // intacto) em vez de fechar+reabrir.
+    private const val MIN_RIDE_BEFORE_OVERLAP_MS = 60 * 1000L
+
     private data class Buffer(
         val platform: String,
         var offerValue: Double?,
@@ -329,10 +342,16 @@ object AutoTripCapture {
                 buffer = null
             }
             prev == "corrida" && next == "buscar" -> {
+                val b = buffer
+                val elapsedSinceStart = if (b != null && b.tripStartedAt > 0) now - b.tripStartedAt else Long.MAX_VALUE
+                if (b != null && b.platform == plat && elapsedSinceStart < MIN_RIDE_BEFORE_OVERLAP_MS) {
+                    // Ruído — trata como se a transição nunca tivesse
+                    // acontecido, buffer da corrida atual continua intacto.
+                    return
+                }
                 // Overlap: próxima corrida aceita antes da anterior fechar de
                 // vez (confirmado em log real). Fecha a anterior com o que já
                 // tem (melhor esforço) e começa a nova do zero.
-                val b = buffer
                 if (b != null && b.platform == plat) {
                     b.tripEndedAt = now
                     b.tripEndKm = km
@@ -398,6 +417,22 @@ object AutoTripCapture {
     }
 
     private fun push(ctx: Context, b: Buffer) {
+        // ÚLTIMA rede de segurança antes de gravar (16/08/2026, confirmado
+        // em log real — corrida com 5s de duração e 0,02km rodados, gerada
+        // por ruído de OCR oscilando corrida/buscar). Além da trava lá em
+        // onStateTransition (que evita a maioria dos casos na origem), essa
+        // aqui pega qualquer outro caminho que eu não tenha coberto: nunca
+        // grava como corrida "de verdade" algo com menos de 1 min de
+        // duração TOTAL (aceite até fim) e praticamente nenhum km rodado —
+        // corrida real não existe nesse formato. Descarta silenciosamente
+        // (não sobe pro Supabase) em vez de virar um card enganoso na tela.
+        if (b.tripEndedAt > 0) {
+            val totalDurationMs = b.tripEndedAt - b.acceptedAt
+            val totalKm = (b.tripEndKm - b.pickupStartKm).coerceAtLeast(0.0)
+            if (totalDurationMs < MIN_RIDE_BEFORE_OVERLAP_MS && totalKm < 0.05) {
+                return
+            }
+        }
         thread(isDaemon = true) {
             try {
                 val prefs = ctx.getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
