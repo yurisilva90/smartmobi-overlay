@@ -916,7 +916,13 @@ class TripReaderService : AccessibilityService() {
             // palavra de logradouro (Rua/Av/Estrada/etc.) OU o padrão
             // "Nome da via, Número" que todo endereço de oferta tem.
             val hasStreetWord = Regex("""\b(rua|av\.?|avenida|estrada|travessa|alameda|rodovia|pra[çc]a|largo|ladeira|rod\.?|via\b)""", RegexOption.IGNORE_CASE).containsMatchIn(sl)
-            val hasNumberPattern = Regex(""",\s*\d{1,5}\b""").containsMatchIn(sl)
+            // CORRIGIDO (16/08/2026, confirmado em corrida real): "mano
+            // paguei 40,70 no app" passava aqui porque "40,70" batia no
+            // padrão "Nome, Número" — vírgula decimal de valor em R$ não é
+            // vírgula de endereço. Exige que o caractere ANTES da vírgula
+            // não seja dígito (endereço real nunca tem número colado antes
+            // da vírgula do jeito que um valor decimal tem).
+            val hasNumberPattern = Regex("""[^\d],\s*\d{1,5}\b""").containsMatchIn(sl)
             if (!hasStreetWord && !hasNumberPattern) return false
             return true
         }
