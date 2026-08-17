@@ -906,6 +906,18 @@ class TripReaderService : AccessibilityService() {
             // casas + "corrid") ou selo de verificação.
             if (Regex("""[1-5][.,]\d{2}.{0,15}corrid""").containsMatchIn(sl)) return false
             if (sl.contains("verif.") || sl.contains("cpf e cart")) return false
+            // CORRIGIDO (16/08/2026, confirmado em corrida real: destino
+            // gravado como "mano paguei 40,70 no app" — mensagem de chat do
+            // passageiro que estava na tela virou "endereço" porque não
+            // batia em NENHUMA regra de bloqueio acima). Bloquear padrão
+            // conhecido nunca cobre tudo — frase solta de conversa não tem
+            // assinatura fixa. Em vez de só bloquear o que já vimos dar
+            // errado, agora exige uma evidência POSITIVA de que É endereço:
+            // palavra de logradouro (Rua/Av/Estrada/etc.) OU o padrão
+            // "Nome da via, Número" que todo endereço de oferta tem.
+            val hasStreetWord = Regex("""\b(rua|av\.?|avenida|estrada|travessa|alameda|rodovia|pra[çc]a|largo|ladeira|rod\.?|via\b)""", RegexOption.IGNORE_CASE).containsMatchIn(sl)
+            val hasNumberPattern = Regex(""",\s*\d{1,5}\b""").containsMatchIn(sl)
+            if (!hasStreetWord && !hasNumberPattern) return false
             return true
         }
         val legLineRe = Regex("""^\(?\s*\d{1,3}\s*min(?:utos)?""", RegexOption.IGNORE_CASE)
