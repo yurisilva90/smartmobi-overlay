@@ -47,6 +47,13 @@ import kotlin.concurrent.thread
 class TripReaderService : AccessibilityService() {
 
     companion object {
+        // Bloqueador de Play Store, item 5 (16/08/2026): ScreenOcrService
+        // não é mais um Service com MediaProjection própria — ele chama
+        // takeScreenshot() direto NESTE AccessibilityService (só um
+        // AccessibilityService pode chamar esse método), por isso precisa
+        // de uma referência estática pra instância ativa.
+        @Volatile var instance: TripReaderService? = null
+
         val UBER_PKGS = setOf("com.ubercab.driver", "com.ubercab")
         val NN_PKGS = setOf("com.app99.driver", "com.taxis99.driver")
         val GIGU_PKGS = setOf("co.gigu.app")
@@ -170,6 +177,7 @@ class TripReaderService : AccessibilityService() {
     private var nn99ReachedPickupReason = "init"
 
     override fun onServiceConnected() {
+        instance = this
         val info = AccessibilityServiceInfo().apply {
             eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
                          AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
@@ -559,8 +567,7 @@ class TripReaderService : AccessibilityService() {
     private var lastOcrLogMs = 0L
     private var lastOcrMissMs = 0L
     private fun requestOcrPass(plat: String) {
-        val svc = ScreenOcrService.instance
-        if (svc == null || !ScreenOcrService.isActive) {
+        if (!ScreenOcrService.isActive) {
             // Sem isso não dá pra saber se o problema é permissão ou parser —
             // loga no máx a cada 5s pra não inundar.
             val now = System.currentTimeMillis()
@@ -575,6 +582,14 @@ class TripReaderService : AccessibilityService() {
             // corrida na 99 são 100% OCR, cair = detecção morta sem aviso
             // nenhum. Depois de 20s de queda contínua, avisa uma vez por
             // notificação (toque reabre o pedido de permissão) + voz.
+            //
+            // MUDOU (16/08/2026, item 5 — troca pra takeScreenshot()): não
+            // existe mais "permissão caindo no meio da sessão" — ou o
+            // AccessibilityService está conectado ou não está, não tem
+            // sessão de MediaProjection expirando sozinha. Esse alerta
+            // agora cobre principalmente o caso do Android < 11 (onde
+            // takeScreenshot() não existe) e o serviço de acessibilidade
+            // cair por algum motivo (Android matando em background, etc).
             if (ocrDownSinceMs == 0L) ocrDownSinceMs = now
             if (!ocrAlertFired && now - ocrDownSinceMs > OCR_DOWN_ALERT_MS) {
                 ocrAlertFired = true
@@ -594,7 +609,7 @@ class TripReaderService : AccessibilityService() {
         val now = System.currentTimeMillis()
         if (now - lastOcrMs < 600) return
         lastOcrMs = now
-        svc.captureAndRecognize({ lines, bmp ->
+        ScreenOcrService.captureAndRecognize({ lines, bmp ->
             if (lines.isEmpty()) {
                 bmp?.recycle()
                 if (System.currentTimeMillis() - lastOcrLogMs > 1500) {
@@ -2022,10 +2037,11 @@ class TripReaderService : AccessibilityService() {
                     ))
                 }
             }
-            // Toque abre o MainActivity já pedindo a permissão de captura de
-            // novo — mesmo fluxo do requestScreenCapture() do bridge JS.
+            // Toque abre o app — não tem mais "permissão de captura" pra
+            // re-pedir (isso acabou com o takeScreenshot()); se a causa for
+            // o AccessibilityService ter caído, abrir o app já é o
+            // suficiente pra investigar/reconectar.
             val tap = Intent(this, MainActivity::class.java).apply {
-                putExtra("re_request_capture", true)
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             }
             val pi = PendingIntent.getActivity(
@@ -2038,14 +2054,14 @@ class TripReaderService : AccessibilityService() {
                 @Suppress("DEPRECATION") Notification.Builder(this)
             }
             builder.setContentTitle("Leitura de tela parou")
-                .setContentText("A detecção de corridas da 99 está cega. Toque para reativar.")
+                .setContentText("A detecção de corridas da 99 está cega. Toque para abrir o MōB.")
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentIntent(pi)
                 .setAutoCancel(true)
             nm.notify(NOTIF_ID_OCR_ALERT, builder.build())
         } catch (_: Exception) {}
         try {
-            flashCard.speakAlert("Atenção: a leitura de tela do MōB parou. Toque na notificação para reativar.")
+            flashCard.speakAlert("Atenção: a leitura de tela do MōB parou. Toque na notificação para abrir o app.")
         } catch (_: Exception) {}
         sendToCloud("99", "ocr", "OCR_INATIVO", "OCR_ALERTA_DISPARADO", emptyList(), null, null, emptyList())
     }
@@ -2181,6 +2197,7 @@ class TripReaderService : AccessibilityService() {
     override fun onDestroy() {
         main.removeCallbacks(pollRunnable)
         flashCard.shutdownTts()
+        if (instance === this) instance = null
         super.onDestroy()
     }
 }

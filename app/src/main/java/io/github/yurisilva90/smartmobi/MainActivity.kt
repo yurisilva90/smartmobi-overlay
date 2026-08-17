@@ -100,23 +100,16 @@ class MainActivity : AppCompatActivity() {
             pendingScreen = screen
             maybeOpenPendingScreen()
         }
-        // Vigia do OCR (20/07/2026): toque na notificação de "leitura de
-        // tela parou" chega aqui com esse extra — reabre direto o pedido
-        // de permissão de captura, sem o motorista precisar caçar a tela
-        // de configuração do Flash.
-        if (intent.getBooleanExtra("re_request_capture", false)) {
-            launchScreenCaptureRequest()
-        }
     }
 
-    // Mesmo fluxo do requestScreenCapture() do bridge JS — extraído pra ser
-    // reutilizado pelo vigia do OCR (notificação) sem duplicar código.
-    private fun launchScreenCaptureRequest() {
-        try {
-            val mpm = getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
-            startActivityForResult(mpm.createScreenCaptureIntent(), 7301)
-        } catch (_: Exception) {}
-    }
+    // Bloqueador de Play Store, item 5 (16/08/2026): não pede mais
+    // permissão de MediaProjection nenhuma — o OCR do Flash usa
+    // takeScreenshot() do AccessibilityService, que já tem a permissão de
+    // acessibilidade que o app já pedia antes (nada novo pro motorista
+    // autorizar). Função mantida como no-op só pra não quebrar o bridge JS
+    // (requestScreenCapture) caso alguma versão antiga do PWA em cache
+    // ainda chame ela.
+    private fun launchScreenCaptureRequest() { /* não faz mais nada — ver comentário acima */ }
 
     private fun maybeOpenPendingScreen() {
         val screen = pendingScreen
@@ -380,24 +373,6 @@ class MainActivity : AppCompatActivity() {
     @Deprecated("") override fun onActivityResult(req: Int, result: Int, data: Intent?) {
         super.onActivityResult(req, result, data)
         if (req == REQ_FILE) { fileCallback?.onReceiveValue(if (data?.data != null) arrayOf(data.data!!) else arrayOf()); fileCallback = null }
-        if (req == 7301) {
-            if (result == RESULT_OK && data != null) {
-                ScreenOcrService.pendingResultCode = result
-                ScreenOcrService.pendingResultData = data
-                val it = Intent(this, ScreenOcrService::class.java)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(it) else startService(it)
-                // O serviço leva um instante pra terminar de configurar a
-                // gravação (onStartCommand roda de forma assíncrona). Sem
-                // essa espera, a tela checava "ativo?" cedo demais e mostrava
-                // "Pendente" mesmo já tendo funcionado — daí parecia que só
-                // "pegava" na segunda vez que a pessoa tocava em Ativar.
-                Handler(Looper.getMainLooper()).postDelayed({
-                    webView.evaluateJavascript("try{renderFlashPerms&&renderFlashPerms()}catch(e){}", null)
-                }, 700)
-            } else {
-                webView.evaluateJavascript("try{renderFlashPerms&&renderFlashPerms()}catch(e){}", null)
-            }
-        }
     }
     override fun onKeyDown(k: Int, e: KeyEvent): Boolean {
         if (k == KeyEvent.KEYCODE_BACK && webView.canGoBack()) { webView.goBack(); return true }

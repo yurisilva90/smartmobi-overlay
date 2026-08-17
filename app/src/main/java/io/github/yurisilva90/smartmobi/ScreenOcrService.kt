@@ -1,23 +1,10 @@
 package io.github.yurisilva90.smartmobi
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
-import android.app.Service
-import android.content.Context
-import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.PixelFormat
-import android.hardware.display.DisplayManager
-import android.hardware.display.VirtualDisplay
-import android.media.ImageReader
-import android.media.projection.MediaProjection
-import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler
-import android.os.IBinder
 import android.os.Looper
+import android.view.Display
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
@@ -27,121 +14,59 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 //
 // Existe porque a tela de oferta da 99 é desenhada como canvas (sem nós
 // de acessibilidade) — comprovado pelos logs DIAG_EMPTY. O caminho real
-// da informação é a imagem, então: MediaProjection → Bitmap → OCR.
+// da informação é a imagem, então: captura de tela → Bitmap → OCR.
+//
+// REESCRITO (16/08/2026, bloqueador de Play Store item 5): antes usava
+// MediaProjection (VirtualDisplay + ImageReader), que no Android 14+ pede
+// consentimento do usuário TODA sessão nova e mantém uma notificação
+// persistente extra enquanto ativo — péssimo de UX e mal visto em revisão
+// da Play Store. Agora usa AccessibilityService.takeScreenshot() (API 30+,
+// disponível desde Android 11): captura direto do buffer de hardware, sem
+// diálogo de consentimento por sessão e sem notificação própria — o
+// TripReaderService já É o AccessibilityService, então só precisa da
+// permissão de acessibilidade que o app já pede (mesma de sempre).
+//
+// TROCA REAL (documentada, não escondida): takeScreenshot() não existe
+// antes do Android 11. Em aparelhos Android 7-10 (API 24-29, dentro do
+// minSdk 24 do app), o Flash por OCR simplesmente não funciona mais — an-
+// tes funcionava neles via MediaProjection (Android 5+). Todo o resto do
+// app (GPS, captura via accessibility tree pra Uber/99 quando não é
+// canvas, etc.) continua funcionando normal nesses aparelhos; só o OCR de
+// tela (usado hoje só pra 99, que renderiza a oferta em canvas) fica
+// indisponível. Se isso for um problema real (base de usuários com
+// Android antigo), a solução seria voltar o MediaProjection só como
+// fallback nesses casos — não implementado agora, avaliar se aparecer
+// usuário reclamando.
 //
 // • Só captura quando o TripReaderService pede (oferta provável).
 // • OCR roda 100% no aparelho (sem internet), latência ~200-400ms.
-// • Nada de imagem sai do celular — só o TEXTO reconhecido é usado.
+// • Nada de imagem sai do celular — só o TEXTO reconhecido é usado (o
+//   Bitmap em si só é usado pra salvar o snapshot do Flash quando vira
+//   card, e isso já era assim antes — não mudou com essa reescrita).
 // ══════════════════════════════════════════════════════════════════
-class ScreenOcrService : Service() {
+object ScreenOcrService {
 
-    companion object {
-        @Volatile var instance: ScreenOcrService? = null
-        val isActive: Boolean get() = instance?.projection != null
+    // "Ativo" agora só depende de duas coisas: o Android suportar
+    // takeScreenshot() (API 30+) e o AccessibilityService estar rodando —
+    // não existe mais "sessão" separada pra iniciar/parar, então não tem
+    // pendingResultCode/pendingResultData nem serviço próprio.
+    val isActive: Boolean
+        get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && TripReaderService.instance != null
 
-        var pendingResultCode: Int = 0
-        var pendingResultData: Intent? = null
-
-        const val CHANNEL_ID = "mob_screen_ocr"
-        const val NOTIF_ID = 4102
-    }
-
-    private var projection: MediaProjection? = null
-    private var virtualDisplay: VirtualDisplay? = null
-    private var imageReader: ImageReader? = null
     private val main = Handler(Looper.getMainLooper())
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
     @Volatile private var busy = false
     @Volatile private var busySinceMs = 0L
-
-    override fun onBind(intent: Intent?): IBinder? = null
-
-    override fun onCreate() {
-        super.onCreate()
-        instance = this
-    }
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForegroundWithNotif()
-        val data = pendingResultData
-        val code = pendingResultCode
-        if (projection == null && data != null) {
-            try {
-                val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                projection = mpm.getMediaProjection(code, data)
-                projection?.registerCallback(object : MediaProjection.Callback() {
-                    override fun onStop() { teardownDisplay(); projection = null }
-                }, main)
-                setupDisplay()
-            } catch (e: Exception) { e.printStackTrace() }
-        }
-        return START_STICKY
-    }
-
-    private fun startForegroundWithNotif() {
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            nm.createNotificationChannel(
-                NotificationChannel(CHANNEL_ID, "MōB Flash — leitura de ofertas", NotificationManager.IMPORTANCE_MIN)
-            )
-        }
-        val pi = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE
-        )
-        val notif: Notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Notification.Builder(this, CHANNEL_ID)
-        } else {
-            @Suppress("DEPRECATION") Notification.Builder(this)
-        }.setContentTitle("MōB Flash ativo")
-            .setContentText("Lendo ofertas da 99/Uber")
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentIntent(pi)
-            .setOngoing(true)
-            .build()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIF_ID, notif, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
-        } else {
-            startForeground(NOTIF_ID, notif)
-        }
-    }
-
-    private fun setupDisplay() {
-        val dm = resources.displayMetrics
-        val w = dm.widthPixels
-        val h = dm.heightPixels
-        imageReader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
-        virtualDisplay = projection?.createVirtualDisplay(
-            "mob-flash-ocr", w, h, dm.densityDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader!!.surface, null, main
-        )
-    }
-
-    private fun teardownDisplay() {
-        try { virtualDisplay?.release() } catch (_: Exception) {}
-        try { imageReader?.close() } catch (_: Exception) {}
-        virtualDisplay = null
-        imageReader = null
-    }
 
     // Captura 1 frame e devolve as LINHAS de texto reconhecidas + o Bitmap
     // do mesmo frame (pra quem chamar decidir se salva o print — só quando
     // vira card, não em todo frame). Quem recebe o bitmap é responsável por
     // reciclar (bmp.recycle()) depois de usar.
     fun captureAndRecognize(onResult: (List<String>, Bitmap?) -> Unit, onError: ((String) -> Unit)? = null) {
-        // INVESTIGAÇÃO (13/07/2026, retomada em 23/07/2026 a pedido do Yuri):
-        // oferta chegando durante corrida ativa às vezes nunca é capturada,
-        // mesmo com print manual confirmando que a tela mostrava o card.
-        // Hipótese: o listener do ML Kit (sucesso OU erro) às vezes não
-        // dispara nenhum dos dois — "busy" fica travado e toda captura
-        // futura é IGNORADA EM SILÊNCIO, sem log nenhum (nem OCR_ERRO) — não
-        // dava pra saber se o app "estava cego" bem na hora do card ou se
-        // via e mesmo assim não reconhecia. Duas mudanças (23/07/2026):
-        // trava de segurança cai de 5s pra 1,5s — os frames normais
-        // completam bem mais rápido que isso, então 5s era tempo cego
-        // demais; e todo skip por estar ocupado agora chama onError
-        // (vira OCR_ERRO no log, já existente) — antes era invisível.
+        // Mesma trava de segurança contra listener que nunca dispara
+        // (confirmado em log real, 23/07/2026) — mantida igual à versão
+        // anterior, só que agora protegendo a chamada de takeScreenshot()
+        // em vez do processamento do ImageReader.
         if (busy) {
             if (System.currentTimeMillis() - busySinceMs > 1500) {
                 busy = false
@@ -150,43 +75,64 @@ class ScreenOcrService : Service() {
                 return
             }
         }
-        val reader = imageReader ?: run { onError?.invoke("sem imageReader"); return }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            onError?.invoke("android < 11, takeScreenshot indisponível")
+            return
+        }
+        val svc = TripReaderService.instance ?: run { onError?.invoke("accessibility service não conectado"); return }
         busy = true
         busySinceMs = System.currentTimeMillis()
-        main.post {
-            var bmp: Bitmap? = null
-            try {
-                val img = reader.acquireLatestImage()
-                if (img == null) { busy = false; onError?.invoke("sem frame disponivel"); return@post }
-                val plane = img.planes[0]
-                val rowStride = plane.rowStride
-                val pixelStride = plane.pixelStride
-                val rowPadding = rowStride - pixelStride * img.width
-                bmp = Bitmap.createBitmap(
-                    img.width + rowPadding / pixelStride, img.height, Bitmap.Config.ARGB_8888
-                )
-                bmp.copyPixelsFromBuffer(plane.buffer)
-                img.close()
-            } catch (e: Exception) {
-                busy = false
-                onError?.invoke("captura: ${e.message}")
-                return@post
-            }
-            val input = InputImage.fromBitmap(bmp!!, 0)
-            recognizer.process(input)
-                .addOnSuccessListener { result ->
-                    val lines = ArrayList<String>()
-                    for (block in result.textBlocks) {
-                        for (line in block.lines) {
-                            val t = line.text.trim()
-                            if (t.isNotEmpty()) lines.add(normalizeOcrText(t))
+        try {
+            svc.takeScreenshot(
+                Display.DEFAULT_DISPLAY,
+                svc.mainExecutor,
+                object : android.accessibilityservice.AccessibilityService.TakeScreenshotCallback {
+                    override fun onSuccess(result: android.accessibilityservice.AccessibilityService.ScreenshotResult) {
+                        var bmp: Bitmap? = null
+                        try {
+                            val hb = result.hardwareBuffer
+                            val wrapped = Bitmap.wrapHardwareBuffer(hb, result.colorSpace)
+                            // ML Kit InputImage.fromBitmap não trabalha bem
+                            // com Bitmap em config HARDWARE — copia pra
+                            // ARGB_8888 (software) antes de processar.
+                            bmp = wrapped?.copy(Bitmap.Config.ARGB_8888, false)
+                            wrapped?.recycle()
+                            hb.close()
+                        } catch (e: Exception) {
+                            busy = false
+                            onError?.invoke("wrap bitmap: ${e.message}")
+                            return
                         }
+                        if (bmp == null) { busy = false; onError?.invoke("bitmap nulo"); return }
+                        runOcr(bmp, onResult, onError)
                     }
-                    busy = false
-                    onResult(lines, bmp)
+                    override fun onFailure(errorCode: Int) {
+                        busy = false
+                        onError?.invoke("takeScreenshot erro=$errorCode")
+                    }
                 }
-                .addOnFailureListener { e -> busy = false; bmp?.recycle(); onError?.invoke("mlkit: ${e.message}") }
+            )
+        } catch (e: Exception) {
+            busy = false
+            onError?.invoke("takeScreenshot: ${e.message}")
         }
+    }
+
+    private fun runOcr(bmp: Bitmap, onResult: (List<String>, Bitmap?) -> Unit, onError: ((String) -> Unit)?) {
+        val input = InputImage.fromBitmap(bmp, 0)
+        recognizer.process(input)
+            .addOnSuccessListener { result ->
+                val lines = ArrayList<String>()
+                for (block in result.textBlocks) {
+                    for (line in block.lines) {
+                        val t = line.text.trim()
+                        if (t.isNotEmpty()) lines.add(normalizeOcrText(t))
+                    }
+                }
+                busy = false
+                onResult(lines, bmp)
+            }
+            .addOnFailureListener { e -> busy = false; bmp.recycle(); onError?.invoke("mlkit: ${e.message}") }
     }
 
     // ── Correção de erros sistemáticos de OCR ──────────────────────────
@@ -208,13 +154,5 @@ class ScreenOcrService : Service() {
         out = rsMoneyRe.replace(out) { "R$" }
         out = servicoRe.replace(out) { "serviço" }
         return out
-    }
-
-    override fun onDestroy() {
-        teardownDisplay()
-        try { projection?.stop() } catch (_: Exception) {}
-        projection = null
-        instance = null
-        super.onDestroy()
     }
 }
