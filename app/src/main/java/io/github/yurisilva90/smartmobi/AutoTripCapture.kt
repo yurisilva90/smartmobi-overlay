@@ -440,8 +440,16 @@ object AutoTripCapture {
 
                 val realKmPickup = (b.tripStartKm - b.pickupStartKm).coerceAtLeast(0.0)
                 val realKmTrip = (b.tripEndKm - b.tripStartKm).coerceAtLeast(0.0)
+                // MUDOU (16/08/2026, pedido do Yuri): antes virava "confirmada"
+                // só por ter fechado o ciclo aceite→embarque→destino com um
+                // valor — mas esse valor é só o da OFERTA, nunca visto o
+                // histórico real da plataforma (que pode ter gorjeta,
+                // correção de tarifa, etc. que a oferta não mostra). Agora
+                // "confirmada" só nasce depois que o vídeo do histórico
+                // confirma/corrige o valor (ver confirmImport() no PWA) —
+                // aqui o ciclo completo vira "estimada".
                 val status = if (b.offerValue != null && b.tripStartedAt > 0 && b.tripEndedAt > 0)
-                    "confirmada" else "capturada"
+                    "estimada" else "capturada"
 
                 // Já estamos numa thread em background (isDaemon) — pode
                 // bloquear aqui sem travar a leitura de tela. Endereço real,
