@@ -107,7 +107,12 @@ class TripReaderService : AccessibilityService() {
         private const val TRIP_STATE_DEBOUNCE = 3
         private const val TRIP_STATE_DEBOUNCE_WINDOW = 5
         private val tripSubStateHistory = ArrayDeque<String>()
-        private var confirmedTripSubState = "online"
+        // Não é mais "private" (16/08/2026) — ProactiveAlert.kt precisa
+        // saber o estado atual (online/buscar/corrida) pra decidir se pode
+        // mostrar um alerta proativo e com qual tempo de espera (10s
+        // corrida / 5s online). Nada na lógica de detecção mudou, só ficou
+        // legível de fora.
+        var confirmedTripSubState = "online"
     }
 
     private val fmt = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)

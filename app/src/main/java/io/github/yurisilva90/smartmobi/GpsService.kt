@@ -337,7 +337,21 @@ class GpsService : Service(), LocationListener {
             if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER))
                 locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 10000L, 20f, this)
         } catch (e: SecurityException) { e.printStackTrace() }
-        alertHandler.postDelayed(checkRunnable, 5 * 60 * 1000L)
+        // DESATIVADO (16/08/2026, confirmado pelo Yuri): esse loop
+        // (checkRunnable → verificarEDispararAlerta) era um sistema de
+        // alerta proativo mais antigo, de antes da conversa que desenhou o
+        // sistema novo — usava NOTIFICAÇÃO do sistema (não card overlay),
+        // lista de locais hardcoded só na cidade do Rio (LOCAIS acima), e
+        // o conjunto antigo de 7 tipos (Trânsito/Demanda/Fila/Fiscalização/
+        // Dinâmico). Tudo isso conflita com o que foi aprovado agora: sem
+        // notificação, locais via venue_cache (OpenStreetMap, Brasil
+        // inteiro), só Fiscalização+Lotação no proativo, raio de 100m,
+        // distinção corrida/online. Substituído por ProactiveAlert.kt — as
+        // funções antigas (verificarEDispararAlerta, escolherCenario, etc.)
+        // ficam definidas mas mortas, não removidas, pra manter o
+        // histórico de como funcionava antes.
+        // alertHandler.postDelayed(checkRunnable, 5 * 60 * 1000L)
+        ProactiveAlert.startLoop(this)
         scheduleMidnightCheck()
         return START_STICKY
     }
@@ -533,6 +547,7 @@ class GpsService : Service(), LocationListener {
         // nas prefs para o restart do START_STICKY retomar a jornada.
         isRunning = false; alertHandler.removeCallbacks(checkRunnable)
         midnightHandler.removeCallbacks(midnightRunnable)
+        ProactiveAlert.stopLoop()
         try { locationManager.removeUpdates(this) } catch (e: Exception) {}
         super.onDestroy()
     }
