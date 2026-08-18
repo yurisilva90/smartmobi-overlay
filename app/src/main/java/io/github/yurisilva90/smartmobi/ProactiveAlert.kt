@@ -110,35 +110,38 @@ object ProactiveAlert {
                 put("p_lat", lat); put("p_lng", lng)
             })
 
+            // CORRIGIDO (16/08/2026, o Yuri percebeu o erro): confirmação
+            // de relato de outro motorista tinha ficado amarrada a
+            // precisar de um local pré-setado por perto — errado, tem que
+            // disparar perto do RELATO, independente de ter
+            // aeroporto/shopping ali ou não. Checa relato PRIMEIRO, com
+            // anti-spam próprio (can_prompt_report, chaveado por
+            // report_id, não venue_id).
+            val nearbyReport = findNearbyActiveReport(authToken, lat, lng)
+            if (nearbyReport != null) {
+                val allowedReport = canPromptReport(authToken, userId, nearbyReport.id)
+                if (allowedReport) {
+                    handler.post { showConfirmacaoCard(nearbyReport, state, userId, authToken, null) }
+                    logPrompt(authToken, userId, null, nearbyReport.id, "confirmacao_fiscalizacao", state)
+                    return
+                }
+                // Já perguntou sobre esse relato recentemente — não
+                // bloqueia a checagem de local pré-setado por causa disso,
+                // só não confirma de novo. Segue pro resto normal.
+            }
+
             val venue = findNearestVenue(authToken, lat, lng) ?: return
-            // LIMITAÇÃO CONHECIDA (16/08/2026): confirmação de relato de
-            // outro motorista só dispara quando TAMBÉM tem um local
-            // pré-setado por perto — o anti-spam (can_prompt_venue) é
-            // amarrado a venue_id, então não tem como controlar frequência
-            // de confirmação numa rua qualquer sem local nenhum ali perto.
-            // Cobre o caso mais importante (confirmar fiscalização em
-            // aeroporto/shopping, onde vários motoristas passam repetido),
-            // mas não confirma blitz relatada numa esquina qualquer sem
-            // local por perto. Se isso for importante, precisa de uma
-            // segunda chave de anti-spam (por exemplo, célula de grade
-            // geográfica em vez de venue_id) — não implementado agora.
             val allowed = canPromptVenue(authToken, userId, venue.id)
             if (!allowed) return
 
-            // Confirmação de outro motorista tem prioridade sobre pergunta
-            // fresca — se já tem relato ativo por perto, confirma em vez
-            // de perguntar de novo do zero.
-            val nearbyReport = findNearbyActiveReport(authToken, lat, lng)
             handler.post {
-                if (nearbyReport != null) {
-                    showConfirmacaoCard(nearbyReport, state, userId, authToken, venue.id)
-                } else if (venue.category in COMBO_CATEGORIES) {
+                if (venue.category in COMBO_CATEGORIES) {
                     showComboCard(venue, state, userId, authToken)
                 } else {
                     showLotacaoCard(venue, state, userId, authToken)
                 }
             }
-            logPrompt(authToken, userId, venue.id, if (nearbyReport != null) "confirmacao_fiscalizacao" else if (venue.category in COMBO_CATEGORIES) "combo" else "lotacao", state)
+            logPrompt(authToken, userId, venue.id, null, if (venue.category in COMBO_CATEGORIES) "combo" else "lotacao", state)
         } catch (_: Exception) {
         } finally {
             busy = false
@@ -207,11 +210,22 @@ object ProactiveAlert {
         return res == true
     }
 
-    private fun logPrompt(authToken: String, userId: String, venueId: String, type: String, state: String) {
+    private fun canPromptReport(authToken: String, userId: String, reportId: String): Boolean {
+        val res = rpcCall(authToken, "can_prompt_report", JSONObject().apply {
+            put("p_user_id", userId); put("p_report_id", reportId)
+        })
+        return res == true
+    }
+
+    // venueId OU reportId — só um dos dois, nunca os dois (confirmação de
+    // relato não depende de local pré-setado, ver correção 16/08/2026).
+    private fun logPrompt(authToken: String, userId: String, venueId: String?, reportId: String?, type: String, state: String) {
         thread(isDaemon = true) {
             try {
                 val body = JSONObject().apply {
-                    put("user_id", userId); put("venue_id", venueId)
+                    put("user_id", userId)
+                    put("venue_id", venueId ?: JSONObject.NULL)
+                    put("report_id", reportId ?: JSONObject.NULL)
                     put("prompt_type", type); put("driver_state", state)
                 }
                 postJson(authToken, "${TripReaderService.SUPABASE_URL}/rest/v1/venue_prompt_log", body)
@@ -286,11 +300,12 @@ object ProactiveAlert {
         }
     }
 
-    private fun markAnswered(authToken: String, userId: String, venueId: String) {
+    private fun markAnswered(authToken: String, userId: String, venueId: String? = null, reportId: String? = null) {
         thread(isDaemon = true) {
             try {
+                val filter = if (venueId != null) "venue_id=eq.$venueId" else "report_id=eq.$reportId"
                 val url = "${TripReaderService.SUPABASE_URL}/rest/v1/venue_prompt_log?" +
-                    "user_id=eq.$userId&venue_id=eq.$venueId&answered=eq.false&order=asked_at.desc&limit=1"
+                    "user_id=eq.$userId&$filter&answered=eq.false&order=asked_at.desc&limit=1"
                 val conn = URL(url).openConnection() as HttpURLConnection
                 conn.requestMethod = "PATCH"; conn.doOutput = true
                 conn.setRequestProperty("Content-Type", "application/json")
@@ -529,7 +544,9 @@ object ProactiveAlert {
     }
 
     // ── Card 4/5: confirmação — repete exatamente o que foi relatado ──
-    private fun showConfirmacaoCard(report: NearbyReport, state: String, userId: String, authToken: String, venueId: String) {
+    // venueId é opcional agora (16/08/2026) — confirmação não depende mais
+    // de local pré-setado, usa report.id pra controlar anti-spam.
+    private fun showConfirmacaoCard(report: NearbyReport, state: String, userId: String, authToken: String, venueId: String?) {
         val ctx = appCtx ?: return
         val isAlerta = report.type == "risco"
         val icColor = if (isAlerta) "#DC2626" else "#2563EB"
@@ -546,11 +563,11 @@ object ProactiveAlert {
                 publish(authToken, userId, report.type, GpsService.lastLat, GpsService.lastLng,
                     report.address, report.paramValue, report.paramDetail, null,
                     if (isAlerta) 90 else 60)
-                markAnswered(authToken, userId, venueId)
+                markAnswered(authToken, userId, venueId, report.id)
                 forceHide()
             }),
             Triple(if (isAlerta) "Já foi liberado" else "Já saiu", "#16A34A", {
-                markAnswered(authToken, userId, venueId)
+                markAnswered(authToken, userId, venueId, report.id)
                 forceHide()
             })
         ), 2))
