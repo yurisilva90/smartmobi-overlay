@@ -1029,7 +1029,7 @@ class TripReaderService : AccessibilityService() {
         return 6371.0 * 2 * Math.asin(Math.sqrt(a))
     }
 
-    private fun postDynamicAlert(dinamico: Double) {
+    private fun postDynamicAlert(dinamico: Double, plat: String, multiplicador: Double?) {
         thread(isDaemon = true) {
             try {
                 val prefs = getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
@@ -1044,11 +1044,22 @@ class TripReaderService : AccessibilityService() {
                 val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
                     .apply { timeZone = TimeZone.getTimeZone("UTC") }
 
+                // PEDIDO (19/08/2026, Yuri): card do painel Agora do Informes
+                // precisa identificar Uber x 99 separadamente. Reaproveita
+                // param_value (plataforma: "uber"/"99") e param_detail
+                // (multiplicador da 99, ex "1,3x" — Uber não expõe esse
+                // número, só o valor em R$) em vez de criar coluna nova.
+                val platLower = plat.lowercase(Locale.US)
+                val multLabel = if (platLower == "99" && multiplicador != null && multiplicador > 0)
+                    String.format(Locale.US, "%.1fx", multiplicador).replace('.', ',') else null
+
                 val body = JSONObject().apply {
                     put("user_id", userId)
                     put("type", "dinamico")
                     put("body", "Dinâmico " + rangeLabel)
                     put("source", "system")
+                    put("param_value", platLower)
+                    put("param_detail", multLabel ?: JSONObject.NULL)
                     if (lat != 0.0 || lng != 0.0) { put("lat", lat); put("lng", lng) }
                     put("address", address ?: JSONObject.NULL)
                     put("expires_at", sdf.format(Date(System.currentTimeMillis() + 30 * 60000L)))
@@ -1166,7 +1177,7 @@ class TripReaderService : AccessibilityService() {
             if (tier != lastTier || movedFar) {
                 lastDinamicoTierByPlat[plat] = tier
                 lastDinamicoAlertLatLngByPlat[plat] = doubleArrayOf(GpsService.lastLat, GpsService.lastLng)
-                postDynamicAlert(offer.dinamico)
+                postDynamicAlert(offer.dinamico, plat, offer.multiplicador)
             }
         }
 
