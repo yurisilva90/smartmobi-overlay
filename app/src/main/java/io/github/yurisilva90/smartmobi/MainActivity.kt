@@ -43,6 +43,7 @@ class MainActivity : AppCompatActivity() {
         const val URL      = "https://yurisilva90.github.io/mob/"
         const val REQ_PERM = 100
         const val REQ_FILE = 101
+        const val REQ_SCREEN_CAPTURE = 7301
         var floatingWidget: FloatingWidget? = null
         var instance: MainActivity? = null
     }
@@ -103,13 +104,30 @@ class MainActivity : AppCompatActivity() {
             pendingScreen = screen
             maybeOpenPendingScreen()
         }
+        if (intent.getBooleanExtra("re_request_capture", false)) {
+            launchScreenCaptureRequest()
+        }
     }
 
-    // Bloqueador de Play Store, item 5 (16/08/2026): não pede mais
-    // permissão de MediaProjection nenhuma — o OCR do Flash usa
-    // takeScreenshot() do AccessibilityService. A capacidade de screenshot
-    // é declarada em res/xml/trip_reader_config.xml.
-    private fun launchScreenCaptureRequest() { /* não há permissão separada para pedir */ }
+    // Android 11+ usa AccessibilityService.takeScreenshot() e não precisa de
+    // autorização separada. Android 10 ou inferior não possui essa API, então
+    // reabre o fluxo antigo de MediaProjection apenas nesses aparelhos.
+    private fun launchScreenCaptureRequest() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            refreshNativePermissionUi()
+            return
+        }
+        try {
+            val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+            startActivityForResult(mpm.createScreenCaptureIntent(), REQ_SCREEN_CAPTURE)
+        } catch (e: Exception) {
+            Toast.makeText(
+                this,
+                "Não foi possível abrir a autorização de leitura da tela.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
 
     private fun maybeOpenPendingScreen() {
         val screen = pendingScreen
@@ -407,12 +425,34 @@ class MainActivity : AppCompatActivity() {
 
     @Deprecated("") override fun onActivityResult(req: Int, result: Int, data: Intent?) {
         super.onActivityResult(req, result, data)
-        if (req == REQ_FILE) { fileCallback?.onReceiveValue(if (data?.data != null) arrayOf(data.data!!) else arrayOf()); fileCallback = null }
+        if (req == REQ_FILE) {
+            fileCallback?.onReceiveValue(if (data?.data != null) arrayOf(data.data!!) else arrayOf())
+            fileCallback = null
+        }
+        if (req == REQ_SCREEN_CAPTURE && Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            if (result == RESULT_OK && data != null) {
+                LegacyScreenOcrService.pendingResultCode = result
+                LegacyScreenOcrService.pendingResultData = data
+                val serviceIntent = Intent(this, LegacyScreenOcrService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(serviceIntent)
+                } else {
+                    startService(serviceIntent)
+                }
+                Handler(Looper.getMainLooper()).postDelayed({
+                    refreshNativePermissionUi()
+                }, 700)
+            } else {
+                refreshNativePermissionUi()
+            }
+        }
     }
+
     override fun onKeyDown(k: Int, e: KeyEvent): Boolean {
         if (k == KeyEvent.KEYCODE_BACK && webView.canGoBack()) { webView.goBack(); return true }
         return super.onKeyDown(k, e)
     }
+
     override fun onResume() {
         super.onResume()
         instance = this
@@ -429,6 +469,7 @@ class MainActivity : AppCompatActivity() {
             )
         }
     }
+
     override fun onPause()   { webView.onPause(); super.onPause() }
     override fun onDestroy() { instance = null; webView.destroy(); super.onDestroy() }
 }
