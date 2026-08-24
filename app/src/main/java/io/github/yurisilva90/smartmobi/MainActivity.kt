@@ -1,7 +1,9 @@
 package io.github.yurisilva90.smartmobi
 
 import android.Manifest
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -16,6 +18,7 @@ import android.provider.Settings
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
+import android.view.accessibility.AccessibilityManager
 import android.webkit.*
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
@@ -104,12 +107,9 @@ class MainActivity : AppCompatActivity() {
 
     // Bloqueador de Play Store, item 5 (16/08/2026): não pede mais
     // permissão de MediaProjection nenhuma — o OCR do Flash usa
-    // takeScreenshot() do AccessibilityService, que já tem a permissão de
-    // acessibilidade que o app já pedia antes (nada novo pro motorista
-    // autorizar). Função mantida como no-op só pra não quebrar o bridge JS
-    // (requestScreenCapture) caso alguma versão antiga do PWA em cache
-    // ainda chame ela.
-    private fun launchScreenCaptureRequest() { /* não faz mais nada — ver comentário acima */ }
+    // takeScreenshot() do AccessibilityService. A capacidade de screenshot
+    // é declarada em res/xml/trip_reader_config.xml.
+    private fun launchScreenCaptureRequest() { /* não há permissão separada para pedir */ }
 
     private fun maybeOpenPendingScreen() {
         val screen = pendingScreen
@@ -180,6 +180,37 @@ class MainActivity : AppCompatActivity() {
         if (needed.isNotEmpty()) ActivityCompat.requestPermissions(this, needed.toTypedArray(), REQ_PERM)
     }
 
+    /**
+     * Consulta o AccessibilityManager em vez de procurar texto bruto em
+     * Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES. Em alguns aparelhos o nome do
+     * componente é serializado de forma diferente e a comparação textual deixava o
+     * MōB mostrando "Ativar" mesmo com o serviço ligado no Android.
+     */
+    private fun isTripReaderAccessibilityEnabled(): Boolean {
+        return try {
+            val manager = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
+            manager.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK).any { info ->
+                val service = info.resolveInfo?.serviceInfo ?: return@any false
+                val className = if (service.name.startsWith(".")) service.packageName + service.name else service.name
+                service.packageName == packageName && className == TripReaderService::class.java.name
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun refreshNativePermissionUi() {
+        if (!webReady) return
+        val js = "if(typeof renderFlashPerms==='function') renderFlashPerms();"
+        webView.evaluateJavascript(js, null)
+        // Alguns aparelhos religam/reconectam o AccessibilityService alguns
+        // milissegundos depois do retorno das Configurações. Uma segunda leitura evita
+        // mostrar estado antigo nesse intervalo.
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (webReady) webView.evaluateJavascript(js, null)
+        }, 600)
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebView() {
         webView.settings.apply {
@@ -199,8 +230,8 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("smartmobi_session", android.content.Context.MODE_PRIVATE)
         webView.addJavascriptInterface(object {
             @JavascriptInterface fun isNativeApp() = true
-            @JavascriptInterface fun getVersion()  = "1.5.0"
-            @JavascriptInterface fun hasOverlay()  = Settings.canDrawOverlays(this@MainActivity)
+            @JavascriptInterface fun getVersion() = BuildConfig.VERSION_NAME
+            @JavascriptInterface fun hasOverlay() = Settings.canDrawOverlays(this@MainActivity)
             @JavascriptInterface fun openOverlaySettings() {
                 try {
                     startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -268,7 +299,6 @@ class MainActivity : AppCompatActivity() {
                 GpsService.saveUserCredentials(this@MainActivity, userId, accessToken)
             }
 
-
             @JavascriptInterface fun startGpsService() {
                 val i = Intent(this@MainActivity, GpsService::class.java)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
@@ -298,24 +328,28 @@ class MainActivity : AppCompatActivity() {
                 } catch (_: Exception) {}
             }
 
-            // Abre a tela de Acessibilidade do Android pro usuário ativar o MōB Flash
+            // Abre a tela de Acessibilidade do Android. O sistema exige que o usuário
+            // ligue/desligue o serviço manualmente; o app não pode fazer isso sozinho.
             @JavascriptInterface fun openA11ySettings() {
-                try {
-                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    })
-                } catch (_: Exception) {}
+                runOnUiThread {
+                    try {
+                        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    } catch (e: Exception) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Não foi possível abrir as configurações de Acessibilidade.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
             }
 
-            // Status do MōB Flash — permite a tela de configuração mostrar o que falta
-            @JavascriptInterface fun isA11yEnabled(): Boolean {
-                return try {
-                    val enabledServices = Settings.Secure.getString(
-                        contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-                    ) ?: ""
-                    enabledServices.contains("${packageName}/${packageName}.TripReaderService")
-                } catch (_: Exception) { false }
-            }
+            // Status configurado no Android.
+            @JavascriptInterface fun isA11yEnabled(): Boolean = isTripReaderAccessibilityEnabled()
+
+            // Status de execução real: permite distinguir "habilitado nas configurações"
+            // de "serviço conectado neste processo" durante diagnóstico.
+            @JavascriptInterface fun isA11yConnected(): Boolean = TripReaderService.instance != null
 
             // Salva a configuração do MōB Flash (lida pelo TripReaderService via SharedPreferences)
             // configJson vem pronto do JS: {"enabled":..,"custoPorKm":..,"kpis":{...}}
@@ -355,9 +389,10 @@ class MainActivity : AppCompatActivity() {
             }
             override fun onPageFinished(v: WebView, url: String) {
                 webView.evaluateJavascript(
-                    "window._smartmobiNative=true;window._nativeVersion='1.4.9';" +
+                    "window._smartmobiNative=true;window._nativeVersion='${BuildConfig.VERSION_NAME}';" +
                     "if(typeof onNativeReady==='function')onNativeReady();", null)
                 webReady = true; maybeHideSplash()
+                refreshNativePermissionUi()
                 // Pequeno atraso pra dar tempo do login assincrono (Supabase) resolver
                 // antes de navegar — senão a navegacao pode disparar ainda na tela de login.
                 Handler(Looper.getMainLooper()).postDelayed({ maybeOpenPendingScreen() }, 900)
@@ -383,6 +418,7 @@ class MainActivity : AppCompatActivity() {
         instance = this
         webView.onResume()
         maybeOpenPendingScreen()
+        refreshNativePermissionUi()
         // Sincroniza KM nativo com o web app ao voltar ao foreground
         if (GpsService.isRunning) {
             val km = GpsService.totalKm
@@ -396,5 +432,3 @@ class MainActivity : AppCompatActivity() {
     override fun onPause()   { webView.onPause(); super.onPause() }
     override fun onDestroy() { instance = null; webView.destroy(); super.onDestroy() }
 }
-
-
