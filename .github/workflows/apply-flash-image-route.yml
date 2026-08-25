@@ -17,7 +17,9 @@ jobs:
           distribution: temurin
           java-version: '17'
       - name: Apply patch
-        run: python3 apply_flash_image_route.py
+        run: |
+          python3 apply_flash_image_route.py
+          python3 fix_flash_call.py
       - name: Compile
         run: chmod +x gradlew && ./gradlew assembleDebug --no-daemon
       - name: Commit validated patch
@@ -35,6 +37,7 @@ jobs:
             .github/workflows/apply-route-notification-v1313.yml \
             _notif_route_snippet.txt \
             apply_flash_image_route.py \
+            fix_flash_call.py \
             permissions-v112.py \
             tools/finish_flash_notification.py \
             tools/patch_route_notification_v1313.py
