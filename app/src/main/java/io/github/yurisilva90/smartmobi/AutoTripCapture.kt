@@ -102,13 +102,17 @@ object AutoTripCapture {
     // ponto de partida do registro assim que a corrida é aceita (online→buscar).
     private val lastOfferByPlat = HashMap<String, OfferSnapshot>()
 
-    @Volatile private var buffer: Buffer? = null
+    // v1.3.21 — captura automática 100% separada por plataforma.
+    // Uber e 99 podem ficar ativos ao mesmo tempo; uma transição da Uber nunca
+    // pode apagar ou substituir a corrida em andamento da 99 (e vice-versa).
+    private val buffersByPlat = HashMap<String, Buffer>()
 
     // Snapshot leve para a tela Jornada. Não grava nada e não altera a
     // máquina de estados: apenas expõe os marcos que o AutoTripCapture já
     // mantém em memória, junto com o km autoritativo do GpsService.
     fun liveStateJson(): String {
-        val b = buffer
+        val b = buffersByPlat.values.firstOrNull { it.tripStartedAt > 0L }
+            ?: buffersByPlat.values.firstOrNull()
         return JSONObject().apply {
             put("active", b != null)
             put("state", TripReaderService.confirmedTripSubState)
@@ -266,7 +270,7 @@ object AutoTripCapture {
     // tela de navegação, por exemplo, substitui o endereço mais genérico da
     // oferta.
     fun updateAddresses(plat: String, origin: String?, dest: String?) {
-        val b = buffer ?: return
+        val b = buffersByPlat[plat] ?: return
         if (b.platform != plat) return
         // CORRIGIDO (24/07/2026, confirmado em varredura de dado real — 7
         // corridas num único dia com origem e destino IDÊNTICOS): a leitura
@@ -298,19 +302,19 @@ object AutoTripCapture {
     // Marca a chegada física ao passageiro apenas quando existe uma corrida em Buscar.
     // É one-shot: releituras/notificações repetidas nunca reiniciam o cronômetro.
     fun markPickupArrived(plat: String, atMs: Long = System.currentTimeMillis()) {
-        val b = buffer ?: return
+        val b = buffersByPlat[plat] ?: return
         if (b.platform != plat || b.tripStartedAt > 0L || b.pickupArrivedAt > 0L) return
         b.pickupArrivedAt = atMs
     }
 
     fun setPassengerNameIfEmpty(plat: String, name: String?) {
-        val b = buffer ?: return
+        val b = buffersByPlat[plat] ?: return
         if (b.platform != plat) return
         if (b.passengerName.isNullOrBlank() && !name.isNullOrBlank()) b.passengerName = name.trim()
     }
 
     fun markCash(plat: String) {
-        val b = buffer ?: return
+        val b = buffersByPlat[plat] ?: return
         if (b.platform != plat) return
         b.dinheiro = true
     }
@@ -330,7 +334,7 @@ object AutoTripCapture {
             // que um "buscar" nasceu, essa oferta já cumpriu seu papel (ou
             // expirou); nunca deve poder grudar numa corrida futura.
             lastOfferByPlat.remove(plat)
-            buffer = Buffer(
+            buffersByPlat[plat] = Buffer(
                 platform = plat,
                 offerValue = offer?.value,
                 offerDinamico = offer?.dinamico ?: 0.0,
@@ -356,7 +360,7 @@ object AutoTripCapture {
                 startBuffer(km, alsoStartTrip = false, maxAgeMs = OFFER_MAX_AGE_NORMAL_MS)
             }
             prev == "buscar" && next == "corrida" -> {
-                val b = buffer
+                val b = buffersByPlat[plat]
                 if (b != null && b.platform == plat) {
                     b.tripStartedAt = now
                     b.tripStartKm = km
@@ -367,13 +371,13 @@ object AutoTripCapture {
                     // "buscar" (debounce pode ter engolido o passo intermediário).
                     // Ainda é um aceite normal (não sobreposição) — janela curta.
                     startBuffer(km, alsoStartTrip = true, maxAgeMs = OFFER_MAX_AGE_NORMAL_MS)
-                    buffer?.gpsOriginLat = GpsService.lastLat
-                    buffer?.gpsOriginLng = GpsService.lastLng
+                    buffersByPlat[plat]?.gpsOriginLat = GpsService.lastLat
+                    buffersByPlat[plat]?.gpsOriginLng = GpsService.lastLng
                 }
             }
             prev == "corrida" && next == "online" -> {
-                val b = buffer
-                buffer = null
+                val b = buffersByPlat[plat]
+                buffersByPlat.remove(plat)
                 if (b != null && b.platform == plat) {
                     b.tripEndedAt = now
                     b.tripEndKm = km
@@ -384,10 +388,10 @@ object AutoTripCapture {
             }
             prev == "buscar" && next == "online" -> {
                 // Cancelado antes de embarcar — não é uma corrida, descarta.
-                buffer = null
+                buffersByPlat.remove(plat)
             }
             prev == "corrida" && next == "buscar" -> {
-                val b = buffer
+                val b = buffersByPlat[plat]
                 val elapsedSinceStart = if (b != null && b.tripStartedAt > 0) now - b.tripStartedAt else Long.MAX_VALUE
                 if (b != null && b.platform == plat && elapsedSinceStart < MIN_RIDE_BEFORE_OVERLAP_MS) {
                     // Ruído — trata como se a transição nunca tivesse

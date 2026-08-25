@@ -411,7 +411,14 @@ class TripReaderService : AccessibilityService() {
     //   Keep a short grace window because Flutter can replace/remove accessible
     //   nodes slightly before the visual offer disappears.
     private var nn99OfferOcrUntilMs = 0L
-    private val NN99_OCR_GATE_HOLD_MS = 5_000L
+    private var nn99OcrBurstUntilMs = 0L
+    private var last99IdleProbeMs = 0L
+    private val NN99_OCR_GATE_HOLD_MS = 7_000L
+    private val NN99_OCR_BURST_MS = 8_000L
+    // Mesmo sem marcador acessível, faz uma sondagem leve. Assim uma oferta
+    // Flutter que não publique o gatilho ainda tem várias chances de ser vista,
+    // sem manter ML Kit rodando a cada 600ms o tempo inteiro.
+    private val NN99_OCR_IDLE_PROBE_MS = 2_200L
 
     private fun nodeHas99OfferMarker(node: AccessibilityNodeInfo?, depth: Int = 0): Boolean {
         node ?: return false
@@ -447,10 +454,18 @@ class TripReaderService : AccessibilityService() {
         if (signal) nn99OfferOcrUntilMs = System.currentTimeMillis() + NN99_OCR_GATE_HOLD_MS
     }
 
-    private fun nn99OfferOcrGateActive(): Boolean =
-        System.currentTimeMillis() <= nn99OfferOcrUntilMs
+    private fun nn99OfferOcrGateActive(): Boolean {
+        val now = System.currentTimeMillis()
+        return now <= nn99OfferOcrUntilMs || now <= nn99OcrBurstUntilMs
+    }
+
+    private fun arm99OcrBurst() {
+        nn99OcrBurstUntilMs = System.currentTimeMillis() + NN99_OCR_BURST_MS
+    }
 
     private fun requestPriorityOcr(plat: String) {
+        if (plat == "UBER") return
+        if (plat == "99") arm99OcrBurst()
         lastOcrMs = 0L
         requestOcrPass(plat)
     }
@@ -775,7 +790,11 @@ class TripReaderService : AccessibilityService() {
         // 99 only spends OCR while its accessible offer-state signal is alive.
         if (plat == "99") {
             refresh99OfferOcrGate()
-            if (!nn99OfferOcrGateActive()) return
+            if (!nn99OfferOcrGateActive()) {
+                val probeNow = System.currentTimeMillis()
+                if (probeNow - last99IdleProbeMs < NN99_OCR_IDLE_PROBE_MS) return
+                last99IdleProbeMs = probeNow
+            }
         }
         if (!ScreenOcrService.isActive) {
             // Sem isso não dá pra saber se o problema é permissão ou parser —
@@ -842,6 +861,14 @@ class TripReaderService : AccessibilityService() {
             val joined = lines.joinToString(" ").replace(Regex("\\s+"), " ").trim()
             val low = joined.lowercase(Locale.getDefault())
             val isOffer = isOfferScreen(low)
+            // Uma sondagem que encontra qualquer assinatura plausível de oferta
+            // abre uma rajada de 8s para obter leituras melhores antes do card sumir.
+            if (plat == "99") {
+                val moneySeen = extractMoney(joined).isNotEmpty()
+                val offerish = isOffer || low.contains("aceitar por") ||
+                    low.contains("escolher") || low.contains("corrida") && moneySeen
+                if (offerish) arm99OcrBurst()
+            }
             // Ponte OCR -> status (só 99): ver checkNn99OcrStatusBridge() pra
             // explicação completa. Roda em toda passada, independente de ser
             // tela de oferta ou não.
