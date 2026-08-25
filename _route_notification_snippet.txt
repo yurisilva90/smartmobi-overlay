@@ -1,0 +1,1391 @@
+
+===== private fun showRouteNotification( @ 129675 =====
+nection
+                conn2.requestMethod = "POST"
+                conn2.doOutput = true
+                conn2.connectTimeout = 8000; conn2.readTimeout = 8000
+                conn2.setRequestProperty("Content-Type", "application/json")
+                conn2.setRequestProperty("apikey", SUPABASE_ANON)
+                conn2.setRequestProperty("Authorization", "Bearer $authToken")
+                conn2.setRequestProperty("Prefer", "return=minimal")
+                conn2.outputStream.use { it.write(body.toString().toByteArray()) }
+                conn2.responseCode
+                conn2.disconnect()
+            } catch (_: Exception) {}
+        }
+    }
+
+    // Notificação com endereço de origem/destino + 2 botões que abrem o
+    // mapa do celular. IMPORTANCE_LOW de propósito: nunca aparece flutuando
+    // por cima da tela (heads-up) nem faz som/vibra — só fica disponível
+    // quando o motorista arrasta a central de notificações pra baixo, do
+    // jeito que foi pedido, pra não atrapalhar enquanto dirige.
+    private val NOTIF_CHANNEL_ROUTE = "mob_flash_route"
+    private var lastNotifKey = ""
+
+    // ── Vigia do OCR (20/07/2026) ────────────────────────────────────────
+    private val NOTIF_CHANNEL_OCR_ALERT = "mob_ocr_alert"
+    private val NOTIF_ID_OCR_ALERT = 4104
+    private val OCR_DOWN_ALERT_MS = 20_000L
+    private var ocrDownSinceMs = 0L
+    private var ocrAlertFired = false
+    private fun fireOcrDownAlert() {
+        try {
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                if (nm.getNotificationChannel(NOTIF_CHANNEL_OCR_ALERT) == null) {
+                    nm.createNotificationChannel(NotificationChannel(
+                        NOTIF_CHANNEL_OCR_ALERT, "MōB — leitura de tela parou",
+                        NotificationManager.IMPORTANCE_HIGH
+                    ))
+                }
+            }
+            // Toque abre o app — não tem mais "permissão de captura" pra
+            // re-pedir (isso acabou com o takeScreenshot()); se a causa for
+            // o AccessibilityService ter caído, abrir o app já é o
+            // suficiente pra investigar/reconectar.
+            val tap = Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
+            val pi = PendingIntent.getActivity(
+                this, 4104, tap,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                Notification.Builder(this, NOTIF_CHANNEL_OCR_ALERT)
+            } else {
+                @Suppress("DEPRECATION") Notification.Builder(this)
+            }
+            builder.setContentTitle("Leitura de tela parou")
+                .setContentText("A detecção de corridas da 99 está cega. Toque para abrir o MōB.")
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentIntent(pi)
+                .setAutoCancel(true)
+            nm.notify(NOTIF_ID_OCR_ALERT, builder.build())
+        } catch (_: Exception) {}
+        try {
+            flashCard.speakAlert("Atenção: a leitura de tela do MōB parou. Toque na notificação para abrir o app.")
+        } catch (_: Exception) {}
+        sendToCloud("99", "ocr", "OCR_INATIVO", "OCR_ALERTA_DISPARADO", emptyList(), null, null, emptyList())
+    }
+    private fun showRouteNotification(
+        plat: String,
+        offer: Offer,
+        overallGrade: String,
+        metrics: List<FlashCard.Metric>,
+        declineReason: String?
+    ) {
+        val origem = offer.origem
+        val destino = offer.destino
+        val stops = offer.stopAddresses
+        val verdict = when (overallGrade) {
+            "g" -> "ACEITAR"
+            "a" -> "ANALISAR"
+            else -> "RECUSAR"
+        }
+        val key = listOf(
+            plat, offer.valor?.toString() ?: "", origem ?: "", destino ?: "",
+            stops.joinToString("|"), overallGrade, declineReason ?: "",
+            offer.minPickup?.toString() ?: "", offer.kmPickup?.toString() ?: "",
+            offer.minTrip?.toString() ?: "", offer.kmTrip?.toString() ?: "",
+            metrics.joinToString("|") { "${it.label}:${it.value}:${it.grade}" }
+        ).joinToString("|")
+        if (key == lastNotifKey) return
+        lastNotifKey = key
+
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val existing = nm.getNotificationChannel(NOTIF_CHANNEL_ROUTE)
+            if (existing == null) {
+                val ch = NotificationChannel(
+                    NOTIF_CHANNEL_ROUTE, "MōB Flash — rota da corrida",
+                    NotificationManager.IMPORTANCE_LOW
+                )
+                ch.description = "Resumo silencioso da oferta, rota e resultado do MōB Flash"
+                ch.setSound(null, null)
+                ch.enableVibration(false)
+                ch.enableLights(false)
+                nm.createNotificationChannel(ch)
+            }
+        }
+
+        fun mapIntent(addr: String): PendingIntent {
+            val navUri = Uri.parse("google.navigation:q=" + Uri.encode(addr))
+            val navIntent = Intent(Intent.ACTION_VIEW, navUri).apply { setPackage("com.google.android.apps.maps") }
+            val geoUri = Uri.parse("geo:0,0?q=" + Uri.encode(addr))
+            val geoIntent = Intent(Intent.ACTION_VIEW, geoUri).apply { setPackage("com.google.android.apps.maps") }
+            val genericIntent = Intent(Intent.ACTION_VIEW, geoUri)
+            val real = when {
+                navIntent.resolveActivity(packageManager) != null -> navIntent
+                geoIntent.resolveActivity(packageManager) != null -> geoIntent
+                else -> genericIntent
+            }
+            return PendingIntent.getActivity(
+                this, addr.hashCode(), real,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        }
+
+        val valorTxt = offer.valor?.let { "R$ ${fmtBr(it)}" }
+        val titulo = "$plat · " + listOfNotNull(valorTxt, verdict).joinToString(" · ")
+        val lines = ArrayList<String>()
+        if (offer.minPickup != null || offer.kmPickup != null) {
+            val pickup = listOfNotNull(
+                offer.minPickup?.let { "$it min" },
+                offer.kmPickup?.let { "${fmtBr(it)} km" }
+            ).joinToString(" · ")
+            if (pickup.isNotEmpty()) lines.add("Até o passageiro: $pickup")
+        }
+        val routeMin = offer.minTrip ?: offer.min
+        val routeKm = offer.kmTrip ?: offer.km
+        if (routeMin != null || routeKm != null) {
+            val route = listOfNotNull(
+                routeMin?.let { "$it min" },
+                routeKm?.let { "${fmtBr(it)} km" }
+            ).joinToString(" · ")
+            if (route.isNotEmpty()) lines.add("Rota da corrida: $route")
+        }
+        origem?.let { lines.add("Origem: $it") }
+        stops.forEachIndexed { i, addr -> lines.add("Parada ${i + 1}: $addr") }
+        if (offer.paradas > stops.size) {
+            val faltantes = offer.paradas - stops.size
+            lines.add(if (faltantes == 1) "1 parada adicional sem endereço legível" else "$faltantes paradas adicionais sem endereço legível")
+        }
+        destino?.let { lines.add("Destino: $it") }
+        val metricText = metrics.joinToString(" · ") { "${it.label} ${it.value}" }
+        lines.add(if (metricText.isNotBlank()) "Flash: $verdict · $metricText" else "Flash: $verdict")
+        declineReason?.let { lines.add("Motivo: $it") }
+        val resumo = lines.joinToString("\n")
+
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, NOTIF_CHANNEL_ROUTE)
+        } else {
+            @Suppress("DEPRECATION") Notification.Builder(this)
+        }
+        val visualLines = lines.filterNot { it.startsWith("Flash:") || it.startsWith("Motivo:") }
+        val flashPicture = flashCard.renderNotificationBitmap(
+            plat, overallGrade, metrics, offer.min ?: routeMin ?: 0, offer.km ?: routeKm ?: 0.0, declineReason, visualLines
+        )
+        builder.setContentTitle(titulo)
+            .setContentText(lines.firstOrNull() ?: titulo)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setPriority(Notification.PRIORITY_LOW)
+            .setOnlyAlertOnce(true)
+            .setAutoCancel(false)
+            .setOngoing(false)
+        if (flashPicture != null) {
+            builder.setStyle(Notification.BigPictureStyle()
+                .bigPicture(flashPicture)
+                .setBigContentTitle(titulo)
+                .setSummaryText(lines.take(2).joinToString(" · ")))
+        } else {
+            builder.setStyle(Notification.BigTextStyle().bigText(resumo))
+        }
+        if (origem != null) builder.addAction(Notification.Action.Builder(null, "Origem", mapIntent(origem)).build())
+        if (destino != null) builder.addAction(Notification.Action.Builder(null, "Destino", mapIntent(destino)).build())
+        try { nm.notify(4103, builder.build()) } catch (_: Exception) {}
+    }
+
+    private fun sendToCloud(
+        plat: String, pkg: String, screenClass: String,
+        state: String, money: List<String>, km: String?, min: String?,
+        texts: List<String>
+    ) {
+        thread(isDaemon = true) {
+            try {
+                val prefs = getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
+                val userId = prefs.getString(GpsService.KEY_USER_ID, null)
+                val deviceId = try {
+                    Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID)
+                } catch (_: Exception) { "unknown" }
+
+                val body = JSONObject().apply {
+                    put("device_id", deviceId)
+                    if (userId != null) put("user_id", userId)
+                    put("platform", plat)
+                    put("package", pkg)
+                    put("screen_class", screenClass)
+                    put("texts", JSONObject().apply {
+                        put("state", state)
+                        put("money", JSONArray(money))
+                        put("km", km ?: JSONObject.NULL)
+                        put("min", min ?: JSONObject.NULL)
+                        put("raw", if (DEBUG_SEND_RAW_TEXT) JSONArray(texts) else JSONArray())
+                    })
+                }
+
+                val url = URL("$SUPABASE_URL/rest/v1/trip_reader_log")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.connectTimeout = 8000
+                conn.readTimeout = 8000
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("apikey", SUPABASE_ANON)
+                val authToken = prefs.getString(GpsService.KEY_ACCESS_TOKEN, null) ?: SUPABASE_ANON
+                conn.setRequestProperty("Authorization", "Bearer $authToken")
+                conn.setRequestProperty("Prefer", "return=minimal")
+                conn.outputStream.use { it.write(body.toString().toByteArray()) }
+                conn.responseCode
+                conn.disconnect()
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun toast(msg: String) {
+        main.post { Toast.makeText(this, msg, Toast.LENGTH_SHORT).show() }
+    }
+
+    override fun onInterrupt() {}
+
+    override fun onDestroy() {
+        main.removeCallbacks(pollRunnable)
+        flashCard.shutdownTts()
+        if (instance === this) instance = null
+        super.onDestroy()
+    }
+}
+
+
+===== data class Offer( @ 43049 =====
+iza QUALQUER sequência de espaços pra
+            // um só — resolve pra todas as regras de uma vez, não só essa.
+            val joined = lines.joinToString(" ").replace(Regex("\\s+"), " ").trim()
+            val low = joined.lowercase(Locale.getDefault())
+            val isOffer = isOfferScreen(low)
+            // Ponte OCR -> status (só 99): ver checkNn99OcrStatusBridge() pra
+            // explicação completa. Roda em toda passada, independente de ser
+            // tela de oferta ou não.
+            checkNn99OcrStatusBridge(plat, joined)
+            // Modo diagnóstico: loga TODA passada de OCR, achando oferta ou
+            // não — é a única forma de descobrir o padrão real da tela sem
+            // continuar chutando. Throttle 1.5s pra não inundar o Supabase.
+            if (System.currentTimeMillis() - lastOcrLogMs > 1500) {
+                lastOcrLogMs = System.currentTimeMillis()
+                sendToCloud(plat, "ocr", if (isOffer) "OCR_OFERTA" else "OCR_TELA_NORMAL",
+                    if (isOffer) "OFERTA_OCR" else "OCR_SEM_OFERTA",
+                    extractMoney(joined), extractKm(low), extractMin(low), lines)
+            }
+            // Chama sempre (não só quando isOffer==true): é a própria função
+            // que decide mostrar OU esconder o card, e precisa rodar em toda
+            // leitura pra esconder rápido quando a oferta some da tela.
+            // O bitmap só é usado (e reciclado) dentro de processRealOffer,
+            // exatamente no momento em que um card é lançado — nunca antes.
+            processRealOffer(plat, lines, bmp)
+        }, { err ->
+            if (System.currentTimeMillis() - lastOcrLogMs > 1500) {
+                lastOcrLogMs = System.currentTimeMillis()
+                sendToCloud(plat, "ocr", "OCR_ERRO: $err", "OCR_ERRO", emptyList(), null, null, emptyList())
+            }
+        })
+    }
+
+    // ── Notificação da 99/Uber: extrai título/texto e tenta oferta ──
+    private fun handleNotification(pkg: String, event: AccessibilityEvent) {
+        val texts = ArrayList<String>()
+        try { event.text?.forEach { if (!it.isNullOrBlank()) texts.add(it.toString()) } } catch (_: Exception) {}
+        try {
+            val n = event.parcelableData as? Notification
+            if (n != null) {
+                n.extras?.getCharSequence(Notification.EXTRA_TITLE)?.let { texts.add("(title) $it") }
+                n.extras?.getCharSequence(Notification.EXTRA_TEXT)?.let { texts.add("(text) $it") }
+                n.extras?.getCharSequence(Notification.EXTRA_BIG_TEXT)?.let { texts.add("(big) $it") }
+            }
+        } catch (_: Exception) {}
+        if (texts.isEmpty()) return
+        val plat = if (UBER_PKGS.contains(pkg)) "UBER" else "99"
+        log("\n───── [NOTIF $plat] ${fmt.format(Date())}\n" + texts.joinToString("\n") { "   $it" })
+        sendToCloud(plat, pkg, "NOTIFICATION", "NOTIF", extractMoney(texts.joinToString("  ")), null, null, texts)
+        // Se a notificação tiver dado suficiente, tenta o card por ela também
+        processRealOffer(plat, texts)
+    }
+
+    // ── Parser de oferta com base nos prints reais da 99 ──
+    // kmPickup/kmTrip/minPickup/minTrip: pernas SEPARADAS (não somadas) —
+    // confirmado em print real da Uber (15/07/2026): "7 min (2.5 km)" até
+    // buscar + "3 minutos (0.9 km)" até o destino, sempre nessa ordem (1ª
+    // perna lida = buscar, 2ª = corrida). km/min continuam sendo a SOMA das
+    // duas, usados só pro card visual (Flash).
+    private data class Offer(
+        val valor: Double?, val km: Double?, val min: Int?,
+        val rkmDirect: Double?, val nota: Double?,
+        val origem: String? = null, val destino: String? = null,
+        val legsFound: Int = 0,
+        val kmPickup: Double? = null, val kmTrip: Double? = null,
+        val minPickup: Int? = null, val minTrip: Int? = null,
+        val dinamico: Double = 0.0,
+        val corridas: Int? = null, val paradas: Int = 0,
+        val multiplicador: Double? = null,
+        val stopAddresses: List<String> = emptyList()
+    )
+
+    private fun parseOffer(texts: List<String>): Offer {
+        val joined = texts.joinToString("  ")
+        // O OCR troca "1" por "l" (L minúsculo) ou "I" com frequência —
+        // foi essa confusão que fazia pernas como "5 min (1.4 km)" virarem
+        // "5 min (l.4 km)" numa leitura e sumirem (regex exige dígito),
+        // causando o km/tempo oscilar entre "com 1 perna" e "com 2 pernas"
+        // na MESMA oferta. Corrige antes de qualquer outra extração.
+        val low = joined.lowercase(Locale.getDefault())
+            .replace(Regex("""\b[lI](?=[.,]\d)"""), "1")   // "l.4" / "I,4" → "1.4"
+            .replace(Regex("""(?<=\d[.,])[lI]\b"""), "1")  // "4.l" / "4,I" → "4.1"
+
+        // valor: "Aceitar por R$12,06" é a âncora mais confiável
+        var valor: Double? = null
+        Regex("""aceitar por\s*r\$\s*([\d.]+,\d{2})""").find(low)?.let {
+            val parsed = moneyToDouble(it.groupValues[1])
+            if (parsed != null && parsed >= 5.0) valor = parsed
+        }
+
+        // R$/km direto: "R$3,55/km"
+        val rkmDirect = Regex("""r\$\s*([\d.]+,\d{2})\s*/\s*km""").find(low)?.let {
+            moneyToDouble(it.groupValues[1])
+        }
+
+        // pernas — 3 formatos confirmados em prints reais:
+        //  99 tipo A ("Aceitar por"):    "8min (2,6km)"      — min fora, dist dentro dos parênteses
+        //  99 tipo B ("Escolher"):       "(10 min 3,1 km)"   — min E dist dentro dos mesmos parênteses
+        //  Uber ("Selecionar"):          "4 min (1.2 km)" / "5 minutos (1.6 km)" — "minutos" por extenso, ponto decimal
+        var totMin = 0; var totKm = 0.0; var legs = 0
+        // Ordem de leitura preservada: legsList[0] = 1ª perna (buscar),
+        // legsList[1] = 2ª perna (corrida) — é assim que a tela mostra,
+        // sempre buscar primeiro, corrida embaixo.
+        val legsList = ArrayList<Pair<Int, Double>>()
+        fun addLeg(minsStr: String, distStr: String, unit: String) {
+            val mins = minsStr.toIntOrNull() ?: return
+            val dist = distStr.replace(",", ".").toDoubleOrNull() ?: return
+            val km2 = if (unit == "m") dist / 1000.0 else dist
+            if (mins in 1..90 && km2 in 0.05..80.0) { totMin += mins; totKm += km2; legs++; legsList.add(mins to km2) }
+        }
+        Regex("""(\d{1,3})\s*min(?:utos)?\s*\((\d+(?:[.,]\d+)?)\s*(m|km)\)""").findAll(low)
+            .forEach { addLeg(it.groupValues[1], it.groupValues[2], it.groupValues[3]) }
+        Regex("""\(\s*(\d{1,3})\s*min(?:utos)?\s+(\d+(?:[.,]\d+)?)\s*(m|km)\s*\)""").findAll(low)
+            .forEach { addLeg(it.groupValues[1], it.groupValues[2], it.groupValues[3]) }
+
+        var km: Double? = if (legs > 0 && totKm > 0) totKm else null
+        val min: Int? = if (legs > 0 && totMin > 0) totMin else extractMin(low)?.toIntOrNull()
+        val kmPickup = legsList.getOrNull(0)?.second
+        val kmTrip = legsList.getOrNull(1)?.second
+        val minPickup = legsList.getOrNull(0)?.first
+        val minTrip = legsList.getOrNull(1)?.first
+
+        // dinâmico: CONFIRMADO EM PRINT REAL (13/07/2026) — notificação com
+        // "Origem: S R$1,45 Tarifa base dinâmica incl." (ver looksLikeAddress
+        // abaixo, mesmo caso que ensinou a rejeitar essa linha como endereço).
+        // ATUALIZADO (24/07/2026, confirmado em varredura de dado real): a
+        // 99 tem pelo menos 4 frases diferentes pra bônus incluído — "Tarifa
+        // base dinâmica", "por espera longa", "por embarque distante" e
+        // "por deslocamento" — uma oferta pode ter 0, 1 ou vários ao mesmo
+        // tempo. Soma todos que aparecerem.
+        val dinamicoBase = Regex("""r\$\s*([\d.]+,\d{2})\s*tarifa base din[aâ]mica""").find(low)?.let {
+            moneyToDouble(it.groupValues[1])
+        } ?: 0.0
+        val dinamicoEspera = Regex("""r\$\s*([\d.]+,\d{2})\s*por espera longa""").find(low)?.let {
+            moneyToDouble(it.groupValues[1])
+        } ?: 0.0
+        val dinamicoEmbarque = Regex("""r\$\s*([\d.]+,\d{2})\s*por embarque distante""").find(low)?.let {
+            moneyToDouble(it.groupValues[1])
+        } ?: 0.0
+        val dinamicoDeslocamento = Regex("""r\$\s*([\d.]+,\d{2})\s*por deslocamento""").find(low)?.let {
+            moneyToDouble(it.groupValues[1])
+        } ?: 0.0
+        val dinamicoUber = Regex("""\+\s*r\$\s*([\d.]+,\d{2})\s*inclu[ií]do""").find(low)?.let {
+            moneyToDouble(it.groupValues[1])
+        } ?: 0.0
+        val dinamico = dinamicoBase + dinamicoEspera + dinamicoEmbarque + dinamicoDeslocamento + dinamicoUber
+
+        // multiplicador: CONFIRMADO EM DADO REAL (16/08/2026, varredura de
+        // trip_reader_log) — a 99 mostra um "1,1x" / "1,5x" colado bem perto
+        // do valor da oferta quando tem tarifa dinâmica ativa (ex: "R$7,90
+        // 1,1x"). O OCR às vezes lê um caractere de sujeira antes do número
+        // (ícone pequeno virando "4" ou "*"), por isso o regex não ancora no
+        // início. Só aparece quando há multiplicador de verdade — corrida
+        // sem dinâmico simplesmente não tem esse texto na tela, então fica
+        // null (não é 1.0x, é "não informado"). Uber não expõe esse número
+        // em lugar nenhum, só o valor em R$ (dinamicoUber acima).
+        val multiplicador = Regex("""(\d[.,]\d+)\s*x\b""").find(low)?.let {
+            it.groupValues[1].replace(",", ".").toDoubleOrNull()
+        }
+
+        // fallback de valor: se não achou "aceitar por", pega o R$ que for
+        // consistente com rkm direto × km (evita pegar ganhos do dia) — é
+        // esse caminho que resolve o tipo B (99 "Escolher") e a Uber
+        // ("Selecionar"), que não têm o texto "aceitar por"
+        if (valor == null) {
+            // CORRIGIDO (24/07/2026, confirmado em log real): o R$/km já
+            // identificado (rkmDirect) NUNCA pode competir como candidato a
+            // valor TOTAL — antes disso não acontecia, mas numa leitura com
+            // ruído (perna virando "94min", descartada por passar de 90,
+            // km ficando pela metade), o valor do R$/km por coincidência
+            // batia no teste de tolerância abaixo (valor/km ≈ rkmDirect)
+            // e vencia o valor de verdade. Ex real: oferta R$7,90 com
+            // R$2,64/km — numa leitura ruidosa, R$2,64 (a taxa) foi
+            // salvo como se fosse o valor total da corrida.
+            //
+            // CORRIGIDO (16/08/2026, confirmado em log real — 35 corridas
+            // do 99 gravadas com valor errado, ex: "R$2,33" em vez de
+            // "R$14,70"): o valor do "Tarifa base dinâmica incl." (e das
+            // outras 3 variantes de bônus) também precisa ser excluído dos
+            // candidatos. Sem km (legs não leram nessa leitura em
+            // particular), o fallback caía direto pro primeiro R$ que
+            // aparecesse — e "R$2,33 Tarifa base dinâmica incl." geralmente
+            // aparece bem no meio da tela, antes do valor total em telas
+            // mais compridas, ganhando por ordem de leitura.
+            val dinamicoValues = listOfNotNull(
+                dinamicoBase.takeIf { it > 0 }, dinamicoEspera.takeIf { it > 0 },
+                dinamicoEmbarque.takeIf { it > 0 }, dinamicoDeslocamento.takeIf { it > 0 },
+                dinamicoUber.takeIf { it > 0 }
+            )
+            // Piso absoluto aprovado: nenhum candidato abaixo de R$5 pode ser
+            // valor total da corrida. Esses números continuam disponíveis como
+            // dinâmico/adicional, mas não competem com a tarifa principal.
+            val monies = extractMoney(joined).mapNotNull { moneyToDouble(it) }.filter { it >= 5.0 }
+                .filter { rkmDirect == null || kotlin.math.abs(it - rkmDirect) > 0.01 }
+                .filter { cand -> dinamicoValues.none { kotlin.math.abs(cand - it) < 0.01 } }
+            valor = if (rkmDirect != null && km != null) {
+                monies.firstOrNull { kotlin.math.abs(it / km!! - rkmDirect) / rkmDirect < 0.35 }
+            } else if (km != null && km > 0) {
+                // BUG CONFIRMADO EM LOG REAL (13/07/2026, corrida do Raymundo):
+                // sem R$/km direto, o antigo "pega o primeiro R$ que aparecer"
+                // pegava o GANHO TOTAL DO DIA (ex: "R$ 54,01", fixo no topo da
+                // tela de navegação) como se fosse o valor da oferta nova que
+                // chegou por cima — só acontece em corrida, onde a tela de
+                // fundo tem esse valor sempre visível junto do card. Faixa
+                // generosa de R$/km (cobre de promoção barata a dinâmica alta)
+                // descarta esse tipo de valor de fundo antes de aceitar.
+                monies.firstOrNull { (it / km!!) in 0.4..12.0 } ?: monies.firstOrNull()
+            } else monies.firstOrNull()
+        }
+
+        // Rede final: mesmo que algum caminho novo de parser seja adicionado
+        // no futuro, valor abaixo do piso nunca escapa como tarifa principal.
+        if (valor != null && valor!! < 5.0) valor = null
+
+        // fallback de km: valor / rkm direto
+        if (km == null && valor != null && rkmDirect != null && rkmDirect > 0) {
+            km = valor!! / rkmDirect
+        }
+
+        // nota: procura o número 1..5 com 2 casas NA MESMA LINHA que menciona
+        // "corrida(s)" — não no texto inteiro (senão pega R$/km por engano,
+        // que também cai na faixa 1..5, tipo "R$1,31/km"). Uber também usa
+        // formato "4,90 (1985)" — número + parênteses com contagem.
+        // corridas: o total de corridas do passageiro vem NA MESMA LINHA da
+        // nota (99: "4,80 630 corridas" — número solto antes da palavra;
+        // Uber: "4,90 (1985)" — número dentro dos parênteses). Lê os dois
+        // juntos, já que sempre aparecem colados na mesma linha.
+        var nota: Double? = null
+        var corridas: Int? = null
+        for (line in texts) {
+            val l = line.lowercase(Locale.getDefault())
+            if (l.contains("corrid") || l.contains("corda") || Regex("""[1-5][.,]\d{2}\s*\(\d+\)""").containsMatchIn(l)) {
+                Regex("""([1-5][.,]\d{2})""").find(line)?.let {
+                    nota = it.groupValues[1].replace(",", ".").toDoubleOrNull()
+                }
+                if (nota != null) {
+                    Regex("""(\d+)\s*corrid""").find(l)?.let { corridas = it.groupValues[1].toIntOrNull() }
+                    if (corridas == null) Regex("""\(\s*(\d+)\s*\)""").find(line)?.let {
+                        corridas = it.groupValues[1].toIntOrNull()
+                    }
+                    break
+                }
+            }
+        }
+
+        // paradas: exige um dígito colado antes de "parada(s)" — evita bater
+        // em nome de lugar tipo "Parada Modelo" que não tem número na frente.
+        // Só um sinal booleano por enquanto (não distingue 1 de 2+ paradas).
+        var paradas = 0
+        for (line in texts) {
+            Regex("""\b(\d{1,2})\s*paradas?\b""", RegexOption.IGNORE_CASE).find(line)?.let {
+                paradas = it.groupValues[1].toIntOrNull() ?: 0
+            }
+        }
+
+        // Endereços da oferta. Na 99 o endereço pode ficar várias linhas
+        // abaixo da perna ou ser quebrado em duas linhas. A leitura fica
+        // limitada ao bloco da oferta para não capturar chat/navegação do fundo.
+        fun cleanAddress(raw: String): String = raw
+            .replace(Regex("""^[•·]\s*"""), "")
+            .trim()
+
+        fun looksLikeAddress(raw: String): Boolean {
+            val sl
+
+===== origem = @ 60582 =====
+ption.IGNORE_CASE).containsMatchIn(cur)
+            if (hasStreet && index + 1 in texts.indices) {
+                val next = cleanAddress(texts[index + 1])
+                if (Regex("""^\d{1,5}\b""").containsMatchIn(next)) {
+                    val joinedAddress = "$cur, $next"
+                    if (looksLikeAddress(joinedAddress)) return joinedAddress
+                }
+            }
+            return null
+        }
+
+        val legLineRe = Regex("""^\(?\s*\d{1,3}\s*min(?:utos)?""", RegexOption.IGNORE_CASE)
+        val legIndexes = texts.indices.filter { legLineRe.containsMatchIn(texts[it]) }
+        val blockStart = legIndexes.firstOrNull() ?: 0
+        val actionIndex = ((blockStart + 1) until texts.size).firstOrNull { i ->
+            val l = texts[i].lowercase(Locale.getDefault())
+            l.contains("aceitar") || l.contains("selecionar") || l.contains("escolher") || l.contains("recusar")
+        }
+        val blockEnd = minOf(actionIndex ?: (blockStart + 24), texts.size - 1)
+
+        val indexed = ArrayList<Pair<Int, String>>()
+        fun addCandidate(index: Int, value: String?) {
+            val v = value?.let(::cleanAddress)?.takeIf { looksLikeAddress(it) } ?: return
+            val n = normAddress(v)
+            if (indexed.none { normAddress(it.second) == n }) indexed.add(index to v)
+        }
+
+        // Procura depois de cada perna até a próxima perna/ação, com uma janela
+        // maior que a antiga (3 linhas), suficiente para layouts reais da 99.
+        legIndexes.forEachIndexed { pos, legIdx ->
+            val nextLeg = legIndexes.getOrNull(pos + 1)
+            val scanEnd = minOf(nextLeg?.minus(1) ?: blockEnd, legIdx + 8, blockEnd)
+            if (legIdx + 1 <= scanEnd) {
+                for (j in (legIdx + 1)..scanEnd) {
+                    val c = candidateAt(j)
+                    if (c != null) { addCandidate(j, c); break }
+                }
+            }
+        }
+
+        fun labeledTail(line: String, labels: List<String>): String? {
+            val lowLine = line.lowercase(Locale.getDefault())
+            for (label in labels) {
+                val idx = lowLine.indexOf(label)
+                if (idx >= 0) {
+                    val tail = cleanAddress(line.substring(idx + label.length).trimStart(':', '-', '–', '—', ' '))
+                    if (looksLikeAddress(tail)) return tail
+                }
+            }
+            return null
+        }
+
+        var labeledOrigin: String? = null
+        var labeledDest: String? = null
+        val labeledStops = ArrayList<String>()
+        if (blockStart <= blockEnd) {
+            for (i in blockStart..blockEnd) {
+                val line = texts[i]
+                if (labeledOrigin == null) labeledOrigin = labeledTail(line, listOf("origem", "embarque", "buscar em", "pickup"))
+                if (labeledDest == null) labeledDest = labeledTail(line, listOf("destino", "desembarque", "dropoff", "para"))
+                Regex("""(?i)(?:parada\s*\d+|\d+[ªa]?\s*parada)\s*[:\-–—]\s*(.+)$""")
+                    .find(line)?.groupValues?.getOrNull(1)?.let {
+                        if (looksLikeAddress(it)) labeledStops.add(cleanAddress(it))
+                    }
+                addCandidate(i, candidateAt(i))
+            }
+        }
+
+        val ordered = indexed.sortedBy { it.first }.map { it.second }.fold(ArrayList<String>()) { acc, v ->
+            val n = normAddress(v)
+            if (acc.none { normAddress(it) == n }) acc.add(v)
+            acc
+        }
+        val origem = labeledOrigin ?: ordered.firstOrNull()
+        val destino = labeledDest ?: ordered.lastOrNull()?.takeIf {
+            origem == null || normAddress(it) != normAddress(origem)
+        }
+        val stopAddresses = if (labeledStops.isNotEmpty()) {
+            labeledStops.distinctBy(::normAddress).take(maxOf(paradas, labeledStops.size))
+        } else if (paradas > 0) {
+            ordered.filter { a ->
+                (origem == null || normAddress(a) != normAddress(origem)) &&
+                (destino == null || normAddress(a) != normAddress(destino))
+            }.take(paradas)
+        } else emptyList()
+
+        return Offer(valor, km, min, rkmDirect, nota, origem, destino, legs, kmPickup, kmTrip, minPickup, minTrip, dinamico, corridas, paradas, multiplicador, stopAddresses)
+    }
+
+    private fun isOfferScreen(low: String): Boolean {
+        // CORRIGIDO (24/07/2026, confirmado em log real: virou origem
+        // "corridasCPF verif." de tanta mistura): a tela "< Solicitações"
+        // mostra VÁRIAS ofertas diferentes empilhadas na mesma tela (cada
+        // uma com seu próprio valor/endereço/nota) — tratar isso como se
+        // fosse uma oferta só mistura campos de ofertas diferentes,
+        // produzindo dado sem sentido nenhum. Sem forma confiável de saber
+        // qual das várias o motorista vai escolher, melhor não capturar
+        // nada aqui — a oferta de verdade aparece limpa depois, quando ele
+        // escolhe uma (ou quando o card normal de oferta única aparece).
+        if (low.contains("solicitações") || low.contains("solicitacoes")) return false
+        // 99 tipo A: "Aceitar por R$..." — o mais confiável
+        if (low.contains("aceitar por")) return true
+        if (low.contains("taxa de serviço") && Regex("""\d+\s*min\s*\(""").containsMatchIn(low)) return true
+        // 99 tipo B: tela "Solicitações" com botão "Escolher" (sem valor de aceite explícito)
+        if (low.contains("escolher") && Regex("""r\$\s*[\d.]+,\d{2}""").containsMatchIn(low) &&
+            Regex("""\(\s*\d{1,3}\s*min""").containsMatchIn(low)) return true
+        // Uber: botão "Selecionar", com valor e R$/km — não usa "aceitar"/"recusar"
+        if (low.contains("selecionar") && Regex("""r\$\s*[\d.]+,\d{2}""").containsMatchIn(low) &&
+            Regex("""\d{1,3}\s*min""").containsMatchIn(low)) return true
+        // 99 tipo C: card SEM botão nenhum (toca o card inteiro pra aceitar
+        // — segundo o usuário, esse é o formato mais comum). Sem palavra de
+        // ação pra ancorar, então detecta pela estrutura inteira da tela:
+        // valor + R$/km explícito + nota-com-corridas + pelo menos 1 perna.
+        if (Regex("""r\$\s*[\d.]+,\d{2}\s*/\s*km""").containsMatchIn(low) &&
+            Regex("""[1-5][.,]\d{2}\s*[·(]|\bcorrid""").containsMatchIn(low) &&
+            Regex("""\d{1,3}\s*min""").containsMatchIn(low)) return true
+        // Uber tipo B: botão "Aceitar" sozinho (sem "por R$", sem R$/km
+        // visível na tela) — âncora na nota com contagem entre parênteses,
+        // que é a assinatura de layout da Uber ("4,94 (1910)")
+        if (low.contains("aceitar") && !low.contains("aceitar por") &&
+            Regex("""r\$\s*[\d.]+,\d{2}""").containsMatchIn(low) &&
+            Regex("""[1-5][.,]\d{2}\s*\(\d+\)""").containsMatchIn(low) &&
+            Regex("""\d{1,3}\s*min""").containsMatchIn(low)) return true
+        // Fallback genérico antigo (mantido por segurança)
+        if (low.contains("aceitar") && (low.contains("recusar") || low.contains("combinar") || low.contains("dispensar"))) return true
+        return false
+    }
+
+    // ── MōB Flash real: só usa o texto do próprio app (99/Uber) ──
+    // Feed social: publica alerta automático tipo "dinamico" quando uma
+    // oferta chega com dinâmico > 0, na localização atual do motorista.
+    // PEDIDO (25/07/2026, Yuri) — vale tanto pra Uber quanto pra 99.
+    // Correção (25/07/2026, Yuri): tipo próprio "dinamico", separado de
+    // "demanda" (que segue existindo só pra reporte manual de "tá tocando").
+    //
+    // Autenticação: usa o access_token real do usuário quando disponível
+    // (mesmo padrão do enviarSupabase de informes em GpsService.kt), caindo
+    // pra anon key só se não tiver token salvo — nesse caso a RLS do
+    // feed_posts rejeita o insert (exige auth.uid() = user_id) e o post
+    // simplesmente não sai, sem abrir brecha pra forjar posts de outros
+    // usuários (diferente de auto_trips/trip_reader_log, que são dados
+    // privados só visíveis ao próprio dono — feed_posts é público pra
+    // toda a comunidade, então aqui vale a autenticação real).
+    // Faixas do alerta automático de dinâmico — mesma referência dos botões
+    // de reporte manual em GpsService.escolherCenario() (R$0 / +R$5 / +R$10+):
+    // 0 = abaixo do piso, não vale alerta · 1 = moderado (~R$5) · 2 = alto (~R$10+)
+    private fun dinamicoTier(v: Double): Int = when {
+        v < 3.0 -> 0
+        v < 8.0 -> 1
+        else -> 2
+    }
+
+    // Label do post — mesma notação exibida nos botões de reporte manual
+    // (GpsService.escolherCenario), não a palavra da faixa ("moderado" etc).
+    private fun dinamicoRangeLabel(tier: Int): String = when (tier) {
+        2 -> "+R$10+"
+        else -> "+R$5"
+    }
+
+    private fun haversineKm(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {
+        if ((lat1 == 0.0 && lng1 == 0.0) || (lat2 == 0.0 && lng2 == 0.0)) return Double.MAX_VALUE
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLng = Math.toRadians(lng2 - lng1)
+        val a = Math.sin(dLat/2).let{it*it} + Math.cos(Math.toRadians(lat1)) *
+            Math.cos(Math.toRadians(lat2)) * Math.sin(dLng/2).let{it*it}
+        return 6371.0 * 2 * Math.asin(Math.sqrt(a))
+    }
+
+    private fun postDynamicAlert(dinamico: Double, plat: String, multiplicador: Double?) {
+        thread(isDaemon = true) {
+            try {
+                val prefs = getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
+                val userId = prefs.getString(GpsService.KEY_USER_ID, null) ?: return@thread
+                val authToken = prefs.getString(GpsService.KEY_ACCESS_TOKEN, null) ?: SUPABASE_ANON
+
+                val lat = GpsService.lastLat
+                val lng = GpsService.lastLng
+                val address = if (lat != 0.0 || lng != 0.0) GpsService.reverseGeocodeFull(lat, lng) else null
+
+                val rangeLabel = dinamicoRangeLabel(dinamicoTier(dinamico))
+                val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+                    .apply { timeZone = TimeZone.getTimeZone("UTC") }
+
+                // PEDIDO (19/08/2026, Yuri): card do painel Agora do Informes
+                // precisa identificar Uber x 99 separadamente. Reaproveita
+                // param_value (plataforma: "uber"/"99") e param_detail
+                // (multiplicador da 99, ex "1,3x" — Uber não expõe esse
+                // número, só o valor em R$) em vez de criar coluna nova.
+                val platLower = plat.lowercase(Locale.US)
+                val multLabel = if (platLower == "99" && multiplicador != null && multiplicador > 0)
+                    String.format(Locale.US, "%.1fx", multiplicador).replace('.', ',') else null
+
+                val body = JSONObject().apply {
+                    put("user_id", userId)
+                    put("type", "dinamico")
+                    put("body", "Dinâmico " + rangeLabel)
+                    put("source", "system")
+                    put("param_value", platLower)
+                    put("param_detail", multLabel ?: JSONObject.NULL)
+                    if (lat != 0.0 || lng != 0.0) { put("lat", lat); put("lng", lng) }
+                    put("address", address ?: JSONObject.NULL)
+                    put("expires_at", sdf.format(Date(System.currentTimeMillis() + 30 * 60000L)))
+                }
+
+                val url = URL("$SUPABASE_URL/rest/v1/feed_posts")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.connectTimeout = 8000
+                conn.readTimeout = 8000
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("apikey", SUPABASE_ANON)
+                conn.setRequestProperty("Authorization", "Bearer $authToken")
+                conn.setRequestProperty("Prefer", "return=minimal")
+                conn.outputStream.use { it.write(body.toString().toByteArray()) }
+                conn.responseCode
+                conn.disconnect()
+            } catch (_: Exception) {
+                // sem rede/token expirado — só não sai o alerta desta vez
+            }
+        }
+    }
+
+    private fun processRealOffer(plat: String, texts: List<String>, bmp: Bitmap? = null) {
+        // PEDIDO (13/07/2026): Flash só deve ficar ativo com a jornada
+        // iniciada — antes disso ele rodava independente, mesmo sem GPS
+        // ligado. Isso também cria um lembrete natural: se o motorista
+        // esquecer de iniciar a jornada e não ver o card numa oferta, ele
+        // vai lembrar de ligar a jornada primeiro. GpsService.isRunning é
+        // o mesmo flag nativo que isGpsRunning() expõe pro JS.
+        if (!GpsService.isRunning) { bmp?.recycle(); hideFlashIfActive(); return }
+        val cfg = loadFlashConfig()
+        if (!cfg.optBoolean("enabled", true)) { bmp?.recycle(); hideFlashIfActive(); return }
+
+        val joined = texts.joinToString("  ")
+        val low = joined.lowercase(Locale.getDefault())
+
+        if (!isOfferScreen(low)) {
+            // Não esconde na primeira falha — ver comentário de offerMissStreak
+            // na declaração. Só esconde depois de OFFER_HIDE_GRACE falhas
+            // seguidas, o que ainda é rápido (~1.2s) mas tolera o ruído da
+            // navegação por baixo durante corrida ativa.
+            bmp?.recycle()
+            offerMissStreak++
+            if (lastFlashSig.isNotEmpty() && offerMissStreak >= OFFER_HIDE_GRACE) hideFlashIfActive()
+            val state = inferState(low)
+            if (state != "?") lastRealState = state
+            return
+        }
+        offerMissStreak = 0
+        lastRealState = "OFERTA"
+
+        val parsedOffer = parseOffer(texts)
+        val offer = enrichOfferWithOfficialRoute(plat, parsedOffer)
+        val valor = offer.valor
+        val km = offer.km
+        val min = offer.min
+
+        if (valor == null || valor < 5.0 || valor > 2000.0) {
+            bmp?.recycle(); return
+        }
+        if (km == null || km <= 0.0 || km > 150.0) {
+            // A oferta existe e o valor principal já é confiável, mas faltou
+            // distância nesta leitura. Registra o fragmento e força uma nova
+            // captura em vez de descartar a oferta silenciosamente.
+            AutoTripCapture.onOfferSeen(this, plat, AutoTripCapture.OfferSnapshot(
+                value = valor, dinamico = offer.dinamico, multiplicador = offer.multiplicador,
+                kmPickup = offer.kmPickup, kmTrip = offer.kmTrip,
+                durPickupSec = offer.minPickup?.let { it * 60 }, durTripSec = offer.minTrip?.let { it * 60 },
+                origin = offer.origem, dest = offer.destino,
+                stopCount = offer.paradas, stopAddresses = offer.stopAddresses
+            ))
+            val nowPartial = System.currentTimeMillis()
+            if (nowPartial - (lastPartialRetryMsByPlat[plat] ?: 0L) > 450L) {
+                lastPartialRetryMsByPlat[plat] = nowPartial
+                main.postDelayed({ requestPriorityOcr(plat) }, 220L)
+            }
+            bmp?.recycle(); return
+        }
+
+        // Alimenta o buffer de captura automática apenas depois de resolver
+        // a identidade da plataforma. Uma leitura isolada da outra plataforma
+        // não pode contaminar a corrida ativa.
+        val nowVisual = System.currentTimeMillis()
+        val activeVisual = visualOfferState
+        var vis
+
+===== onOfficialRouteInfo @ 2899 =====
+package io.github.yurisilva90.smartmobi
+
+import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Rect
+import android.net.Uri
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
+import android.widget.Toast
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.*
+import kotlin.concurrent.thread
+
+// ══════════════════════════════════════════════════════════════════
+// Leitor de tela Uber/99 — só leitura (não toca em nada, não age).
+//
+// v1.0.17 — diagnóstico + detecção real de oferta:
+//  • A tela de oferta da 99 NÃO tem "Recusar" com texto; tem "Aceitar por
+//    R$X,XX". Detecção reescrita com base em prints reais.
+//  • Eventos deixam de ser filtrados pelo pacote do EVENTO (a oferta pode
+//    ser desenhada como janela sobreposta enquanto outro app está na
+//    frente). Agora toda varredura olha as JANELAS visíveis.
+//  • Captura notificações (TYPE_NOTIFICATION_STATE_CHANGED) da 99/Uber —
+//    a oferta pode chegar por aí com o valor no texto.
+//  • Loga metadados das janelas (tipo/camada/pacote) pra descobrir por
+//    qual caminho a informação da oferta realmente chega. Se o card for
+//    desenhado sem nós de texto (Flutter/canvas), saberemos e partimos
+//    pra outra estratégia (OCR).
+// ══════════════════════════════════════════════════════════════════
+class TripReaderService : AccessibilityService() {
+
+    companion object {
+        // Bloqueador de Play Store, item 5 (16/08/2026): ScreenOcrService
+        // não é mais um Service com MediaProjection própria — ele chama
+        // takeScreenshot() direto NESTE AccessibilityService (só um
+        // AccessibilityService pode chamar esse método), por isso precisa
+        // de uma referência estática pra instância ativa.
+        @Volatile var instance: TripReaderService? = null
+
+        @JvmStatic
+        fun onOfficialNotification(platform: String, texts: List<String>, offerHint: Boolean) {
+            instance?.handleOfficialNotification(platform, texts, offerHint)
+        }
+
+        @JvmStatic
+        fun onOfficialOperationalNotification(platform: String, keywords: List<String>, actions: List<String>) {
+            instance?.handleOfficialOperationalNotification(platform, keywords, actions)
+        }
+
+        @JvmStatic
+        fun onOfficialRouteInfo(platform: String, origin: String?, dest: String?, stops: List<String>) {
+            instance?.handleOfficialRouteInfo(platform, origin, dest, stops)
+        }
+
+        val UBER_PKGS = setOf("com.ubercab.driver", "com.ubercab")
+        val NN_PKGS = setOf("com.app99.driver", "com.taxis99.driver")
+        val GIGU_PKGS = setOf("co.gigu.app")
+        val CAPTURE_PKGS = UBER_PKGS + NN_PKGS + GIGU_PKGS
+        const val LOG_FILE = "trip_reader_log.txt"
+        const val SUPABASE_URL  = "https://jlsrpptslwfhmkvelaro.supabase.co"
+        const val SUPABASE_ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impsc3JwcHRzbHdmaG1rdmVsYXJvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4NjYxNzIsImV4cCI6MjA4OTQ0MjE3Mn0.4gD4dKx05QaOAAkY1gAx2HuH_CN31Xg3kkDMdvZ4kh0"
+
+        // Bloqueador de Play Store (16/08/2026, pedido do Yuri): o texto
+        // bruto da tela (raw) pode conter nome de passageiro (aparece nas
+        // telas de avaliação pós-corrida, embora nunca na oferta) e outros
+        // dados pessoais de terceiro sem necessidade real de ficar
+        // guardado. Por padrão NÃO vai mais pro Supabase — state/money/km/
+        // min continuam indo (não têm PII, bastam pra maioria dos
+        // diagnósticos). Se precisar depurar algo que só dá pra ver no
+        // texto cru, mudar pra true, buildar, pedir pro Yuri reproduzir, e
+        // desligar de novo depois — não deixar true em produção por muito
+        // tempo.
+        const val DEBUG_SEND_RAW_TEXT = false
+
+        const val KEY_FLASH_CONFIG_JSON = "flash_config_json"
+
+        val KPI_ORDER = listOf(
+            "rkm"    to "R$/KM",
+            "rhora"  to "R$/HORA",
+            "rmin"   to "R$/MIN",
+            "margem" to "% LUCRO",
+            "lucro"  to "R$ LUCRO"
+        )
+
+        private var lastSig = ""
+        private var lastLogMs = 0L
+        private var lastScanMs = 0L
+        private var lastState = "?"
+        private var lastWinSig = ""
+
+        // ── Status no widget flutuante: Online/Buscar/Corrida ──────────────
+        // Debounce: exige N leituras equivalentes dentro de uma janela das
+        // últimas M leituras antes de confirmar a troca (leituras a cada
+        // ~600ms via pollForeground).
+        // BUG CONFIRMADO EM LOG REAL (14/07/2026): o painel da Uber tem um
+        // texto que ALTERNA entre "Buscando" e "Destino definido" a cada
+        // ~2s, sempre um ou outro, nunca os dois juntos. Só "Buscando" bate
+        // com a regra de Online — "Destino definido" não bate com nenhuma
+        // regra, então cai no fallback (mantém o último estado). Com debounce
+        // por CONSECUTIVAS, isso reseta o contador pra 1 a cada leitura, e
+        // nunca fecha 3 seguidas — o status ficava travado pra sempre mesmo
+        // com o sinal certo aparecendo o tempo todo. Trocado pra "maioria
+        // dentro de uma janela": com janela ímpar, uma alternação estrita
+        // 50/50 sempre garante maioria pro lado que realmente domina.
+        private const val TRIP_STATE_DEBOUNCE = 3
+        private const val TRIP_STATE_DEBOUNCE_WINDOW = 5
+        private val tripSubStateHistory = ArrayDeque<String>()
+        // Não é mais "private" (16/08/2026) — ProactiveAlert.kt precisa
+        // saber o estado atual (online/buscar/corrida) pra decidir se pode
+        // mostrar um alerta proativo e com qual tempo de espera (10s
+        // corrida / 5s online). Nada na lógica de detecção mudou, só ficou
+        // legível de fora.
+        var confirmedTripSubState = "online"
+    }
+
+    private val fmt = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+    private val main = Handler(Looper.getMainLooper())
+    private val flashCard by lazy { FlashCard(this) }
+    private var lastFlashSig = ""
+    private var lastFlashSigSetMs = 0L
+    // Guard usado tanto no polling (pollForeground) quanto no evento de
+    // acessibilidade: só pausa a varredura de status Online/Buscar/Corrida
+    // enquanto a oferta é recente o bastante pra ainda ser a mesma decisão
+    // rápida que motivou a trava original (mesma janela do auto-hide visual
+    // do FlashCard, 15s, +5s de margem).
+    // BUG CONFIRMADO EM LOG REAL (14/07/2026): "Radar de Viagens"/"Modo
+    // Destino" da Uber mantém uma oferta candidata em tela por MINUTOS
+    // enquanto o motorista ainda está buscando — isOfferScreen() continua
+    // batendo o tempo todo nesse modo, lastFlashSig nunca zera (só zera
+    // quando a tela PARA de parecer oferta), e o status Online/Buscar/
+    // Corrida ficava PRESO no último valor confirmado a viagem inteira
+    // (visto: travado em "Corrida" por mais de 4 minutos com o motorista
+    // genuinamente buscando). Depois da janela abaixo, mesmo que a tela
+    // ainda pareça oferta, volta a varrer o status normalmente.
+    private val FLASH_STATUS_GUARD_MS = 20_000L
+    private fun offerGuardActive(): Boolean =
+        lastFlashSig.isNotEmpty() && System.currentTimeMillis() - lastFlashSigSetMs < FLASH_STATUS_GUARD_MS
+    private var lastRealState = "?"
+    // ── Anti-flicker: oferta chegando DURANTE corrida ativa ─────────────
+    // CONFIRMADO EM LOG REAL (13/07/2026, corrida do Raymundo, Uber): a
+    // mesma oferta (R$20,68) chegou a mostrar/esconder 7 vezes em 7
+    // segundos. Causa: em corrida a oferta é um card por CIMA da tela de
+    // navegação — o OCR lê os dois misturados (endereço, "Corrida",
+    // cronômetro da corrida atual junto com o texto da oferta nova), então
+    // isOfferScreen() bate numa passada e falha na seguinte só por ruído,
+    // mesmo com a oferta genuinamente ainda na tela. hideFlashIfActive()
+    // rodava na PRIMEIRA falha — agora exige N falhas SEGUIDAS antes de
+    // esconder de verdade. A 600ms/leitura, grace=2 ainda esconde em
+    // ~1.2s quando a oferta sai de verdade — não é perceptível como atraso.
+    private var offerMissStreak = 0
+    private val OFFER_HIDE_GRACE = 2
+    // INVESTIGAÇÃO (13/07/2026): achado um buraco de 36min sem nenhum card,
+    // com ofertas reais e válidas confirmadas no OCR (texto limpo, formato
+    // Uber padrão) durante esse tempo. Causa provável: essas duas variáveis
+    // eram um valor ÚNICO compartilhado entre Uber e 99, não por plataforma.
+    // Rodando os dois apps ao mesmo tempo, uma oferta da 99 com valor por
+    // acaso a menos de R$0,02 de uma oferta da Uber (comum, faixa de preço
+    // parecida) fazia a trava de "não regredir pernas" comparar contra o
+    // valor errado — a oferta Uber podia ser descartada silenciosamente por
+    // parecer "regressão" de uma oferta de OUTRA plataforma. Agora é por
+    // plataforma, elimina esse cruzamento.
+    private val lastOfferValorByPlat = HashMap<String, Double>()
+    private val bestLegsForOfferByPlat = HashMap<String, Int>()
+    // Flash 1.3.7: identidade visual estável da oferta. O OCR pode reler a
+    // mesma tela várias vezes por segundo; essas releituras refinam a primeira
+    // somente numa janela curta e nunca reabrem/re-falam a mesma oferta.
+    private data class VisualOfferState(
+        val platform: String,
+        var offer: Offer,
+        val firstSeenMs: Long,
+        val token: String
+    )
+    private var visualOfferState: VisualOfferState? = null
+    private var pendingNewOfferValue: Double? = null
+    private var pendingNewOfferCount = 0
+    private var pendingPlatformSwitch: String? = null
+    private var pendingPlatformSwitchCount = 0
+    private var officialOfferHintPlatform: String? = null
+    private var officialOfferHintUntilMs = 0L
+    private val lastPartialRetryMsByPlat = HashMap<String, Long>()
+    private val OFFER_REFINE_WINDOW_MS = 950L
+    private val OFFER_NEW_VALUE_CONFIRMATIONS = 2
+    private val OFFICIAL_OFFER_HINT_MS = 12_000L
+    private var officialRoutePlatform: String? = null
+    private var officialRouteOrigin: String? = null
+    private var officialRouteDest: String? = null
+    private var officialRouteStops: List<String> = emptyList()
+    private var officialRouteUntilMs = 0L
+    private val OFFICIAL_ROUTE_HINT_MS = 20_000L
+
+    private fun recentOfficialOfferHint(): String? =
+        officialOfferHintPlatform?.takeIf { System.currentTimeMillis() <= officialOfferHintUntilMs }
+
+    private fun shortVisualPlatformLock(): String? {
+        val v = visualOfferState ?: return null
+        return v.platform.takeIf { lastFlashSig.isNotEmpty() && System.currentTimeMillis() - v.firstSeenMs < 4_000L }
+    }
+
+    private fun offerQualityScore(o: Offer): Int {
+        var score = o.legsFound * 4
+        if (o.km != null) score += 1
+        if (o.min != null) score += 1
+        if (o.rkmDirect != null) score += 1
+        if (o.nota != null) score += 1
+        if (o.corridas != null) score += 2
+        if (o.origem != null) score += 1
+        if (o.destino != null) score += 1
+        return score
+    }
+
+    private fun isClearlyBetterOffer(candidate: Offer, current: Offer): Boolean {
+        // Nunca troca uma leitura de 2 pernas por uma de 1 perna. A melhora
+        // precisa acrescentar informação de verdade (2ª perna, nota+contagem,
+        // endereço etc.), não apenas oscilar um número do OCR.
+        if (candidate.legsFound < current.legsFound) return false
+        return offerQualityScore(candidate) > offerQualityScore(current)
+    }
+    // Feed social: controla o filtro de faixa do alerta automático de
+    // dinâmico (ver dinamicoTier() e postDynamicAlert() mais abaixo).
+    private val lastDinamicoTierByPlat = HashMap<String, Int>()
+    private val lastDinamicoAlertLatLngByPlat = HashMap<String, DoubleArray>() // [lat, lng]
+    // 99: a tela de navegação compacta (rua/distância/velocidade) é IDÊNTICA
+    // indo buscar o passageiro e indo pro destino — só o endereço fixo no
+    // topo muda, e não vale a pena comparar endereço pra isso. Em vez disso,
+    // usamos esse flag: uma vez confirmado que chegou no embarque (ou que a
+    // tela de espera com contagem regressiva apareceu), qualquer navegação
+    // compacta depois disso já é "corrida", não "buscar". Reseta ao voltar
+    // pra Aguardando/Buscando.
+    private var nn99ReachedPickup = false
+    // Rastreio de diagnóstico: qual foi o último gatilho que decidiu o
+    // valor de nn99ReachedPickup (pedido do Yuri, 18/07/2026 — facilita
+    // investigar troca de status depois, sem precisar reconstruir tudo
+    // manualmente lendo texto cru).
+    private var nn99ReachedPickupReason = "init"
+
+    override fun onServiceConnected() {
+        instance = this
+        JourneyStatusTracker.restore(this)
+        val info = AccessibilityServiceInfo().apply {
+            eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
+                         AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
+                         AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED
+            feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+            notificationTimeout = 100   // o mais rápido possível — oferta expira em segundos
+            flags = AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS or
+                    AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
+                    AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+        }
+        serviceInfo = info
+        log("\n═══════════════ SERVIÇO CONECTADO v21 ${fmt.format(Date())} ═══════════════")
+        // Carrega o cache local das regras de detecção na hora (instantâneo)
+        // e já dispara um fetch forçado em background pra pegar qualquer
+        // ajuste feito no Supabase desde a última vez que o app abriu —
+        // sem isso, um ajuste de regra só valeria depois de até 10min.
+        RuleEngine.ensureLoaded(this)
+        RuleEngine.refreshIfDue(this, force = true)
+        // Leitura por TEMPO, não só por evento — a tela de oferta pode ser
+        // canvas puro e não disparar TYPE_WINDOW_CONTENT_CHANGED nenhum.
+        // É assim (por polling) que apps como o Gigu conseguem ler rápido.
+        main.post(pollRunnable)
+        // Reporta a versão do APK rodando de verdade (
+
+===== handleOfficialRouteInfo @ 21715 =====
+ayList<String>()
+        try {
+            for (w in windows) {
+                val wp = w.root?.packageName?.toString() ?: "?"
+                val typeStr = when (w.type) {
+                    AccessibilityWindowInfo.TYPE_APPLICATION -> "APPLICATION"
+                    AccessibilityWindowInfo.TYPE_SYSTEM -> "SYSTEM"
+                    AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY -> "A11Y_OVERLAY"
+                    AccessibilityWindowInfo.TYPE_INPUT_METHOD -> "INPUT_METHOD"
+                    AccessibilityWindowInfo.TYPE_SPLIT_SCREEN_DIVIDER -> "SPLIT_DIVIDER"
+                    else -> "OUTRO(${w.type})"
+                }
+                val rect = Rect(); w.getBoundsInScreen(rect)
+                detail.add("$wp type=$typeStr ativa=${w.isActive} area=${rect.width()*rect.height()}")
+            }
+        } catch (_: Exception) {}
+        sendToCloud("?", "?", "DIAG", "FGPLAT_NULO", emptyList(), null, null, detail)
+    }
+
+    private fun platformOfPackage(pkg: String?): String? = when {
+        pkg == null -> null
+        UBER_PKGS.contains(pkg) -> "UBER"
+        NN_PKGS.contains(pkg) -> "99"
+        else -> null
+    }
+
+    private fun chooseForegroundPlatform(): String? {
+        val hint = recentOfficialOfferHint()
+        val visualLock = shortVisualPlatformLock()
+        var bestPlat: String? = null
+        var bestScore = Long.MIN_VALUE
+        try {
+            val rect = Rect()
+            for (w in windows) {
+                val wp = w.root?.packageName?.toString() ?: continue
+                val plat = platformOfPackage(wp) ?: continue
+                if (w.type != AccessibilityWindowInfo.TYPE_APPLICATION && w.type != AccessibilityWindowInfo.TYPE_SYSTEM) continue
+                w.getBoundsInScreen(rect)
+                val area = rect.width().coerceAtLeast(0).toLong() * rect.height().coerceAtLeast(0).toLong()
+                var score = area
+                if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION) score += 2_000_000_000L
+                if (w.isActive) score += 6_000_000_000L
+                if (w.isFocused) score += 12_000_000_000L
+                if (plat == visualLock) score += 14_000_000_000L
+                if (plat == hint) score += 30_000_000_000L
+                if (score > bestScore) { bestScore = score; bestPlat = plat }
+            }
+        } catch (_: Exception) {}
+        return bestPlat
+    }
+
+    private fun requestPriorityOcr(plat: String) {
+        lastOcrMs = 0L
+        requestOcrPass(plat)
+    }
+
+    private fun handleOfficialNotification(plat: String, texts: List<String>, offerHint: Boolean) {
+        if (!offerHint || (plat != "UBER" && plat != "99")) return
+        officialOfferHintPlatform = plat
+        officialOfferHintUntilMs = System.currentTimeMillis() + OFFICIAL_OFFER_HINT_MS
+        main.post {
+            val low = texts.joinToString(" ").lowercase(Locale.getDefault())
+            if (texts.isNotEmpty() && isOfferScreen(low)) processRealOffer(plat, texts)
+            requestPriorityOcr(plat)
+            main.postDelayed({ requestPriorityOcr(plat) }, 320L)
+        }
+    }
+
+    private fun handleOfficialOperationalNotification(plat: String, keywords: List<String>, actions: List<String>) {
+        if (plat != "UBER" && plat != "99") return
+        val strongArrival = keywords.any { it == "cheguei" || it == "iniciar" } ||
+            actions.any { it == "cheguei" || it == "iniciar" }
+        if (strongArrival) AutoTripCapture.markPickupArrived(plat)
+    }
+
+    private fun handleOfficialRouteInfo(plat: String, origin: String?, dest: String?, stops: List<String>) {
+        if (plat != "UBER" && plat != "99") return
+        officialRoutePlatform = plat
+        if (!origin.isNullOrBlank()) officialRouteOrigin = origin
+        if (!dest.isNullOrBlank()) officialRouteDest = dest
+        if (stops.isNotEmpty()) officialRouteStops = stops.filter { it.isNotBlank() }.distinct()
+        officialRouteUntilMs = System.currentTimeMillis() + OFFICIAL_ROUTE_HINT_MS
+    }
+
+    private fun enrichOfferWithOfficialRoute(plat: String, offer: Offer): Offer {
+        if (officialRoutePlatform != plat || System.currentTimeMillis() > officialRouteUntilMs) return offer
+        return offer.copy(origem=offer.origem ?: officialRouteOrigin, destino=offer.destino ?: officialRouteDest, stopAddresses=if (offer.stopAddresses.isNotEmpty()) offer.stopAddresses else officialRouteStops, paradas=maxOf(offer.paradas, if (offer.stopAddresses.isNotEmpty()) offer.stopAddresses.size else officialRouteStops.size))
+    }
+
+    private fun pollForeground() {
+        // BUG CONFIRMADO EM ANÁLISE REAL (13/07/2026): pegar a primeira janela
+        // do loop (ordem de z-order) fazia uma PiP pequena da 99/Uber — que
+        // fica no topo do z-order por natureza, mesmo ocupando um cantinho
+        // da tela — vencer por engano sobre o app que realmente domina a
+        // tela visualmente. Resultado: fgPlat marcado como "99" enquanto o
+        // OCR (que fotografa a tela inteira) lia texto quase todo da Uber,
+        // gerando cards e logs com platform errado. Agora escolhe pela MAIOR
+        // área visível entre as janelas candidatas, não pela primeira.
+        val fgPlat = chooseForegroundPlatform()
+        if (fgPlat != null) {
+            requestOcrPass(fgPlat)
+        } else if (GpsService.isRunning) {
+            // Diagnóstico (23/07/2026, print real do Yuri): oferta que
+            // aparece e some sem deixar rastro nenhum — confirmado em 2
+            // casos reais que são buracos totais de log (9,5s e 15,1s),
+            // exatamente quando ele tirou print de uma oferta. Hipótese:
+            // a janela desse card não bate no filtro (TYPE_APPLICATION +
+            // isActive) — cai fora do loop acima, fgPlat fica nulo, e como
+            // requestOcrPass só roda com fgPlat != null, NADA é tentado,
+            // nem logado. Loga aqui o que as janelas realmente são pra
+            // confirmar (ou derrubar) essa hipótese na próxima vez.
+            logFgPlatNull()
+        }
+
+        // ── Status Online/Buscar/Corrida: por TEMPO, não só por evento ──────
+        // Mesmo motivo do requestOcrPass já ser por polling: a tela de
+        // navegação com mapa pode passar bastante tempo sem disparar
+        // TYPE_WINDOW_CONTENT_CHANGED (o mapa em si não é uma view de texto
+        // mudando), então depender só de onAccessibilityEvent deixava o
+        // card preso em "Online" numa corrida real mesmo com o texto certo
+        // já na tela. Roda a cada 600ms, igual o resto do Flash.
+        //
+        // MAS: enquanto tiver oferta ativa na tela (FlashCard mostrando —
+        // caso real de corrida em andamento + nova oferta chegando antes de
+        // encerrar a atual), essa varredura PARA por completo. Dois motivos:
+        // 1) o texto do card de oferta pode ser lido junto com o da tela de
+        //    navegação por baixo, fazendo o status oscilar (Corrida→Online→
+        //    Corrida) sem debounce nunca fechar de verdade.
+        // 2) rodar collectTexts() (varredura recursiva da árvore inteira)
+        //    no mesmo tick de 600ms que o OCR do Flash sobrecarrega a thread
+        //    principal e é o que tava causando o FlashCard piscar. Status do
+        //    botão flutuante nunca deve competir com o Flash pela UI thread.
+        if (offerGuardActive()) return
+        when (fgPlat) {
+            "UBER" -> scanUberTripState()
+            "99"   -> scanNN99TripState()
+        }
+    }
+
+    // Varre só as janelas da 99, mesmo princípio do scanUberTripState.
+    private fun scanNN99TripState() {
+        val texts = ArrayList<String>()
+        try {
+            for (w in windows) {
+                val r = w.root ?: continue
+                val wp = r.packageName?.toString() ?: continue
+                if (!NN_PKGS.contains(wp)) continue
+                collectTexts(r, texts)
+            }
+        } catch (_: Exception) {}
+        if (texts.isNotEmpty()) detectAndApply99TripSubState(texts)
+    }
+
+    // Varre só as janelas da Uber (independente de evento) e roda a mesma
+    // detecção com debounce de sempre — dá pra chamar em loop sem medo,
+    // detectAndApplyTripSubState já é seguro pra repetição. Nunca chamado
+    // com oferta ativa (ver guard em pollForeground).
+    private fun scanUberTripState() {
+        val texts = ArrayList<String>()
+        try {
+            for (w in windows) {
+                val r = w.root ?: continue
+                val wp = r.packageName?.toString() ?: continue
+                if (!UBER_PKGS.contains(wp)) continue
+                collectTexts(r, texts)
+            }
+        } catch (_: Exception) {}
+        if (texts.isNotEmpty()) detectAndApplyTripSubState(texts)
+    }
+
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        event ?: return
+        val evPkg = event.packageName?.toString() ?: ""
+
+        // ── Notificações da 99/Uber: a oferta pode chegar por aqui com valor ──
+        if (event.eventType == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED) {
+            if (CAPTURE_PKGS.contains(evPkg) && !GIGU_PKGS.contains(evPkg)) {
+                handleNotification(evPkg, event)
+            }
+            return
+        }
+
+        val now = System.currentTimeMillis()
+        // Se o evento veio de um dos apps capturados, varre sempre.
+        // Se veio de QUALQUER outro app, ainda varre (a oferta pode ser janela
+        // da 99 desenhada por cima de outro app) — mas no máx. 1x por segundo.
+        val fromCaptured = CAPTURE_PKGS.contains(evPkg)
+        if (!fromCaptured && now - lastScanMs < 1000) return
+        lastScanMs = now
+
+        // ── Varre TODAS as janelas visíveis, texto separado por pacote,
+        //    e coleta metadados das janelas pra diagnóstico ──
+        val textsByPkg = LinkedHashMap<String, ArrayList<String>>()
+        val pkgArea = HashMap<String, Int>()
+        val pkgPriority = HashMap<String, Int>()
+        val winMeta = ArrayList<String>()
+        var nnWindowSeen = false
+        var nnIsForeground = false
+        var nnNodeCount = 0
+        try {
+            val rect = Rect()
+            for (w in windows) {
+                val r = w.root
+                val wp = r?.packageName?.toString()
+                val meta = "type=${winTypeName(w.type)} layer=${w.layer} pkg=${wp ?: "null"} active=${w.isActive} focus=${w.isFocused}"
+                winMeta.add(meta)
+                if (r == null || wp == null) continue
+                if (CAPTURE_PKGS.contains(wp)) {
+                    val lst = textsByPkg.getOrPut(wp) { ArrayList() }
+                    val before = lst.size
+                    collectTexts(r, lst)
+                    w.getBoundsInScreen(rect)
+                    val area = rect.width().coerceAtLeast(0) * rect.height().coerceAtLeast(0)
+                    if (area > (pkgArea[wp] ?: 0)) pkgArea[wp] = area
+                    val priority = (if (w.isFocused) 8 else 0) + (if (w.isActive) 4 else 0) +
+                        (if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION) 2 else 0)
+                    if (priority > (pkgPriority[wp] ?: -1)) pkgPriority[wp] = priority
+                    if (NN_PKGS.contains(wp)) {
+                        nnWindowSeen = true; nnNodeCount += (lst.size - before)
+                        if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION && w.isActive) nnIsForeground = true
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
+        if (textsByPkg.isEmpty() && fromCaptured) {
+            val root = rootInActiveWindow
+            val rp = root?.packageName?.toString()
+            if (root != null && rp != null && CAPTURE_PKGS.contains(rp)) {
+                val lst = ArrayList<String>()
+                collectTexts(root, lst)
+                textsByPkg[rp] = lst
+            }
+        }
+        if (textsByPkg.isEmpty()) return
+
+        // Mesma correção do fgPlat em pollForeground: escolhe pela MAIOR área
+        // visível entre Uber/99, não pela primeira encontrada (que favorecia
+        // uma PiP pequena por causa do z-order, mesmo com a Uber ocupando
+        // quase toda a tela por baixo).
+        val eventPlat = platformOfPackage(evPkg)
+        val hintPlat = recentOfficialOfferHint()
+        val visualLock = shortVisualPlatformLock()
+        val realPkg = textsByPkg.keys
+            .filter { UBER_PKGS.contains(it) || NN_PKGS.contains(it) }
+            .maxByOrNull { pkg ->
+                val p = platformOfPackage(pkg)
+                var score = (pkgPriority[pkg] ?: 0).toLong() * 1_000_000_000L + (pkgArea[pkg] ?: 0).toLong()
+                if (p == eventPlat && (pkgPriority[pkg] ?: 0) > 0) score += 3_000_000_000L
+                if (p == visualLock) score += 12_000_000_000L
+                if (p == hintPlat) score += 30_000_000_000L
+                score
+            }
+        val realPlat = when {
+            realPkg != null && UBER_PKGS.contains(realPkg) -> "UBER"
+            realPkg != null && NN_PKGS.contains(realPkg)   -> "99"
+            else -> null
+        }
+        val realTexts = realPkg?.let { textsByPkg[it] } ?: ArrayList()
+
+        if (realPlat != null && realTexts.isNotEmpty()) {
+            processRealOffer(realPlat, realTexts)
+        } else if (realPlat == null) {
+            hideFlashIfActive()
+        }
+
+        // ── Status Online/Buscar/Corrida no widget flutuante ────────────────
+        // Uber e 99 já confirmados em log real (ver detectAndApplyTripSubState
+        // e detectAndApply99TripSubState). Quando não estamos lendo texto de
+        // nenhuma das duas (app em 2º plano, ex: motorista foi pro Waze durante
+        // a corrida), simplesmente não chama nada — o último estado confirmado
+        // permanece, porque a corrida continua valendo mesmo com o app fora da
+        // tela.
+        //
+        // Guard igual ao do pollForeground: com oferta ativa (lastFlashSig
+        // setado pelo processRealOffer logo acima), o texto da tela pode vir
+        // misturado com o card de oferta — não mexe no status nesse momento.
+        if (!offerGuardActive()) {
+            if (realPlat == "UBER" && realTexts.isNotEmpty()) {
+                detectAndApplyTripSubState(realTexts)
+            } else if (realPlat == "99" && realTexts.isNotEmpty()) {
+                detectAndApply99TripSubState(realTexts)
+            }
+        }
+
+
+        // ── Log combinado (throttle + dedup) ──
+        if (now - lastLogMs < 700) return
+        val plat = when {
+            UBER_PKGS.contains(evPkg) -> "UBER"
+            NN_PKGS.contains(evPkg)   -> "99"
+            GIGU_PKGS.contains(evPkg) -> "GIGU"
+            realPlat != null -> realPlat
+            else -> "OUTRO"
+        }
+        // BUG CONFIRMADO EM ANÁLISE REAL (13/07/2026): antes disso, o texto
+        // gravado era a MISTURA de todos os pacotes visíveis
+        // (textsByPkg.values.forEach — Uber E 99 juntos, quando o motorista
+        // roda os dois apps ao mesmo tempo, um deles em PiP/miniatura), mas
+        // a linha era marcada só com a plataforma do evento que disparou.
+        // Resultado: linhas (e flash_card_snapshots — os cards reais
+        // exibidos na tela) marcadas platform=99 com conteúdo 100% Uber,
+        // e vice-versa. Agora escopa o texto ao MESMO pacote que definiu
+        // 'plat', nunca mistura dois apps na mesma linha.
+        val platPkg = when (plat) {
+            "UBER" -> UBER_PKGS.firstOrNull { textsByPkg.containsKey(it) } ?: evPkg
+            "99"   -> NN_PKGS.firstOrNull { textsByPkg.contain
