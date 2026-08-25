@@ -471,8 +471,13 @@ object AutoTripCapture {
                 // "confirmada" só nasce depois que o vídeo do histórico
                 // confirma/corrige o valor (ver confirmImport() no PWA) —
                 // aqui o ciclo completo vira "estimada".
-                val status = if (b.offerValue != null && b.tripStartedAt > 0 && b.tripEndedAt > 0)
-                    "estimada" else "capturada"
+                // Status principal agora representa somente confirmação:
+                // toda captura automática nasce aguardando confirmação e só o
+                // vídeo do histórico pode promovê-la a "confirmada" no PWA.
+                // A completude da captura continua guardada separadamente para
+                // diagnóstico/aperfeiçoamento do OCR, sem criar outro status.
+                val captureComplete = b.offerValue != null && b.tripStartedAt > 0 && b.tripEndedAt > 0
+                val status = "estimada"
 
                 // Já estamos numa thread em background (isDaemon) — pode
                 // bloquear aqui sem travar a leitura de tela. Endereço real,
@@ -527,6 +532,9 @@ object AutoTripCapture {
                     put("trip_started_at", iso(b.tripStartedAt))
                     put("trip_ended_at", iso(b.tripEndedAt))
                     put("status", status)
+                    put("capture_source", "automatica")
+                    put("value_needs_review", true)
+                    put("data_quality_flag", if (captureComplete) JSONObject.NULL else "captura_incompleta")
                 }
 
                 val url = URL("${TripReaderService.SUPABASE_URL}/rest/v1/auto_trips")
