@@ -1,0 +1,113 @@
+name: Patch 99 full accessibility diagnostics
+on:
+  push:
+    paths:
+      - '.github/workflows/patch-99-full-a11y-diagnostics.yml'
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Apply 99 diagnostic patch
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('app/src/main/java/io/github/yurisilva90/smartmobi/TripReaderService.kt')
+          s=p.read_text()
+          if 'send99FullAccessibilityDiagnostics' not in s:
+              marker='    private fun collectTexts(node: AccessibilityNodeInfo?, out: ArrayList<String>) {'
+              if marker not in s: raise SystemExit('collectTexts marker not found')
+              helper=r'''
+    private var last99TreeDiagMs = 0L
+    private fun send99FullAccessibilityDiagnostics(texts: List<String>) {
+        val now = System.currentTimeMillis()
+        if (now - last99TreeDiagMs < 1800L) return
+        last99TreeDiagMs = now
+        val nodesJson = JSONArray()
+        val windowsJson = JSONArray()
+        fun walk(node: AccessibilityNodeInfo?, path: String = "0", depth: Int = 0) {
+            node ?: return
+            if (depth > 40 || nodesJson.length() >= 1200) return
+            try {
+                val rect = Rect(); node.getBoundsInScreen(rect)
+                val extrasObj = JSONObject()
+                try {
+                    for (k in node.extras.keySet()) {
+                        val v = node.extras.get(k)
+                        extrasObj.put(k, when (v) { null -> JSONObject.NULL; is CharSequence, is Number, is Boolean, is String -> v; else -> v.toString() })
+                    }
+                } catch (_: Exception) {}
+                nodesJson.put(JSONObject().apply {
+                    put("path", path); put("depth", depth)
+                    put("class", node.className?.toString() ?: JSONObject.NULL)
+                    put("package", node.packageName?.toString() ?: JSONObject.NULL)
+                    put("view_id", node.viewIdResourceName ?: JSONObject.NULL)
+                    put("text", node.text?.toString() ?: JSONObject.NULL)
+                    put("content_desc", node.contentDescription?.toString() ?: JSONObject.NULL)
+                    put("hint_text", if (Build.VERSION.SDK_INT >= 26) node.hintText?.toString() ?: JSONObject.NULL else JSONObject.NULL)
+                    put("pane_title", if (Build.VERSION.SDK_INT >= 28) node.paneTitle?.toString() ?: JSONObject.NULL else JSONObject.NULL)
+                    put("tooltip_text", if (Build.VERSION.SDK_INT >= 28) node.tooltipText?.toString() ?: JSONObject.NULL else JSONObject.NULL)
+                    put("state_description", if (Build.VERSION.SDK_INT >= 30) node.stateDescription?.toString() ?: JSONObject.NULL else JSONObject.NULL)
+                    put("error", node.error?.toString() ?: JSONObject.NULL)
+                    put("bounds", JSONObject().apply { put("left",rect.left);put("top",rect.top);put("right",rect.right);put("bottom",rect.bottom);put("center_x",rect.centerX());put("center_y",rect.centerY());put("width",rect.width());put("height",rect.height()) })
+                    put("child_count", node.childCount); put("clickable", node.isClickable); put("long_clickable", node.isLongClickable)
+                    put("focusable", node.isFocusable); put("focused", node.isFocused); put("accessibility_focused", node.isAccessibilityFocused)
+                    put("selected", node.isSelected); put("checkable", node.isCheckable); put("checked", node.isChecked); put("enabled", node.isEnabled)
+                    put("password", node.isPassword); put("scrollable", node.isScrollable); put("visible_to_user", node.isVisibleToUser)
+                    put("editable", node.isEditable); put("dismissable", node.isDismissable)
+                    put("important_for_accessibility", if (Build.VERSION.SDK_INT >= 24) node.isImportantForAccessibility else true)
+                    put("actions", JSONArray(node.actionList.map { a -> JSONObject().apply { put("id",a.id);put("label",a.label?.toString() ?: JSONObject.NULL) } }))
+                    put("extras", extrasObj)
+                })
+            } catch (_: Exception) {}
+            for (i in 0 until node.childCount) walk(node.getChild(i), "$path.$i", depth+1)
+        }
+        try {
+            for (w in windows) {
+                val root=w.root ?: continue
+                val pkg=root.packageName?.toString() ?: continue
+                if (!NN_PKGS.contains(pkg)) continue
+                val rect=Rect(); w.getBoundsInScreen(rect)
+                windowsJson.put(JSONObject().apply { put("type",w.type);put("layer",w.layer);put("active",w.isActive);put("focused",w.isFocused);put("pkg",pkg);put("bounds",JSONObject().apply{put("left",rect.left);put("top",rect.top);put("right",rect.right);put("bottom",rect.bottom)}) })
+                walk(root)
+            }
+        } catch (_: Exception) {}
+        thread(isDaemon=true) {
+            try {
+                val prefs=getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
+                val userId=prefs.getString(GpsService.KEY_USER_ID,null)
+                val deviceId=try { Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) } catch (_: Exception) { "unknown" }
+                val body=JSONObject().apply {
+                    put("device_id",deviceId); if(userId!=null) put("user_id",userId); put("platform","99"); put("package","accessibility-tree"); put("screen_class","99_FULL_TREE")
+                    put("texts",JSONObject().apply { put("state","FULL_TREE");put("raw",JSONArray(texts));put("windows",windowsJson);put("nodes",nodesJson) })
+                }
+                val conn=URL("$SUPABASE_URL/rest/v1/trip_reader_log").openConnection() as HttpURLConnection
+                conn.requestMethod="POST";conn.connectTimeout=8000;conn.readTimeout=8000;conn.doOutput=true
+                conn.setRequestProperty("Content-Type","application/json");conn.setRequestProperty("apikey",SUPABASE_ANON)
+                conn.setRequestProperty("Authorization","Bearer ${prefs.getString(GpsService.KEY_ACCESS_TOKEN,null) ?: SUPABASE_ANON}");conn.setRequestProperty("Prefer","return=minimal")
+                conn.outputStream.use{it.write(body.toString().toByteArray())};conn.responseCode;conn.disconnect()
+            } catch (_: Exception) {}
+        }
+    }
+
+'''
+              s=s.replace(marker, helper+marker, 1)
+          target='''        if (realPlat != null && realTexts.isNotEmpty()) {\n            processRealOffer(realPlat, realTexts)\n        } else if (realPlat == null) {'''
+          repl='''        if (realPlat != null && realTexts.isNotEmpty()) {\n            if (realPlat == "99") send99FullAccessibilityDiagnostics(realTexts)\n            processRealOffer(realPlat, realTexts)\n        } else if (realPlat == null) {'''
+          if target not in s: raise SystemExit('realPlat processing block not found')
+          s=s.replace(target,repl,1)
+          p.write_text(s)
+          g=Path('app/build.gradle'); b=g.read_text(); b=re.sub(r'versionCode\s+\d+','versionCode 231',b,count=1); b=re.sub(r'versionName\s+"[^"]+"','versionName "1.3.18"',b,count=1); g.write_text(b)
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/io/github/yurisilva90/smartmobi/TripReaderService.kt app/build.gradle
+          git commit -m "Capture full 99 accessibility tree diagnostics"
+          git push
