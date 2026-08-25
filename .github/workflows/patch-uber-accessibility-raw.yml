@@ -1,0 +1,73 @@
+name: Patch Uber accessibility raw diagnostics
+
+on:
+  push:
+    paths:
+      - '.github/workflows/patch-uber-accessibility-raw.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Patch Uber-only raw accessibility capture
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path('app/src/main/java/io/github/yurisilva90/smartmobi/TripReaderService.kt')
+          s = p.read_text()
+
+          old = '''        if (realPlat != null && realTexts.isNotEmpty()) {
+            processRealOffer(realPlat, realTexts)
+        } else if (realPlat == null) {'''
+          new = '''        if (realPlat != null && realTexts.isNotEmpty()) {
+            // Diagnóstico temporário Uber (25/08/2026): grava a árvore textual
+            // bruta SOMENTE quando a acessibilidade reconhece uma oferta Uber.
+            // 99 continua sem raw e segue dependente de OCR para ofertas.
+            if (realPlat == "UBER") {
+                val uberRawJoined = realTexts.joinToString("  ")
+                val uberRawLow = uberRawJoined.lowercase(Locale.getDefault())
+                if (isOfferScreen(uberRawLow)) {
+                    sendToCloud(
+                        "UBER", "accessibility-raw", "UBER_OFERTA_RAW", "OFERTA_RAW",
+                        extractMoney(uberRawJoined), extractKm(uberRawLow), extractMin(uberRawLow), realTexts
+                    )
+                }
+            }
+            processRealOffer(realPlat, realTexts)
+        } else if (realPlat == null) {'''
+          if old not in s:
+              raise SystemExit('target accessibility block not found')
+          s = s.replace(old, new, 1)
+
+          old2 = '                        put("raw", if (DEBUG_SEND_RAW_TEXT) JSONArray(texts) else JSONArray())'
+          new2 = '''                        val sendRaw = DEBUG_SEND_RAW_TEXT ||
+                            (plat == "UBER" && pkg == "accessibility-raw" && state == "OFERTA_RAW")
+                        put("raw", if (sendRaw) JSONArray(texts) else JSONArray())'''
+          if old2 not in s:
+              raise SystemExit('target raw line not found')
+          s = s.replace(old2, new2, 1)
+          p.write_text(s)
+
+          g = Path('app/build.gradle')
+          b = g.read_text()
+          b = b.replace('versionCode 228', 'versionCode 229')
+          b = b.replace('versionName "1.3.15"', 'versionName "1.3.16"')
+          b = b.replace('// 1.3.15:', '// 1.3.16:')
+          g.write_text(b)
+          PY
+      - name: Remove one-shot workflow
+        run: rm .github/workflows/patch-uber-accessibility-raw.yml
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/io/github/yurisilva90/smartmobi/TripReaderService.kt app/build.gradle .github/workflows/patch-uber-accessibility-raw.yml
+          git commit -m "Capture raw Uber accessibility offer text only"
+          git push
