@@ -3,6 +3,7 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 // 1.3.18: diagnóstico completo da árvore de acessibilidade da Uber e 99.
+// build trigger
 android {
     namespace 'io.github.yurisilva90.smartmobi'
     compileSdk 34
