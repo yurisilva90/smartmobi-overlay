@@ -2,7 +2,7 @@ plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
 }
-// 1.3.14: visual do Flash na notificação + origem/destino/paradas robustos (build final).
+// 1.3.14: Flash visual + rota completa por notificações oficiais e OCR.
 android {
     namespace 'io.github.yurisilva90.smartmobi'
     compileSdk 34
