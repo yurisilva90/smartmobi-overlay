@@ -1,0 +1,198 @@
+name: Patch MoB 1.3.23 Uber offer ownership and notification layout
+on:
+  push:
+    paths: ['.github/workflows/patch-1.3.23.yml']
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply patch
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p=Path('app/src/main/java/io/github/yurisilva90/smartmobi/TripReaderService.kt')
+          s=p.read_text()
+
+          old='''        if (realPlat != null && realTexts.isNotEmpty()) {
+            if (realPlat == "99") send99FullAccessibilityDiagnostics(realTexts)
+            if (realPlat == "UBER") {
+                val uberRawJoined = realTexts.joinToString("  ")
+                val uberRawLow = uberRawJoined.lowercase(Locale.getDefault())
+                if (isOfferScreen(uberRawLow)) {
+                    sendToCloud(
+                        "UBER", "accessibility-raw", "UBER_OFERTA_RAW", "OFERTA_RAW",
+                        extractMoney(uberRawJoined), extractKm(uberRawLow), extractMin(uberRawLow), realTexts
+                    )
+                    sendUberFullAccessibilityDiagnostics(realTexts)
+                }
+            }
+            processRealOffer(realPlat, realTexts)
+        } else if (realPlat == null) {
+            hideFlashIfActive()
+        }
+'''
+          new='''        // v1.3.23: oferta pertence ao PACOTE que expôs os nós da oferta, não
+        // necessariamente ao app que ocupa a maior área. Caso real: 99 em foreground
+        // e card da Uber em janela TYPE_SYSTEM por cima. A regra antiga escolhia 99
+        // pela área e salvava a oferta Uber no cache da 99; ao aceitar Uber, a captura
+        // automática nascia sem valor/km/tempo. Agora procura oferta separadamente
+        // dentro dos textos de cada plataforma e processa o pacote que efetivamente
+        // contém a assinatura da oferta.
+        val uberOfferTexts = textsByPkg.entries.firstOrNull { UBER_PKGS.contains(it.key) &&
+            isOfferScreen(it.value.joinToString("  ").lowercase(Locale.getDefault())) }?.value
+        val nnOfferTexts = textsByPkg.entries.firstOrNull { NN_PKGS.contains(it.key) &&
+            isOfferScreen(it.value.joinToString("  ").lowercase(Locale.getDefault())) }?.value
+        val eventOfferPlat = when {
+            UBER_PKGS.contains(evPkg) && uberOfferTexts != null -> "UBER"
+            NN_PKGS.contains(evPkg) && nnOfferTexts != null -> "99"
+            uberOfferTexts != null && nnOfferTexts == null -> "UBER"
+            nnOfferTexts != null && uberOfferTexts == null -> "99"
+            else -> realPlat
+        }
+        val eventOfferTexts = when (eventOfferPlat) {
+            "UBER" -> uberOfferTexts ?: realTexts
+            "99" -> nnOfferTexts ?: realTexts
+            else -> realTexts
+        }
+
+        if (eventOfferPlat != null && eventOfferTexts.isNotEmpty()) {
+            if (eventOfferPlat == "99") send99FullAccessibilityDiagnostics(eventOfferTexts)
+            if (eventOfferPlat == "UBER") {
+                val uberRawJoined = eventOfferTexts.joinToString("  ")
+                val uberRawLow = uberRawJoined.lowercase(Locale.getDefault())
+                if (isOfferScreen(uberRawLow)) {
+                    sendToCloud(
+                        "UBER", "accessibility-raw", "UBER_OFERTA_RAW", "OFERTA_RAW",
+                        extractMoney(uberRawJoined), extractKm(uberRawLow), extractMin(uberRawLow), eventOfferTexts
+                    )
+                    sendUberFullAccessibilityDiagnostics(eventOfferTexts)
+                }
+            }
+            processRealOffer(eventOfferPlat, eventOfferTexts)
+        } else if (realPlat == null) {
+            hideFlashIfActive()
+        }
+'''
+          if old not in s:
+              raise SystemExit('offer ownership block not found')
+          s=s.replace(old,new)
+
+          old2='''        val valorTxt = offer.valor?.let { "R$ ${fmtBr(it)}" }
+        val titulo = listOfNotNull(plat, valorTxt).joinToString(" · ")
+        val lines = ArrayList<String>()
+        if (offer.minPickup != null || offer.kmPickup != null) {
+            val pickup = listOfNotNull(
+                offer.minPickup?.let { "$it min" },
+                offer.kmPickup?.let { "${fmtBr(it)} km" }
+            ).joinToString(" · ")
+            if (pickup.isNotEmpty()) lines.add("Até o passageiro: $pickup")
+        }
+        val routeMin = offer.minTrip ?: offer.min
+        val routeKm = offer.kmTrip ?: offer.km
+        if (routeMin != null || routeKm != null) {
+            val route = listOfNotNull(
+                routeMin?.let { "$it min" },
+                routeKm?.let { "${fmtBr(it)} km" }
+            ).joinToString(" · ")
+            if (route.isNotEmpty()) lines.add("Rota da corrida: $route")
+        }
+        origem?.let { lines.add("Origem: $it") }
+        stops.forEachIndexed { i, addr -> lines.add("Parada ${i + 1}: $addr") }
+        if (offer.paradas > stops.size) {
+            val faltantes = offer.paradas - stops.size
+            lines.add(if (faltantes == 1) "1 parada adicional sem endereço legível" else "$faltantes paradas adicionais sem endereço legível")
+        }
+        destino?.let { lines.add("Destino: $it") }
+        val resumo = lines.joinToString("\\n")
+'''
+          new2='''        val valorTxt = offer.valor?.let { "R$ ${fmtBr(it)}" }
+        val titulo = listOfNotNull(plat, valorTxt).joinToString(" - ")
+        // Layout pedido: linha 1 plataforma+valor; linha 2 km+tempo TOTAL;
+        // expandida acrescenta origem e destino em linhas próprias, depois card.
+        val totalKmNotif = offer.km ?: listOfNotNull(offer.kmPickup, offer.kmTrip).sum().takeIf { it > 0 }
+        val totalMinNotif = offer.min ?: listOfNotNull(offer.minPickup, offer.minTrip).sum().takeIf { it > 0 }
+        val linha2 = listOfNotNull(
+            totalKmNotif?.let { "${fmtBr(it)} km" },
+            totalMinNotif?.let { "${it}m" }
+        ).joinToString(" - ")
+        val lines = ArrayList<String>()
+        origem?.let { lines.add("Origem: $it") }
+        destino?.let { lines.add("Destino: $it") }
+        val resumo = listOf(titulo, linha2).plus(lines).filter { it.isNotBlank() }.joinToString("\\n")
+        val routeMin = offer.minTrip ?: offer.min
+        val routeKm = offer.kmTrip ?: offer.km
+'''
+          if old2 not in s:
+              raise SystemExit('notification text block not found')
+          s=s.replace(old2,new2)
+
+          old3='''        val visualLines = lines
+        val flashPicture = flashCard.renderNotificationBitmap(
+            plat, valorTxt, overallGrade, metrics, offer.min ?: routeMin ?: 0,
+            offer.km ?: routeKm ?: 0.0, declineReason, visualLines
+        )
+        builder.setContentTitle(titulo)
+            .setContentText(lines.firstOrNull() ?: titulo)
+'''
+          new3='''        val flashPicture = flashCard.renderNotificationBitmap(
+            plat, null, overallGrade, metrics, offer.min ?: routeMin ?: 0,
+            offer.km ?: routeKm ?: 0.0, declineReason, emptyList()
+        )
+        builder.setContentTitle(titulo)
+            .setContentText(linha2)
+'''
+          if old3 not in s:
+              raise SystemExit('notification bitmap block not found')
+          s=s.replace(old3,new3)
+
+          old4='''        if (flashPicture != null) {
+            // Samsung/Android 10 pode esconder BigPicture enquanto a notificação
+            // está recolhida. LargeIcon mantém uma miniatura do Flash visível já
+            // no estado normal; ao expandir continua mostrando a imagem completa.
+            builder.setLargeIcon(flashPicture)
+            builder.setStyle(Notification.BigPictureStyle()
+                .bigPicture(flashPicture)
+                .setBigContentTitle(titulo)
+                .setSummaryText(lines.take(2).joinToString(" · ")))
+        } else {
+            builder.setStyle(Notification.BigTextStyle().bigText(resumo))
+        }
+'''
+          new4='''        if (flashPicture != null) {
+            // Não usa LargeIcon: minimizada deve ter literalmente só as 2 linhas.
+            // BigPictureStyle não garante 4 linhas no Samsung, então o resumo
+            // expandido fica no BigContentTitle em quebras explícitas antes do card.
+            val expandedHeader = listOfNotNull(
+                titulo,
+                linha2.takeIf { it.isNotBlank() },
+                origem?.let { "Origem: $it" },
+                destino?.let { "Destino: $it" }
+            ).joinToString("\\n")
+            builder.setStyle(Notification.BigPictureStyle()
+                .bigPicture(flashPicture)
+                .setBigContentTitle(expandedHeader))
+        } else {
+            builder.setStyle(Notification.BigTextStyle().bigText(resumo))
+        }
+'''
+          if old4 not in s:
+              raise SystemExit('notification style block not found')
+          s=s.replace(old4,new4)
+
+          p.write_text(s)
+
+          g=Path('app/build.gradle')
+          gs=g.read_text()
+          gs=gs.replace('versionCode 235','versionCode 236').replace('versionName "1.3.22"','versionName "1.3.23"')
+          gs=gs.replace('// 1.3.22: notificação compacta 2 linhas + imagem somente do card.','// 1.3.23: corrige dono da oferta Uber/99 + notificação expandida em 4 linhas.')
+          g.write_text(gs)
+          PY
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git add app/src/main/java/io/github/yurisilva90/smartmobi/TripReaderService.kt app/build.gradle
+          git commit -m 'Fix Uber offer ownership and notification expanded layout' || exit 0
+          git push
