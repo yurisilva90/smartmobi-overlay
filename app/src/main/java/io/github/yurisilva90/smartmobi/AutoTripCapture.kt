@@ -99,6 +99,29 @@ object AutoTripCapture {
 
     @Volatile private var buffer: Buffer? = null
 
+    // Snapshot leve para a tela Jornada. Não grava nada e não altera a
+    // máquina de estados: apenas expõe os marcos que o AutoTripCapture já
+    // mantém em memória, junto com o km autoritativo do GpsService.
+    fun liveStateJson(): String {
+        val b = buffer
+        return JSONObject().apply {
+            put("active", b != null)
+            put("state", TripReaderService.confirmedTripSubState)
+            put("nowMs", System.currentTimeMillis())
+            put("gpsKm", GpsService.totalKm)
+            put("gpsRunning", GpsService.isRunning)
+            if (b != null) {
+                put("platform", b.platform.lowercase(Locale.getDefault()))
+                put("offerValue", b.offerValue ?: JSONObject.NULL)
+                put("acceptedAt", b.acceptedAt)
+                put("pickupStartedAt", b.pickupStartedAt)
+                put("pickupStartKm", b.pickupStartKm)
+                put("tripStartedAt", b.tripStartedAt)
+                put("tripStartKm", b.tripStartKm)
+            }
+        }.toString()
+    }
+
     // "mais completo vence": prioriza quem tem número de casa (\d{2,5}); em
     // empate, o mais longo. Uma leitura de OCR ruim (mais curta/sem número)
     // nunca substitui uma leitura boa só por ter chegado depois.

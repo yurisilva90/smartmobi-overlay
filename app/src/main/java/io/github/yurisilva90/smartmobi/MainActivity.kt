@@ -298,6 +298,8 @@ class MainActivity : AppCompatActivity() {
             @JavascriptInterface fun getGpsStartTime(): Long = GpsService.startTimeMs
             @JavascriptInterface fun getGpsPausedMs(): Long = GpsService.pausedMs
             @JavascriptInterface fun isGpsRunning(): Boolean = GpsService.isRunning
+            // Estado vivo Online/Buscar/Corrida + marcos de tempo/km da corrida atual.
+            @JavascriptInterface fun getLiveTripState(): String = AutoTripCapture.liveStateJson()
             // Km exato no instante da última virada de dia (00:00) capturada
             // durante a jornada atual. -1.0 = ainda não cruzou meia-noite
             // (ou o app já consumiu/limpou o snapshot anterior).
