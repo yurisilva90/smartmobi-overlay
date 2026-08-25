@@ -448,6 +448,33 @@ class MainActivity : AppCompatActivity() {
             // de "serviço conectado neste processo" durante diagnóstico.
             @JavascriptInterface fun isA11yConnected(): Boolean = TripReaderService.instance != null
 
+            // Estado real das permissões essenciais exibidas no checklist do MōB Flash.
+            @JavascriptInterface fun isLocationReady(): Boolean {
+                val fg = ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+                    ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                val bg = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+                    ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED
+                else true
+                return fg && bg
+            }
+            @JavascriptInterface fun openLocationSettings() {
+                runOnUiThread {
+                    try {
+                        startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+                    } catch (_: Exception) {}
+                }
+            }
+            @JavascriptInterface fun isBatteryExempt(): Boolean {
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true
+                return try {
+                    val pm = getSystemService(POWER_SERVICE) as PowerManager
+                    pm.isIgnoringBatteryOptimizations(packageName)
+                } catch (_: Exception) { false }
+            }
+            @JavascriptInterface fun openBatterySettings() {
+                runOnUiThread { requestBatteryOptimizationExemption() }
+            }
+
             // Notificações oficiais Uber/99 — permissão separada da Acessibilidade.
             @JavascriptInterface fun isNotificationAccessEnabled(): Boolean = this@MainActivity.isNotificationAccessEnabled()
             @JavascriptInterface fun openNotificationAccessSettings() {
