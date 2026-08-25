@@ -1,0 +1,29 @@
+name: Ajuste realtime Jornada
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  ajustar:
+    if: "${{ github.event.head_commit.message == 'chore: executar ajuste realtime jornada' }}"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Aplicar ajuste
+        shell: bash
+        run: |
+          python3 .github/patch-live-jornada.py
+          git config user.name "ChatGPT"
+          git config user.email "noreply@openai.com"
+          git rm .github/patch-live-jornada.py .github/workflows/temporario-live-jornada.yml .github/trigger-live-jornada.txt
+          git add app/src/main/java/io/github/yurisilva90/smartmobi/AutoTripCapture.kt app/src/main/java/io/github/yurisilva90/smartmobi/MainActivity.kt app/build.gradle
+          git commit -m "feat: jornada realtime e escopo da sessão atual"
+          git push origin HEAD:main
