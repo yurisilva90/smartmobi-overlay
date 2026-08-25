@@ -15,9 +15,9 @@ import kotlin.concurrent.thread
 
 /**
  * Captura dados estruturados das notificações oficiais da Uber/99.
- * Não persiste o texto bruto nem nome do passageiro; preserva os endereços de
- * origem/destino/paradas quando a própria notificação os expõe, além dos sinais
- * operacionais necessários para antecipar a leitura do Flash.
+ * Além dos campos derivados, persiste o payload textual exposto pela própria
+ * notificação para permitir diagnosticar formatos novos e evoluir o parser.
+ * O serviço continua restrito aos pacotes oficiais Uber/99.
  */
 class DriverNotificationListenerService : NotificationListenerService() {
 
@@ -57,16 +57,15 @@ class DriverNotificationListenerService : NotificationListenerService() {
             extras?.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)?.map { it.toString() } ?: emptyList()
         } catch (_: Exception) { emptyList() }
 
-        // Lê também campos customizados internos dos extras. Uber/99 podem
-        // expor rota/endereço fora de EXTRA_TEXT/BIG_TEXT. O conteúdo bruto
-        // permanece apenas em memória; no banco persistimos só os campos
-        // estruturados extraídos abaixo.
+        // Consolida todas as partes textuais que o Android expõe. Além dos
+        // campos padrão, percorre extras customizados usados pela Uber/99.
         val partSet = LinkedHashSet<String>()
         fun addPart(v: String?) { v?.trim()?.takeIf { it.isNotBlank() }?.let { partSet.add(it) } }
         listOf(title, text, big, sub, info, summary).forEach(::addPart)
         lines.forEach(::addPart)
+
         fun collectExtra(value: Any?, depth: Int = 0) {
-            if (value == null || depth > 2) return
+            if (value == null || depth > 3) return
             when (value) {
                 is CharSequence -> addPart(value.toString())
                 is android.os.Bundle -> try {
@@ -76,9 +75,44 @@ class DriverNotificationListenerService : NotificationListenerService() {
                 is Iterable<*> -> value.forEach { collectExtra(it, depth + 1) }
             }
         }
-        try { extras?.keySet()?.forEach { key -> collectExtra(extras.get(key)) } } catch (_: Exception) {}
+
+        // Mantém também a associação chave -> valor para sabermos em qual
+        // extra a 99 colocou cada informação. Tipos Android não serializáveis
+        // são ignorados; texto, números, booleanos, arrays e Bundles entram.
+        fun extraJsonValue(value: Any?, depth: Int = 0): Any? {
+            if (value == null || depth > 3) return null
+            return when (value) {
+                is CharSequence -> value.toString()
+                is Number -> value
+                is Boolean -> value
+                is android.os.Bundle -> JSONObject().apply {
+                    try {
+                        value.keySet().sorted().forEach { key ->
+                            extraJsonValue(value.get(key), depth + 1)?.let { put(key, it) }
+                        }
+                    } catch (_: Exception) {}
+                }
+                is Array<*> -> JSONArray().apply {
+                    value.forEach { item -> extraJsonValue(item, depth + 1)?.let { put(it) } }
+                }
+                is Iterable<*> -> JSONArray().apply {
+                    value.forEach { item -> extraJsonValue(item, depth + 1)?.let { put(it) } }
+                }
+                else -> null
+            }
+        }
+
+        val extrasPayload = JSONObject()
+        try {
+            extras?.keySet()?.sorted()?.forEach { key ->
+                val value = extras.get(key)
+                collectExtra(value)
+                extraJsonValue(value)?.let { extrasPayload.put(key, it) }
+            }
+        } catch (_: Exception) {}
+
         val parts = ArrayList(partSet)
-        val joined = parts.joinToString(" ").replace(Regex("\\s+"), " ").trim()
+        val joined = parts.joinToString(" \n ").replace(Regex("[\\t\\r ]+"), " ").trim()
         val low = joined.lowercase(Locale("pt", "BR"))
 
         val money = extractMoney(joined)
@@ -106,15 +140,14 @@ class DriverNotificationListenerService : NotificationListenerService() {
         val offerHint = eventType == "posted" && (n.flags and Notification.FLAG_ONGOING_EVENT) == 0 && (actionOffer || (hasMoney && (keywordOffer || kms.isNotEmpty() || mins.isNotEmpty())))
 
         if (offerHint) {
-            // O texto não é persistido. Só é passado em memória ao leitor
-            // para fixar a plataforma e antecipar uma captura prioritária.
             TripReaderService.onOfficialNotification(platform, parts, true)
         }
 
         persistStructured(
             sbn, n, platform, eventType,
             title.isNotBlank(), text.isNotBlank(), big.isNotBlank(), joined.length,
-            money, kms, mins, keywords.distinct(), actionLabels.distinct(), offerHint, routeInfo
+            money, kms, mins, keywords.distinct(), actionLabels.distinct(), offerHint, routeInfo,
+            parts, joined, extrasPayload
         )
     }
 
@@ -161,8 +194,13 @@ class DriverNotificationListenerService : NotificationListenerService() {
 
     private fun extractKm(s: String): List<Double> {
         val out = ArrayList<Double>()
-        Regex("""(\d{1,3}(?:[.,]\d+)?)\s*km\b""", RegexOption.IGNORE_CASE).findAll(s).forEach { m ->
-            m.groupValues[1].replace(",", ".").toDoubleOrNull()?.let { if (it in 0.01..500.0) out.add(it) }
+        // A 99 pode informar embarque em metros (ex.: 408 m) e a viagem em km.
+        // Normaliza tudo para quilômetros para o restante do app não precisar
+        // conhecer duas unidades diferentes.
+        Regex("""(\d{1,4}(?:[.,]\d+)?)\s*(km|m)\b""", RegexOption.IGNORE_CASE).findAll(s).forEach { m ->
+            val raw = m.groupValues[1].replace(",", ".").toDoubleOrNull() ?: return@forEach
+            val km = if (m.groupValues[2].equals("m", ignoreCase = true)) raw / 1000.0 else raw
+            if (km in 0.001..500.0) out.add(km)
         }
         return out.distinct()
     }
@@ -217,7 +255,6 @@ class DriverNotificationListenerService : NotificationListenerService() {
             }
             return null
         }
-
         val originLabels = listOf("origem", "embarque", "buscar em", "pickup")
         val destLabels = listOf("destino", "desembarque", "dropoff", "para")
         var origin: String? = null
@@ -271,7 +308,10 @@ class DriverNotificationListenerService : NotificationListenerService() {
         keywords: List<String>,
         actionLabels: List<String>,
         offerHint: Boolean,
-        routeInfo: RouteInfo
+        routeInfo: RouteInfo,
+        contentParts: List<String>,
+        contentText: String,
+        extrasPayload: JSONObject
     ) {
         thread(isDaemon = true) {
             try {
@@ -281,7 +321,6 @@ class DriverNotificationListenerService : NotificationListenerService() {
                 val deviceId = try { Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) } catch (_: Exception) { null }
                 val channel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) n.channelId else null
                 val extrasKeys = try { n.extras?.keySet()?.sorted()?.take(80) ?: emptyList() } catch (_: Exception) { emptyList() }
-                // Hash somente do formato operacional já sanitizado; texto bruto/PII não entra.
                 val shape = listOf(platform, channel ?: "", n.category ?: "", money.joinToString(","), kms.joinToString(","), mins.joinToString(","), keywords.joinToString(","), actionLabels.joinToString(",")).joinToString("|")
 
                 val body = JSONObject().apply {
@@ -315,6 +354,9 @@ class DriverNotificationListenerService : NotificationListenerService() {
                     put("stop_count", routeInfo.stopCount)
                     put("stop_addresses", JSONArray(routeInfo.stops))
                     put("route_duration_sec", routeInfo.routeDurationSec ?: JSONObject.NULL)
+                    put("content_parts", JSONArray(contentParts))
+                    put("content_text", contentText)
+                    put("extras_text", extrasPayload)
                 }
 
                 val conn = URL("${TripReaderService.SUPABASE_URL}/rest/v1/driver_notification_events").openConnection() as HttpURLConnection
