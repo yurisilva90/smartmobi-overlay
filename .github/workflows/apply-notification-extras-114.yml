@@ -23,6 +23,6 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add app/src/main/java/io/github/yurisilva90/smartmobi/DriverNotificationListenerService.kt app/src/main/java/io/github/yurisilva90/smartmobi/TripReaderService.kt
-          git rm -f tools/patch_notification_extras_114.py .github/workflows/apply-notification-extras-114.yml .github/workflows/finalize-route-image-114.yml .github/workflows/fix-notification-route-113.yml .github/workflows/inspect-route-notification.yml _route_notification_snippet.txt _route_notification_function.txt _offer_parser_function.txt _flash_bitmap_function.txt
+          git rm -f --ignore-unmatch tools/patch_notification_extras_114.py .github/workflows/apply-notification-extras-114.yml .github/workflows/finalize-route-image-114.yml .github/workflows/fix-notification-route-113.yml .github/workflows/inspect-route-notification.yml _route_notification_snippet.txt _route_notification_function.txt _offer_parser_function.txt _flash_bitmap_function.txt
           git commit -m 'fix: ler rota completa e exibir Flash na notificação 1.3.14'
           git push
