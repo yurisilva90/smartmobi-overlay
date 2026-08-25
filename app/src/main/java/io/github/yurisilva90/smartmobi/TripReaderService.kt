@@ -792,7 +792,8 @@ class TripReaderService : AccessibilityService() {
         val minPickup: Int? = null, val minTrip: Int? = null,
         val dinamico: Double = 0.0,
         val corridas: Int? = null, val paradas: Int = 0,
-        val multiplicador: Double? = null
+        val multiplicador: Double? = null,
+        val stopAddresses: List<String> = emptyList()
     )
 
     private fun parseOffer(texts: List<String>): Offer {
@@ -1046,10 +1047,13 @@ class TripReaderService : AccessibilityService() {
                 }
             }
         }
-        val origem = addrCandidates.getOrNull(0)
-        val destino = addrCandidates.getOrNull(1)
+        val origem = addrCandidates.firstOrNull()
+        val destino = if (addrCandidates.size >= 2) addrCandidates.lastOrNull() else null
+        val stopAddresses = if (paradas > 0 && addrCandidates.size > 2)
+            addrCandidates.subList(1, addrCandidates.size - 1).take(paradas)
+        else emptyList()
 
-        return Offer(valor, km, min, rkmDirect, nota, origem, destino, legs, kmPickup, kmTrip, minPickup, minTrip, dinamico, corridas, paradas, multiplicador)
+        return Offer(valor, km, min, rkmDirect, nota, origem, destino, legs, kmPickup, kmTrip, minPickup, minTrip, dinamico, corridas, paradas, multiplicador, stopAddresses)
     }
 
     private fun isOfferScreen(low: String): Boolean {
@@ -1231,7 +1235,8 @@ class TripReaderService : AccessibilityService() {
                 value = valor, dinamico = offer.dinamico, multiplicador = offer.multiplicador,
                 kmPickup = offer.kmPickup, kmTrip = offer.kmTrip,
                 durPickupSec = offer.minPickup?.let { it * 60 }, durTripSec = offer.minTrip?.let { it * 60 },
-                origin = offer.origem, dest = offer.destino
+                origin = offer.origem, dest = offer.destino,
+                stopCount = offer.paradas, stopAddresses = offer.stopAddresses
             ))
             val nowPartial = System.currentTimeMillis()
             if (nowPartial - (lastPartialRetryMsByPlat[plat] ?: 0L) > 450L) {
@@ -1488,7 +1493,7 @@ class TripReaderService : AccessibilityService() {
         // dobrando etc.) depois, comparando o que a tela mostrava com o que
         // o app calculou naquele instante.
         saveSnapshot(plat, bmp, overallGrade, metrics, min ?: 0, km, offer, texts)
-        showRouteNotification(plat, offer)
+        showRouteNotification(plat, offer, overallGrade, metrics, declineReason)
 
         main.post {
             flashCard.show(
@@ -2270,11 +2275,27 @@ class TripReaderService : AccessibilityService() {
         } catch (_: Exception) {}
         sendToCloud("99", "ocr", "OCR_INATIVO", "OCR_ALERTA_DISPARADO", emptyList(), null, null, emptyList())
     }
-    private fun showRouteNotification(plat: String, offer: Offer) {
+    private fun showRouteNotification(
+        plat: String,
+        offer: Offer,
+        overallGrade: String,
+        metrics: List<FlashCard.Metric>,
+        declineReason: String?
+    ) {
         val origem = offer.origem
         val destino = offer.destino
-        if (origem == null && destino == null) return
-        val key = "$plat|$origem|$destino"
+        val stops = offer.stopAddresses
+        if (origem == null && destino == null && stops.isEmpty()) return
+
+        val verdict = when (overallGrade) {
+            "g" -> "ACEITAR"
+            "a" -> "ANALISAR"
+            else -> "RECUSAR"
+        }
+        val key = listOf(
+            plat, offer.valor?.toString() ?: "", origem ?: "", destino ?: "",
+            stops.joinToString("|"), overallGrade, declineReason ?: ""
+        ).joinToString("|")
         if (key == lastNotifKey) return
         lastNotifKey = key
 
@@ -2283,29 +2304,27 @@ class TripReaderService : AccessibilityService() {
             val existing = nm.getNotificationChannel(NOTIF_CHANNEL_ROUTE)
             if (existing == null) {
                 val ch = NotificationChannel(
-                    NOTIF_CHANNEL_ROUTE, "MōB Flash — endereços da corrida",
+                    NOTIF_CHANNEL_ROUTE, "MōB Flash — rota da corrida",
                     NotificationManager.IMPORTANCE_LOW
                 )
+                ch.description = "Resumo silencioso da oferta, rota e resultado do MōB Flash"
                 ch.setSound(null, null)
                 ch.enableVibration(false)
+                ch.enableLights(false)
                 nm.createNotificationChannel(ch)
             }
         }
 
-        // Prioriza abrir direto em modo navegação turn-by-turn (google.navigation:),
-        // não só soltar um pin (geo:) — atalho já carregando o endereço pronto
-        // pra seguir, sem passo extra de "iniciar rota". Cai pra geo: se o Maps
-        // não resolver o scheme de navegação, e pro browser como último fallback.
         fun mapIntent(addr: String): PendingIntent {
             val navUri = Uri.parse("google.navigation:q=" + Uri.encode(addr))
             val navIntent = Intent(Intent.ACTION_VIEW, navUri).apply { setPackage("com.google.android.apps.maps") }
             val geoUri = Uri.parse("geo:0,0?q=" + Uri.encode(addr))
             val geoIntent = Intent(Intent.ACTION_VIEW, geoUri).apply { setPackage("com.google.android.apps.maps") }
-            val browserIntent = Intent(Intent.ACTION_VIEW, geoUri)
+            val genericIntent = Intent(Intent.ACTION_VIEW, geoUri)
             val real = when {
                 navIntent.resolveActivity(packageManager) != null -> navIntent
                 geoIntent.resolveActivity(packageManager) != null -> geoIntent
-                else -> browserIntent
+                else -> genericIntent
             }
             return PendingIntent.getActivity(
                 this, addr.hashCode(), real,
@@ -2314,15 +2333,35 @@ class TripReaderService : AccessibilityService() {
         }
 
         val valorTxt = offer.valor?.let { "R$ ${fmtBr(it)}" }
-        val minTxt = offer.min?.let { "$it min" }
-        val kmTxt = offer.km?.let { "${fmtBr(it)} km" }
-        val meta = listOfNotNull(valorTxt, minTxt, kmTxt).joinToString(" · ")
-        val titulo = if (meta.isNotEmpty()) "$plat · $meta" else plat
-
-        val resumo = listOfNotNull(
-            origem?.let { "Origem: $it" },
-            destino?.let { "Destino: $it" }
-        ).joinToString("\n")
+        val titulo = "$plat · " + listOfNotNull(valorTxt, verdict).joinToString(" · ")
+        val lines = ArrayList<String>()
+        if (offer.minPickup != null || offer.kmPickup != null) {
+            val pickup = listOfNotNull(
+                offer.minPickup?.let { "$it min" },
+                offer.kmPickup?.let { "${fmtBr(it)} km" }
+            ).joinToString(" · ")
+            if (pickup.isNotEmpty()) lines.add("Até o passageiro: $pickup")
+        }
+        val routeMin = offer.minTrip ?: offer.min
+        val routeKm = offer.kmTrip ?: offer.km
+        if (routeMin != null || routeKm != null) {
+            val route = listOfNotNull(
+                routeMin?.let { "$it min" },
+                routeKm?.let { "${fmtBr(it)} km" }
+            ).joinToString(" · ")
+            if (route.isNotEmpty()) lines.add("Rota da corrida: $route")
+        }
+        origem?.let { lines.add("Origem: $it") }
+        stops.forEachIndexed { i, addr -> lines.add("Parada ${i + 1}: $addr") }
+        if (offer.paradas > stops.size) {
+            val faltantes = offer.paradas - stops.size
+            lines.add(if (faltantes == 1) "1 parada adicional sem endereço legível" else "$faltantes paradas adicionais sem endereço legível")
+        }
+        destino?.let { lines.add("Destino: $it") }
+        val metricText = metrics.joinToString(" · ") { "${it.label} ${it.value}" }
+        lines.add(if (metricText.isNotBlank()) "Flash: $verdict · $metricText" else "Flash: $verdict")
+        declineReason?.let { lines.add("Motivo: $it") }
+        val resumo = lines.joinToString("\n")
 
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, NOTIF_CHANNEL_ROUTE)
@@ -2331,19 +2370,15 @@ class TripReaderService : AccessibilityService() {
         }
         builder.setContentTitle(titulo)
             .setStyle(Notification.BigTextStyle().bigText(resumo))
-            .setContentText(resumo.lines().firstOrNull() ?: "")
+            .setContentText(lines.firstOrNull() ?: titulo)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setPriority(Notification.PRIORITY_LOW)
             .setOnlyAlertOnce(true)
-            .setAutoCancel(true)
-
-        if (origem != null) {
-            builder.addAction(Notification.Action.Builder(null, "Navegar Origem", mapIntent(origem)).build())
-        }
-        if (destino != null) {
-            builder.addAction(Notification.Action.Builder(null, "Navegar Destino", mapIntent(destino)).build())
-        }
-
+            .setAutoCancel(false)
+            .setOngoing(false)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) builder.setTimeoutAfter(20 * 60 * 1000L)
+        if (origem != null) builder.addAction(Notification.Action.Builder(null, "Origem", mapIntent(origem)).build())
+        if (destino != null) builder.addAction(Notification.Action.Builder(null, "Destino", mapIntent(destino)).build())
         try { nm.notify(4103, builder.build()) } catch (_: Exception) {}
     }
 

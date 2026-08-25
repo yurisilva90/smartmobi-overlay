@@ -34,6 +34,8 @@ object AutoTripCapture {
         val durTripSec: Int?,
         val origin: String?,
         val dest: String?,
+        val stopCount: Int = 0,
+        val stopAddresses: List<String> = emptyList(),
         // NOVO (22/07/2026, cache de oferta pedido pelo Yuri): carimbo de
         // quando essa oferta foi vista pela última vez — é o que permite
         // invalidar oferta velha antes de grudar numa corrida errada (ver
@@ -75,6 +77,8 @@ object AutoTripCapture {
         var offerDurTripSec: Int?,
         var originAddress: String?,
         var destAddress: String?,
+        var stopCount: Int = 0,
+        var stopAddresses: List<String> = emptyList(),
         var passengerName: String? = null,
         var dinheiro: Boolean = false,
         val acceptedAt: Long,
@@ -168,6 +172,8 @@ object AutoTripCapture {
                     put("offer_duration_trip_sec", snap.durTripSec ?: JSONObject.NULL)
                     put("origin_address", snap.origin ?: JSONObject.NULL)
                     put("dest_address", snap.dest ?: JSONObject.NULL)
+                    put("stop_count", snap.stopCount)
+                    put("stop_addresses", org.json.JSONArray(snap.stopAddresses))
                     put("seen_at", sdf.format(Date(snap.seenAt)))
                 }
                 val url = URL("${TripReaderService.SUPABASE_URL}/rest/v1/declined_offers")
@@ -241,6 +247,8 @@ object AutoTripCapture {
                 durTripSec = snap.durTripSec ?: existing.durTripSec,
                 origin = betterAddress(existing.origin, snap.origin),
                 dest = betterAddress(existing.dest, snap.dest),
+                stopCount = maxOf(existing.stopCount, snap.stopCount),
+                stopAddresses = if (snap.stopAddresses.size >= existing.stopAddresses.size) snap.stopAddresses else existing.stopAddresses,
                 // Releitura da MESMA oferta = evidência de que ainda está na
                 // tela agora — atualiza o carimbo pra essa oferta continuar
                 // "fresca" enquanto o motorista está de fato olhando ela.
@@ -321,6 +329,8 @@ object AutoTripCapture {
                 offerDurTripSec = offer?.durTripSec,
                 originAddress = offer?.origin,
                 destAddress = offer?.dest,
+                stopCount = offer?.stopCount ?: 0,
+                stopAddresses = offer?.stopAddresses ?: emptyList(),
                 acceptedAt = now,
                 pickupStartedAt = now,
                 pickupStartKm = startKm,
@@ -513,6 +523,8 @@ object AutoTripCapture {
                     put("passenger_name", b.passengerName ?: JSONObject.NULL)
                     put("origin_address", finalOriginAddress ?: JSONObject.NULL)
                     put("dest_address", finalDestAddress ?: JSONObject.NULL)
+                    put("stop_count", b.stopCount)
+                    put("stop_addresses", org.json.JSONArray(b.stopAddresses))
                     put("gps_origin_address", gpsOriginAddress ?: JSONObject.NULL)
                     put("gps_dest_address", gpsDestAddress ?: JSONObject.NULL)
                     put("gps_match_origin", gpsMatchOrigin?.let { it } ?: JSONObject.NULL)

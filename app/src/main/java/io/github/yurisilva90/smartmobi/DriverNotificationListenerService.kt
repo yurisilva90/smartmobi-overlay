@@ -14,10 +14,10 @@ import java.util.Locale
 import kotlin.concurrent.thread
 
 /**
- * Captura somente metadados estruturados das notificações oficiais da Uber/99.
- * Não persiste nome, endereço ou texto bruto. O texto completo existe apenas em
- * memória pelo tempo necessário para extrair sinais operacionais e, quando há
- * evidência forte de oferta, antecipar a leitura do Flash.
+ * Captura dados estruturados das notificações oficiais da Uber/99.
+ * Não persiste o texto bruto nem nome do passageiro; preserva os endereços de
+ * origem/destino/paradas quando a própria notificação os expõe, além dos sinais
+ * operacionais necessários para antecipar a leitura do Flash.
  */
 class DriverNotificationListenerService : NotificationListenerService() {
 
@@ -66,6 +66,7 @@ class DriverNotificationListenerService : NotificationListenerService() {
         val money = extractMoney(joined)
         val kms = extractKm(low)
         val mins = extractMinutes(low)
+        val routeInfo = extractRouteInfo(parts, mins)
         val keywords = extractKeywords(low)
         val actionLabels = ArrayList<String>()
         try {
@@ -88,7 +89,7 @@ class DriverNotificationListenerService : NotificationListenerService() {
         persistStructured(
             sbn, n, platform, eventType,
             title.isNotBlank(), text.isNotBlank(), big.isNotBlank(), joined.length,
-            money, kms, mins, keywords.distinct(), actionLabels.distinct(), offerHint
+            money, kms, mins, keywords.distinct(), actionLabels.distinct(), offerHint, routeInfo
         )
     }
 
@@ -149,6 +150,52 @@ class DriverNotificationListenerService : NotificationListenerService() {
         return out.distinct()
     }
 
+    private data class RouteInfo(
+        val origin: String?, val dest: String?, val stopCount: Int,
+        val stops: List<String>, val routeDurationSec: Int?
+    )
+
+    private fun extractRouteInfo(parts: List<String>, mins: List<Int>): RouteInfo {
+        val cleaned = parts.map { it.replace(Regex("\\s+"), " ").trim() }.filter { it.isNotBlank() }
+        fun valueAfterLabel(line: String, labels: List<String>): String? {
+            val low = line.lowercase(Locale("pt", "BR"))
+            for (label in labels) {
+                val i = low.indexOf(label)
+                if (i >= 0) {
+                    val tail = line.substring(i + label.length).trim().trimStart(':', '-', '–', '—').trim()
+                    if (tail.length >= 5 && !tail.contains("R$", true)) return tail
+                }
+            }
+            return null
+        }
+        val originLabels = listOf("origem", "embarque", "buscar em", "pickup")
+        val destLabels = listOf("destino", "desembarque", "dropoff")
+        var origin: String? = null
+        var dest: String? = null
+        val stops = ArrayList<String>()
+        var declaredStops = 0
+        cleaned.forEach { line ->
+            Regex("""\b(\d{1,2})\s*paradas?\b""", RegexOption.IGNORE_CASE).find(line)?.let {
+                declaredStops = maxOf(declaredStops, it.groupValues[1].toIntOrNull() ?: 0)
+            }
+            if (origin == null) origin = valueAfterLabel(line, originLabels)
+            if (dest == null) dest = valueAfterLabel(line, destLabels)
+            Regex("""(?i)(?:parada\s*\d+|\d+[ªa]?\s*parada)\s*[:\-–—]\s*(.+)$""").find(line)?.groupValues?.getOrNull(1)?.trim()?.let {
+                if (it.length >= 5 && !it.contains("R$", true)) stops.add(it)
+            }
+        }
+        val streetLike = cleaned.filter { line ->
+            val low = line.lowercase(Locale("pt", "BR"))
+            !low.contains("r$") && Regex("""\b(rua|r\.?|av\.?|avenida|estrada|travessa|alameda|rodovia|pra[çc]a|largo|ladeira|via)\b""", RegexOption.IGNORE_CASE).containsMatchIn(line)
+        }.distinct()
+        if (origin == null) origin = streetLike.firstOrNull()
+        if (dest == null && streetLike.size >= 2) dest = streetLike.lastOrNull()
+        if (stops.isEmpty() && declaredStops > 0 && streetLike.size > 2) {
+            stops.addAll(streetLike.subList(1, streetLike.size - 1).take(declaredStops))
+        }
+        return RouteInfo(origin, dest, maxOf(declaredStops, stops.size), stops.distinct(), mins.lastOrNull()?.times(60))
+    }
+
     private fun hash(s: String?): String? {
         if (s.isNullOrBlank()) return null
         return MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }
@@ -168,7 +215,8 @@ class DriverNotificationListenerService : NotificationListenerService() {
         mins: List<Int>,
         keywords: List<String>,
         actionLabels: List<String>,
-        offerHint: Boolean
+        offerHint: Boolean,
+        routeInfo: RouteInfo
     ) {
         thread(isDaemon = true) {
             try {
@@ -207,6 +255,11 @@ class DriverNotificationListenerService : NotificationListenerService() {
                     put("minute_values", JSONArray(mins))
                     put("keywords", JSONArray(keywords))
                     put("offer_hint", offerHint)
+                    put("origin_address", routeInfo.origin ?: JSONObject.NULL)
+                    put("dest_address", routeInfo.dest ?: JSONObject.NULL)
+                    put("stop_count", routeInfo.stopCount)
+                    put("stop_addresses", JSONArray(routeInfo.stops))
+                    put("route_duration_sec", routeInfo.routeDurationSec ?: JSONObject.NULL)
                 }
 
                 val conn = URL("${TripReaderService.SUPABASE_URL}/rest/v1/driver_notification_events").openConnection() as HttpURLConnection
