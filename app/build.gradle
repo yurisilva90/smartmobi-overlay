@@ -2,7 +2,6 @@ plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
 }
-// 1.3.16: diagnóstico temporário — grava raw da acessibilidade somente em ofertas Uber; 99 continua sem raw.
 android {
     namespace 'io.github.yurisilva90.smartmobi'
     compileSdk 34
@@ -13,68 +12,16 @@ android {
         versionCode 229
         versionName "1.3.16"
     }
-    buildFeatures {
-        buildConfig true
-    }
+    buildFeatures { buildConfig true }
     buildTypes {
         debug { versionNameSuffix "-debug" }
-        release {
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-        }
+        release { minifyEnabled false; proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro' }
     }
-    compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
-    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }
     kotlinOptions { jvmTarget = '1.8' }
 }
-
-// Diagnóstico temporário 25/08/2026.
-// O código-base continua com raw desligado por privacidade. Nesta build,
-// antes de compilar, instrumentamos somente ofertas UBER vistas pela árvore
-// de acessibilidade. OCR e 99 não enviam texto bruto.
-tasks.configureEach { task ->
-    if (task.name == 'compileDebugKotlin' || task.name == 'compileReleaseKotlin') {
-        task.doFirst {
-            def f = file('src/main/java/io/github/yurisilva90/smartmobi/TripReaderService.kt')
-            def s = f.getText('UTF-8')
-
-            def oldBlock = '''        if (realPlat != null && realTexts.isNotEmpty()) {
-            processRealOffer(realPlat, realTexts)
-        } else if (realPlat == null) {'''
-            def newBlock = '''        if (realPlat != null && realTexts.isNotEmpty()) {
-            // Diagnóstico temporário Uber: registra a árvore textual bruta
-            // somente quando a ACESSIBILIDADE reconhece uma oferta Uber.
-            if (realPlat == "UBER") {
-                val uberRawJoined = realTexts.joinToString("  ")
-                val uberRawLow = uberRawJoined.lowercase(Locale.getDefault())
-                if (isOfferScreen(uberRawLow)) {
-                    sendToCloud(
-                        "UBER", "accessibility-raw", "UBER_OFERTA_RAW", "OFERTA_RAW",
-                        extractMoney(uberRawJoined), extractKm(uberRawLow), extractMin(uberRawLow), realTexts
-                    )
-                }
-            }
-            processRealOffer(realPlat, realTexts)
-        } else if (realPlat == null) {'''
-            if (!s.contains(oldBlock)) throw new GradleException('Bloco de acessibilidade alvo não encontrado')
-            s = s.replace(oldBlock, newBlock)
-
-            def oldRaw = '                        put("raw", if (DEBUG_SEND_RAW_TEXT) JSONArray(texts) else JSONArray())'
-            def newRaw = '''                        val sendRaw = DEBUG_SEND_RAW_TEXT ||
-                            (plat == "UBER" && pkg == "accessibility-raw" && state == "OFERTA_RAW")
-                        put("raw", if (sendRaw) JSONArray(texts) else JSONArray())'''
-            if (!s.contains(oldRaw)) throw new GradleException('Linha raw alvo não encontrada')
-            s = s.replace(oldRaw, newRaw)
-            f.write(s, 'UTF-8')
-        }
-    }
-}
-
 dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
-    // OCR local (a tela de oferta da 99 não expõe texto por acessibilidade)
     implementation 'com.google.mlkit:text-recognition:16.0.1'
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'
