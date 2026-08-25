@@ -3,7 +3,7 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 // 1.3.19: Uber via acessibilidade; OCR da 99 por gatilho; notificação estruturada.
-// build trigger
+// build trigger v1.3.19
 android {
     namespace 'io.github.yurisilva90.smartmobi'
     compileSdk 34
