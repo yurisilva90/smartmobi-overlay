@@ -163,43 +163,44 @@ class DriverNotificationListenerService : NotificationListenerService() {
     )
 
     private fun extractRouteInfo(parts: List<String>, mins: List<Int>): RouteInfo {
-        val cleaned = parts.map { it.replace(Regex("\\s+"), " ").trim() }.filter { it.isNotBlank() }
-        fun valueAfterLabel(line: String, labels: List<String>): String? {
-            val low = line.lowercase(Locale("pt", "BR"))
-            for (label in labels) {
-                val i = low.indexOf(label)
-                if (i >= 0) {
-                    val tail = line.substring(i + label.length).trim().trimStart(':', '-', '–', '—').trim()
-                    if (tail.length >= 5 && !tail.contains("R$", true)) return tail
+        val cleaned = parts.flatMap { it.split('\n') }.map { it.replace(Regex("\\s+"), " ").trim() }.filter { it.isNotBlank() }
+        fun noise(line: String): Boolean {
+            val low = line.lowercase(Locale("pt", "BR")).trim()
+            if (low.length < 5 || low.contains("r$")) return true
+            if (Regex("""^\(?\s*\d{1,3}(?:[.,]\d+)?\s*(?:min(?:utos)?|km|m)\b""", RegexOption.IGNORE_CASE).containsMatchIn(low)) return true
+            if (low in setOf("online", "offline", "buscando", "aceitar", "recusar")) return true
+            return false
+        }
+        fun addressLike(line: String): Boolean {
+            if (noise(line)) return false
+            val street = Regex("""\b(rua|r\.?|av\.?|avenida|estrada|travessa|alameda|rodovia|pra[çc]a|largo|ladeira|via)\b""", RegexOption.IGNORE_CASE).containsMatchIn(line)
+            val numbered = Regex("""[^\d],\s*\d{1,5}\b""").containsMatchIn(line)
+            return street || numbered
+        }
+        fun labeled(labels: List<String>): String? {
+            for (i in cleaned.indices) {
+                val line = cleaned[i]; val low = line.lowercase(Locale("pt", "BR"))
+                for (label in labels) {
+                    val pos = low.indexOf(label); if (pos < 0) continue
+                    val tail = line.substring(pos + label.length).trim().trimStart(':','-','–','—',' ').trim()
+                    if (!noise(tail)) return tail
+                    for (j in (i + 1)..minOf(i + 2, cleaned.size - 1)) if (!noise(cleaned[j]) && (addressLike(cleaned[j]) || cleaned[j].length >= 5)) return cleaned[j]
                 }
             }
             return null
         }
-        val originLabels = listOf("origem", "embarque", "buscar em", "pickup")
-        val destLabels = listOf("destino", "desembarque", "dropoff")
-        var origin: String? = null
-        var dest: String? = null
-        val stops = ArrayList<String>()
-        var declaredStops = 0
-        cleaned.forEach { line ->
-            Regex("""\b(\d{1,2})\s*paradas?\b""", RegexOption.IGNORE_CASE).find(line)?.let {
-                declaredStops = maxOf(declaredStops, it.groupValues[1].toIntOrNull() ?: 0)
-            }
-            if (origin == null) origin = valueAfterLabel(line, originLabels)
-            if (dest == null) dest = valueAfterLabel(line, destLabels)
-            Regex("""(?i)(?:parada\s*\d+|\d+[ªa]?\s*parada)\s*[:\-–—]\s*(.+)$""").find(line)?.groupValues?.getOrNull(1)?.trim()?.let {
-                if (it.length >= 5 && !it.contains("R$", true)) stops.add(it)
-            }
+        var origin = labeled(listOf("origem", "embarque", "buscar em", "pickup", "de:"))
+        var dest = labeled(listOf("destino", "desembarque", "dropoff", "para:"))
+        val stops = ArrayList<String>(); var declaredStops = 0
+        cleaned.forEachIndexed { i, line ->
+            Regex("""\b(\d{1,2})\s*paradas?\b""", RegexOption.IGNORE_CASE).find(line)?.let { declaredStops = maxOf(declaredStops, it.groupValues[1].toIntOrNull() ?: 0) }
+            Regex("""(?i)(?:parada|stop)\s*\d*\s*[:\-–—]\s*(.+)$""").find(line)?.groupValues?.getOrNull(1)?.trim()?.let { if (!noise(it)) stops.add(it) }
+            if (Regex("""(?i)^\s*(?:parada|stop)\s*\d*\s*[:\-–—]?\s*$""").matches(line)) cleaned.getOrNull(i + 1)?.let { if (!noise(it)) stops.add(it) }
         }
-        val streetLike = cleaned.filter { line ->
-            val low = line.lowercase(Locale("pt", "BR"))
-            !low.contains("r$") && Regex("""\b(rua|r\.?|av\.?|avenida|estrada|travessa|alameda|rodovia|pra[çc]a|largo|ladeira|via)\b""", RegexOption.IGNORE_CASE).containsMatchIn(line)
-        }.distinct()
-        if (origin == null) origin = streetLike.firstOrNull()
-        if (dest == null && streetLike.size >= 2) dest = streetLike.lastOrNull()
-        if (stops.isEmpty() && declaredStops > 0 && streetLike.size > 2) {
-            stops.addAll(streetLike.subList(1, streetLike.size - 1).take(declaredStops))
-        }
+        val candidates = cleaned.filter { addressLike(it) }.distinct()
+        if (origin == null) origin = candidates.firstOrNull()
+        if (dest == null) dest = candidates.lastOrNull()?.takeIf { it != origin }
+        if (stops.isEmpty() && declaredStops > 0) stops.addAll(candidates.filter { it != origin && it != dest }.take(declaredStops))
         return RouteInfo(origin, dest, maxOf(declaredStops, stops.size), stops.distinct(), mins.lastOrNull()?.times(60))
     }
 

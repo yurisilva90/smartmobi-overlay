@@ -9,7 +9,12 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Rect
+import android.graphics.RectF
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -1016,79 +1021,93 @@ class TripReaderService : AccessibilityService() {
             }
         }
 
-        // endereços: a linha logo depois de uma "perna" (tempo+distância)
-        // costuma ser o endereço por extenso — 1ª perna = origem, 2ª = destino.
-        // Pula linhas curtas/genéricas ("1 parada", "X Não afeta a TA" etc.)
-        // que às vezes aparecem entre a perna e o endereço de verdade —
-        // foi uma delas ("1 parada", às vezes lida "l parada") que virava
-        // origem por engano na notificação.
-        fun looksLikeAddress(s: String): Boolean {
+        // Endereços de rota: a 99/Uber variam bastante a ordem do OCR.
+        // Prioridade: rótulo explícito -> endereço próximo às pernas -> todos os
+        // endereços válidos da oferta, preservando a ordem visual.
+        fun isAddressNoise(s: String): Boolean {
             val sl = s.lowercase(Locale.getDefault()).trim()
-            if (sl.length < 6) return false
-            if (sl.contains("parada")) return false
-            if (sl.contains("não afeta") || sl.contains("nao afeta")) return false
-            // BUG CONFIRMADO EM PRINT REAL (notificação "Para: 5,3 km"): o
-            // regex antigo só rejeitava km/min INTEIROS ("5 km"), não decimais
-            // ("5,3 km") — deixava passar distância solta como se fosse
-            // endereço. Adicionado ([.,]\d+)? pra cobrir a parte decimal.
-            if (Regex("""^\(?\d{1,3}([.,]\d+)?\s*(min|km|m)\b""").containsMatchIn(sl)) return false // outra perna/distância solta
-            if (Regex("""^[x%\d.,\s]+$""").containsMatchIn(sl)) return false // só símbolo/número solto
-            // BUG CONFIRMADO EM PRINTS REAIS (13/07/2026): a notificação saiu
-            // com "Origem: S R$1,45 Tarifa base dinâmica incl." e "Destino:
-            // Online" — texto de bônus/dinâmico e de status sendo lido como
-            // se fosse endereço. Endereço de verdade nunca tem "R$" nem essas
-            // palavras — rejeita explicitamente.
-            if (sl.contains("r$")) return false // endereço nunca tem valor em R$
-            if (sl.contains("tarifa") || sl.contains("incl.") || sl.contains("incluído") || sl.contains("incluido")) return false
-            if (sl.contains("taxa de espera") || sl.contains("espera longa")) return false
-            if (sl == "online" || sl == "buscando" || sl == "offline" || sl == "conectar") return false
-            if (sl.contains("perfil essencial") || sl.contains("perfil premium") || sl.contains("perfil prata")) return false
-            if (sl.contains("pgto. no app") || sl == "dinheiro" || sl == "negocia" || sl == "qr code") return false
-            // CORRIGIDO (24/07/2026, confirmado em log real: virou endereço
-            // "t5,009 corridasCPF verif." de verdade): linha de avaliação/
-            // corridas do passageiro nunca é endereço — mesma assinatura já
-            // usada pra extrair nota/corridas ali em cima (nota 1-5 com 2
-            // casas + "corrid") ou selo de verificação.
-            if (Regex("""[1-5][.,]\d{2}.{0,15}corrid""").containsMatchIn(sl)) return false
-            if (sl.contains("verif.") || sl.contains("cpf e cart")) return false
-            // CORRIGIDO (16/08/2026, confirmado em corrida real: destino
-            // gravado como "mano paguei 40,70 no app" — mensagem de chat do
-            // passageiro que estava na tela virou "endereço" porque não
-            // batia em NENHUMA regra de bloqueio acima). Bloquear padrão
-            // conhecido nunca cobre tudo — frase solta de conversa não tem
-            // assinatura fixa. Em vez de só bloquear o que já vimos dar
-            // errado, agora exige uma evidência POSITIVA de que É endereço:
-            // palavra de logradouro (Rua/Av/Estrada/etc.) OU o padrão
-            // "Nome da via, Número" que todo endereço de oferta tem.
-            val hasStreetWord = Regex("""\b(rua|av\.?|avenida|estrada|travessa|alameda|rodovia|pra[çc]a|largo|ladeira|rod\.?|via\b)""", RegexOption.IGNORE_CASE).containsMatchIn(sl)
-            // CORRIGIDO (16/08/2026, confirmado em corrida real): "mano
-            // paguei 40,70 no app" passava aqui porque "40,70" batia no
-            // padrão "Nome, Número" — vírgula decimal de valor em R$ não é
-            // vírgula de endereço. Exige que o caractere ANTES da vírgula
-            // não seja dígito (endereço real nunca tem número colado antes
-            // da vírgula do jeito que um valor decimal tem).
-            val hasNumberPattern = Regex("""[^\d],\s*\d{1,5}\b""").containsMatchIn(sl)
-            if (!hasStreetWord && !hasNumberPattern) return false
-            return true
+            if (sl.length < 5) return true
+            if (sl.contains("r$")) return true
+            if (sl.contains("não afeta") || sl.contains("nao afeta")) return true
+            if (sl.contains("tarifa") || sl.contains("taxa de espera") || sl.contains("espera longa")) return true
+            if (sl == "online" || sl == "buscando" || sl == "offline" || sl == "conectar") return true
+            if (sl.contains("perfil essencial") || sl.contains("perfil premium") || sl.contains("perfil prata")) return true
+            if (sl.contains("pgto. no app") || sl == "dinheiro" || sl == "negocia" || sl == "qr code") return true
+            if (Regex("""[1-5][.,]\d{2}.{0,15}corrid""").containsMatchIn(sl)) return true
+            if (sl.contains("verif.") || sl.contains("cpf e cart")) return true
+            if (Regex("""^\(?\s*\d{1,3}(?:[.,]\d+)?\s*(?:min(?:utos)?|km|m)\b""", RegexOption.IGNORE_CASE).containsMatchIn(sl)) return true
+            if (Regex("""^[x%\d.,\s]+$""").containsMatchIn(sl)) return true
+            return false
         }
-        val legLineRe = Regex("""^\(?\s*\d{1,3}\s*min(?:utos)?""", RegexOption.IGNORE_CASE)
-        val addrCandidates = ArrayList<String>()
+        fun looksLikeAddress(s: String): Boolean {
+            if (isAddressNoise(s)) return false
+            val sl = s.lowercase(Locale.getDefault()).trim()
+            if (sl.contains("parada") && !Regex("""\b(parada|stop)\b.*[,\-–—:]""", RegexOption.IGNORE_CASE).containsMatchIn(sl)) return false
+            val hasStreetWord = Regex("""\b(rua|r\.?|av\.?|avenida|estrada|travessa|alameda|rodovia|pra[çc]a|largo|ladeira|rod\.?|via\b)""", RegexOption.IGNORE_CASE).containsMatchIn(sl)
+            val hasNumberPattern = Regex("""[^\d],\s*\d{1,5}\b""").containsMatchIn(sl)
+            return hasStreetWord || hasNumberPattern
+        }
+        fun looksLikeLabeledPlace(s: String): Boolean = !isAddressNoise(s) && s.trim().length >= 5
+
+        fun afterLabel(labels: List<String>): String? {
+            for (i in texts.indices) {
+                val raw = texts[i].trim()
+                val lowRaw = raw.lowercase(Locale.getDefault())
+                for (label in labels) {
+                    val pos = lowRaw.indexOf(label)
+                    if (pos < 0) continue
+                    val tail = raw.substring(pos + label.length).trim().trimStart(':', '-', '–', '—', ' ').trim()
+                    if (tail.isNotBlank() && (looksLikeAddress(tail) || looksLikeLabeledPlace(tail))) return tail
+                    for (j in (i + 1)..minOf(i + 3, texts.size - 1)) {
+                        val cand = texts[j].trim()
+                        if (looksLikeAddress(cand) || looksLikeLabeledPlace(cand)) return cand
+                    }
+                }
+            }
+            return null
+        }
+
+        val labeledOrigin = afterLabel(listOf("origem", "embarque", "buscar em", "pickup", "de:"))
+        val labeledDest = afterLabel(listOf("destino", "desembarque", "dropoff", "para:"))
+
+        val labeledStops = ArrayList<String>()
         for (i in texts.indices) {
-            if (legLineRe.containsMatchIn(texts[i])) {
-                for (j in (i + 1)..minOf(i + 3, texts.size - 1)) {
-                    val cand = texts.getOrNull(j)?.trim() ?: break
-                    val nl = cand.lowercase(Locale.getDefault())
-                    if (legLineRe.containsMatchIn(cand)) break // já é a próxima perna, para de procurar
-                    if (nl.contains("aceitar") || nl.contains("selecionar") || nl.contains("escolher")) break
-                    if (looksLikeAddress(cand)) { addrCandidates.add(cand); break }
+            val raw = texts[i].trim()
+            val m = Regex("""(?i)(?:parada|stop)\s*\d*\s*[:\-–—]\s*(.+)$""").find(raw)
+            val inline = m?.groupValues?.getOrNull(1)?.trim()
+            if (!inline.isNullOrBlank() && looksLikeLabeledPlace(inline)) labeledStops.add(inline)
+            else if (Regex("""(?i)^\s*(?:parada|stop)\s*\d*\s*[:\-–—]?\s*$""").matches(raw)) {
+                for (j in (i + 1)..minOf(i + 2, texts.size - 1)) {
+                    val cand = texts[j].trim()
+                    if (looksLikeAddress(cand) || looksLikeLabeledPlace(cand)) { labeledStops.add(cand); break }
                 }
             }
         }
-        val origem = addrCandidates.firstOrNull()
-        val destino = if (addrCandidates.size >= 2) addrCandidates.lastOrNull() else null
-        val stopAddresses = if (paradas > 0 && addrCandidates.size > 2)
-            addrCandidates.subList(1, addrCandidates.size - 1).take(paradas)
-        else emptyList()
+
+        val legLineRe = Regex("""(?:\b\d{1,3}\s*min(?:utos)?\b|\b\d{1,3}(?:[.,]\d+)?\s*km\b)""", RegexOption.IGNORE_CASE)
+        val nearLegCandidates = ArrayList<String>()
+        for (i in texts.indices) {
+            if (!legLineRe.containsMatchIn(texts[i])) continue
+            for (j in (i + 1)..minOf(i + 5, texts.size - 1)) {
+                val cand = texts[j].trim()
+                val nl = cand.lowercase(Locale.getDefault())
+                if (nl.contains("aceitar") || nl.contains("selecionar") || nl.contains("escolher")) break
+                if (looksLikeAddress(cand)) { nearLegCandidates.add(cand); break }
+            }
+        }
+
+        val globalCandidates = texts.map { it.trim() }.filter { looksLikeAddress(it) }
+        val ordered = (nearLegCandidates + globalCandidates).distinct()
+        var origem = labeledOrigin ?: ordered.firstOrNull()
+        var destino = labeledDest ?: ordered.lastOrNull()?.takeIf { it != origem }
+        val middle = ordered.filter { it != origem && it != destino }
+        val stopAddresses = (labeledStops + middle)
+            .filter { it != origem && it != destino }
+            .distinct()
+            .let { if (paradas > 0) it.take(paradas) else emptyList() }
+        if (destino == null && ordered.size >= 2) destino = ordered.last()
+        if (origem == null && ordered.isNotEmpty()) origem = ordered.first()
+
 
         return Offer(valor, km, min, rkmDirect, nota, origem, destino, legs, kmPickup, kmTrip, minPickup, minTrip, dinamico, corridas, paradas, multiplicador, stopAddresses)
     }
@@ -1530,9 +1549,8 @@ class TripReaderService : AccessibilityService() {
         // que permite auditar as inconsistências (perna faltando, valor
         // dobrando etc.) depois, comparando o que a tela mostrava com o que
         // o app calculou naquele instante.
-        val notificationImage = try { bmp?.copy(Bitmap.Config.ARGB_8888, false) } catch (_: Exception) { null }
         saveSnapshot(plat, bmp, overallGrade, metrics, min ?: 0, km, offer, texts)
-        showRouteNotification(plat, offer, overallGrade, metrics, declineReason, notificationImage)
+        showRouteNotification(plat, offer, overallGrade, metrics, declineReason)
 
         main.post {
             flashCard.show(
@@ -2320,111 +2338,132 @@ class TripReaderService : AccessibilityService() {
         } catch (_: Exception) {}
         sendToCloud("99", "ocr", "OCR_INATIVO", "OCR_ALERTA_DISPARADO", emptyList(), null, null, emptyList())
     }
+
+    private fun buildFlashNotificationBitmap(
+        plat: String,
+        verdict: String,
+        overallGrade: String,
+        metrics: List<FlashCard.Metric>,
+        declineReason: String?
+    ): Bitmap? = try {
+        val width = 900
+        val height = if (declineReason.isNullOrBlank()) 300 else 350
+        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        fun gradeColor(g: String) = when (g) {
+            "g" -> Color.rgb(16, 185, 129)
+            "a" -> Color.rgb(245, 158, 11)
+            else -> Color.rgb(239, 68, 68)
+        }
+        paint.color = Color.rgb(17, 19, 24)
+        canvas.drawRoundRect(RectF(0f, 0f, width.toFloat(), height.toFloat()), 34f, 34f, paint)
+        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        paint.textSize = 34f
+        paint.color = Color.WHITE
+        canvas.drawText("MōB Flash · $plat", 38f, 52f, paint)
+        paint.textSize = 27f
+        paint.color = gradeColor(overallGrade)
+        canvas.drawText(verdict, 38f, 90f, paint)
+        val shown = metrics.take(4)
+        if (shown.isNotEmpty()) {
+            val gap = 14f
+            val left = 38f
+            val usable = width - 76f - gap * (shown.size - 1)
+            val tileW = usable / shown.size
+            val top = 116f
+            val bottom = 255f
+            shown.forEachIndexed { idx, m ->
+                val x = left + idx * (tileW + gap)
+                paint.color = Color.rgb(31, 35, 43)
+                canvas.drawRoundRect(RectF(x, top, x + tileW, bottom), 20f, 20f, paint)
+                paint.color = gradeColor(m.grade)
+                canvas.drawRoundRect(RectF(x, top, x + tileW, top + 10f), 10f, 10f, paint)
+                paint.textSize = 24f
+                paint.color = Color.rgb(148, 163, 184)
+                canvas.drawText(m.label.take(12), x + 16f, top + 48f, paint)
+                paint.textSize = if (m.value.length > 9) 31f else 38f
+                paint.color = Color.WHITE
+                canvas.drawText(m.value, x + 16f, top + 101f, paint)
+            }
+        }
+        if (!declineReason.isNullOrBlank()) {
+            paint.textSize = 24f
+            paint.color = Color.rgb(248, 113, 113)
+            canvas.drawText("Motivo: ${declineReason.take(60)}", 38f, height - 35f, paint)
+        }
+        bmp
+    } catch (_: Exception) { null }
+
     private fun showRouteNotification(
         plat: String,
         offer: Offer,
         overallGrade: String,
         metrics: List<FlashCard.Metric>,
-        declineReason: String?,
-        offerImage: Bitmap? = null
+        declineReason: String?
     ) {
         val origem = offer.origem
         val destino = offer.destino
         val stops = offer.stopAddresses
-        if (origem == null && destino == null && stops.isEmpty()) return
-
-        val verdict = when (overallGrade) {
-            "g" -> "ACEITAR"
-            "a" -> "ANALISAR"
-            else -> "RECUSAR"
-        }
-        val key = listOf(
-            plat, offer.valor?.toString() ?: "", origem ?: "", destino ?: "",
-            stops.joinToString("|"), overallGrade, declineReason ?: ""
-        ).joinToString("|")
+        val verdict = when (overallGrade) { "g" -> "ACEITAR"; "a" -> "ANALISAR"; else -> "RECUSAR" }
+        val key = listOf(plat, offer.valor?.toString() ?: "", origem ?: "", destino ?: "", stops.joinToString("|"), overallGrade, metrics.joinToString("|") { "${it.label}:${it.value}:${it.grade}" }, declineReason ?: "").joinToString("|")
         if (key == lastNotifKey) return
         lastNotifKey = key
 
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val existing = nm.getNotificationChannel(NOTIF_CHANNEL_ROUTE)
-            if (existing == null) {
-                val ch = NotificationChannel(
-                    NOTIF_CHANNEL_ROUTE, "MōB Flash — rota da corrida",
-                    NotificationManager.IMPORTANCE_LOW
-                )
-                ch.description = "Resumo silencioso da oferta, rota e resultado do MōB Flash"
-                ch.setSound(null, null)
-                ch.enableVibration(false)
-                ch.enableLights(false)
-                nm.createNotificationChannel(ch)
+            val ch = NotificationChannel(NOTIF_CHANNEL_ROUTE, "MōB Flash — última oferta", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Resumo silencioso da última oferta analisada pelo MōB Flash"
+                setSound(null, null); enableVibration(false); enableLights(false)
             }
+            nm.createNotificationChannel(ch)
         }
-
         fun mapIntent(addr: String): PendingIntent {
             val navUri = Uri.parse("google.navigation:q=" + Uri.encode(addr))
             val navIntent = Intent(Intent.ACTION_VIEW, navUri).apply { setPackage("com.google.android.apps.maps") }
             val geoUri = Uri.parse("geo:0,0?q=" + Uri.encode(addr))
             val geoIntent = Intent(Intent.ACTION_VIEW, geoUri).apply { setPackage("com.google.android.apps.maps") }
             val genericIntent = Intent(Intent.ACTION_VIEW, geoUri)
-            val real = when {
-                navIntent.resolveActivity(packageManager) != null -> navIntent
-                geoIntent.resolveActivity(packageManager) != null -> geoIntent
-                else -> genericIntent
-            }
-            return PendingIntent.getActivity(
-                this, addr.hashCode(), real,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
+            val chosen = when { navIntent.resolveActivity(packageManager) != null -> navIntent; geoIntent.resolveActivity(packageManager) != null -> geoIntent; else -> genericIntent }
+            return PendingIntent.getActivity(this, addr.hashCode(), chosen, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         }
-
         val valorTxt = offer.valor?.let { "R$ ${fmtBr(it)}" }
         val titulo = "$plat · " + listOfNotNull(valorTxt, verdict).joinToString(" · ")
         val lines = ArrayList<String>()
         if (offer.minPickup != null || offer.kmPickup != null) {
-            val pickup = listOfNotNull(
-                offer.minPickup?.let { "$it min" },
-                offer.kmPickup?.let { "${fmtBr(it)} km" }
-            ).joinToString(" · ")
+            val pickup = listOfNotNull(offer.minPickup?.let { "$it min" }, offer.kmPickup?.let { "${fmtBr(it)} km" }).joinToString(" · ")
             if (pickup.isNotEmpty()) lines.add("Até o passageiro: $pickup")
         }
         val routeMin = offer.minTrip ?: offer.min
         val routeKm = offer.kmTrip ?: offer.km
         if (routeMin != null || routeKm != null) {
-            val route = listOfNotNull(
-                routeMin?.let { "$it min" },
-                routeKm?.let { "${fmtBr(it)} km" }
-            ).joinToString(" · ")
+            val route = listOfNotNull(routeMin?.let { "$it min" }, routeKm?.let { "${fmtBr(it)} km" }).joinToString(" · ")
             if (route.isNotEmpty()) lines.add("Rota da corrida: $route")
         }
         origem?.let { lines.add("Origem: $it") }
-        stops.forEachIndexed { i, addr -> lines.add("Parada ${i + 1}: $addr") }
+        stops.forEachIndexed { i, stop -> lines.add("Parada ${i + 1}: $stop") }
         if (offer.paradas > stops.size) {
             val faltantes = offer.paradas - stops.size
             lines.add(if (faltantes == 1) "1 parada adicional sem endereço legível" else "$faltantes paradas adicionais sem endereço legível")
         }
         destino?.let { lines.add("Destino: $it") }
+        if (origem == null && destino == null && stops.isEmpty()) lines.add("Endereços ainda não reconhecidos nesta oferta")
         val metricText = metrics.joinToString(" · ") { "${it.label} ${it.value}" }
         lines.add(if (metricText.isNotBlank()) "Flash: $verdict · $metricText" else "Flash: $verdict")
         declineReason?.let { lines.add("Motivo: $it") }
         val resumo = lines.joinToString("\n")
-
-        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Notification.Builder(this, NOTIF_CHANNEL_ROUTE)
-        } else {
-            @Suppress("DEPRECATION") Notification.Builder(this)
-        }
-        builder.setContentTitle(titulo)
-            .setStyle(if (offerImage != null) Notification.BigPictureStyle().bigPicture(offerImage).setSummaryText(resumo) else Notification.BigTextStyle().bigText(resumo))
-            .setContentText(lines.firstOrNull() ?: titulo)
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setPriority(Notification.PRIORITY_LOW)
-            .setOnlyAlertOnce(true)
-            .setAutoCancel(false)
-            .setOngoing(false)
+        val flashImage = buildFlashNotificationBitmap(plat, verdict, overallGrade, metrics, declineReason)
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(this, NOTIF_CHANNEL_ROUTE) else { @Suppress("DEPRECATION") Notification.Builder(this) }
+        builder.setContentTitle(titulo).setContentText(lines.firstOrNull() ?: titulo).setSmallIcon(R.mipmap.ic_launcher).setPriority(Notification.PRIORITY_LOW).setOnlyAlertOnce(true).setAutoCancel(false).setOngoing(false)
+        if (flashImage != null) {
+            builder.setStyle(Notification.BigPictureStyle().bigPicture(flashImage).setBigContentTitle(titulo).setSummaryText(resumo))
+            val thumbW = 160
+            val thumbH = (flashImage.height.toDouble() / flashImage.width * thumbW).toInt().coerceAtLeast(1)
+            builder.setLargeIcon(Bitmap.createScaledBitmap(flashImage, thumbW, thumbH, true))
+        } else builder.setStyle(Notification.BigTextStyle().bigText(resumo))
         if (origem != null) builder.addAction(Notification.Action.Builder(null, "Origem", mapIntent(origem)).build())
         if (destino != null) builder.addAction(Notification.Action.Builder(null, "Destino", mapIntent(destino)).build())
-        try { nm.notify(4103, builder.build()) } catch (_: Exception) {} finally { try { offerImage?.recycle() } catch (_: Exception) {} }
+        try { nm.notify(4103, builder.build()) } catch (_: Exception) {}
     }
 
     private fun sendToCloud(
