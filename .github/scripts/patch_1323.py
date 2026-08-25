@@ -1,6 +1,7 @@
 from pathlib import Path
 p=Path('app/src/main/java/io/github/yurisilva90/smartmobi/TripReaderService.kt')
 s=p.read_text()
+
 old='''        if (realPlat != null && realTexts.isNotEmpty()) {
             if (realPlat == "99") send99FullAccessibilityDiagnostics(realTexts)
             if (realPlat == "UBER") {
@@ -51,91 +52,83 @@ new='''        val uberOfferTexts = textsByPkg.entries.firstOrNull { UBER_PKGS.c
             hideFlashIfActive()
         }
 '''
-if old not in s: raise SystemExit('offer ownership block not found')
+if old not in s:
+    raise SystemExit('offer ownership block not found')
 s=s.replace(old,new)
-old2='''        val valorTxt = offer.valor?.let { "R$ ${fmtBr(it)}" }
-        val titulo = listOfNotNull(plat, valorTxt).joinToString(" · ")
-        val lines = ArrayList<String>()
-        if (offer.minPickup != null || offer.kmPickup != null) {
-            val pickup = listOfNotNull(
-                offer.minPickup?.let { "$it min" },
-                offer.kmPickup?.let { "${fmtBr(it)} km" }
-            ).joinToString(" · ")
-            if (pickup.isNotEmpty()) lines.add("Até o passageiro: $pickup")
+
+start=s.index('    private fun showRouteNotification(')
+end=s.index('\n    private fun sendToCloud(', start)
+newfunc=r'''    private fun showRouteNotification(
+        plat: String,
+        offer: Offer,
+        overallGrade: String,
+        metrics: List<FlashCard.Metric>,
+        declineReason: String?
+    ) {
+        val origem = offer.origem
+        val destino = offer.destino
+        val totalMin = offer.min ?: listOfNotNull(offer.minPickup, offer.minTrip).sum().takeIf { it > 0 }
+        val totalKm = offer.km ?: listOfNotNull(offer.kmPickup, offer.kmTrip).sum().takeIf { it > 0.0 }
+        val key = listOf(plat, offer.valor?.toString() ?: "", origem ?: "", destino ?: "",
+            overallGrade, totalMin?.toString() ?: "", totalKm?.toString() ?: "",
+            metrics.joinToString("|") { "${it.label}:${it.value}:${it.grade}" }).joinToString("|")
+        if (key == lastNotifKey) return
+        lastNotifKey = key
+
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && nm.getNotificationChannel(NOTIF_CHANNEL_ROUTE) == null) {
+            val ch = NotificationChannel(NOTIF_CHANNEL_ROUTE, "MōB Flash — rota da corrida", NotificationManager.IMPORTANCE_LOW)
+            ch.setSound(null, null); ch.enableVibration(false); ch.enableLights(false)
+            nm.createNotificationChannel(ch)
         }
-        val routeMin = offer.minTrip ?: offer.min
-        val routeKm = offer.kmTrip ?: offer.km
-        if (routeMin != null || routeKm != null) {
-            val route = listOfNotNull(
-                routeMin?.let { "$it min" },
-                routeKm?.let { "${fmtBr(it)} km" }
-            ).joinToString(" · ")
-            if (route.isNotEmpty()) lines.add("Rota da corrida: $route")
+
+        fun mapIntent(addr: String): PendingIntent {
+            val geoUri = Uri.parse("geo:0,0?q=" + Uri.encode(addr))
+            val maps = Intent(Intent.ACTION_VIEW, geoUri).apply { setPackage("com.google.android.apps.maps") }
+            val generic = Intent(Intent.ACTION_VIEW, geoUri)
+            val real = if (maps.resolveActivity(packageManager) != null) maps else generic
+            return PendingIntent.getActivity(this, addr.hashCode(), real,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         }
-        origem?.let { lines.add("Origem: $it") }
-        stops.forEachIndexed { i, addr -> lines.add("Parada ${i + 1}: $addr") }
-        if (offer.paradas > stops.size) {
-            val faltantes = offer.paradas - stops.size
-            lines.add(if (faltantes == 1) "1 parada adicional sem endereço legível" else "$faltantes paradas adicionais sem endereço legível")
-        }
-        destino?.let { lines.add("Destino: $it") }
-        val resumo = lines.joinToString("\\n")
-'''
-new2='''        val valorTxt = offer.valor?.let { "R$ ${fmtBr(it)}" }
-        val titulo = listOfNotNull(plat, valorTxt).joinToString(" - ")
-        val totalKmNotif = offer.km ?: listOfNotNull(offer.kmPickup, offer.kmTrip).sum().takeIf { it > 0 }
-        val totalMinNotif = offer.min ?: listOfNotNull(offer.minPickup, offer.minTrip).sum().takeIf { it > 0 }
-        val linha2 = listOfNotNull(totalKmNotif?.let { "${fmtBr(it)} km" }, totalMinNotif?.let { "${it}m" }).joinToString(" - ")
-        val lines = ArrayList<String>()
-        origem?.let { lines.add("Origem: $it") }
-        destino?.let { lines.add("Destino: $it") }
-        val resumo = listOf(titulo, linha2).plus(lines).filter { it.isNotBlank() }.joinToString("\\n")
-        val routeMin = offer.minTrip ?: offer.min
-        val routeKm = offer.kmTrip ?: offer.km
-'''
-if old2 not in s: raise SystemExit('notification text block not found')
-s=s.replace(old2,new2)
-old3='''        val visualLines = lines
+
+        val valorTxt = offer.valor?.let { "R$ ${fmtBr(it)}" }
+        val platLabel = if (plat.equals("UBER", true)) "Uber" else "99"
+        val titulo = listOfNotNull(platLabel, valorTxt).joinToString(" - ")
+        val linha2 = listOfNotNull(totalKm?.let { "${fmtBr(it)} km" }, totalMin?.let { "${it}m" }).joinToString(" - ")
+        val origemLinha = origem?.let { "Origem: $it" }
+        val destinoLinha = destino?.let { "Destino: $it" }
+
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(this, NOTIF_CHANNEL_ROUTE)
+        else @Suppress("DEPRECATION") Notification.Builder(this)
+
         val flashPicture = flashCard.renderNotificationBitmap(
-            plat, valorTxt, overallGrade, metrics, offer.min ?: routeMin ?: 0,
-            offer.km ?: routeKm ?: 0.0, declineReason, visualLines
-        )
-        builder.setContentTitle(titulo)
-            .setContentText(lines.firstOrNull() ?: titulo)
-'''
-new3='''        val flashPicture = flashCard.renderNotificationBitmap(
-            plat, null, overallGrade, metrics, offer.min ?: routeMin ?: 0,
-            offer.km ?: routeKm ?: 0.0, declineReason, emptyList()
+            plat, null, overallGrade, metrics, totalMin ?: 0, totalKm ?: 0.0, declineReason, emptyList()
         )
         builder.setContentTitle(titulo)
             .setContentText(linha2)
-'''
-if old3 not in s: raise SystemExit('notification bitmap block not found')
-s=s.replace(old3,new3)
-old4='''        if (flashPicture != null) {
-            // Samsung/Android 10 pode esconder BigPicture enquanto a notificação
-            // está recolhida. LargeIcon mantém uma miniatura do Flash visível já
-            // no estado normal; ao expandir continua mostrando a imagem completa.
-            builder.setLargeIcon(flashPicture)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setPriority(Notification.PRIORITY_LOW)
+            .setOnlyAlertOnce(true)
+            .setAutoCancel(false)
+            .setOngoing(false)
+
+        val expandedText = listOfNotNull(linha2.takeIf { it.isNotBlank() }, origemLinha, destinoLinha).joinToString("\n")
+        if (flashPicture != null) {
             builder.setStyle(Notification.BigPictureStyle()
                 .bigPicture(flashPicture)
                 .setBigContentTitle(titulo)
-                .setSummaryText(lines.take(2).joinToString(" · ")))
+                .setSummaryText(expandedText))
         } else {
-            builder.setStyle(Notification.BigTextStyle().bigText(resumo))
+            builder.setStyle(Notification.BigTextStyle().bigText(expandedText))
         }
+        if (origem != null) builder.addAction(Notification.Action.Builder(null, "Origem", mapIntent(origem)).build())
+        if (destino != null) builder.addAction(Notification.Action.Builder(null, "Destino", mapIntent(destino)).build())
+        try { nm.notify(4103, builder.build()) } catch (_: Exception) {}
+    }
 '''
-new4='''        if (flashPicture != null) {
-            val expandedHeader = listOfNotNull(titulo, linha2.takeIf { it.isNotBlank() },
-                origem?.let { "Origem: $it" }, destino?.let { "Destino: $it" }).joinToString("\\n")
-            builder.setStyle(Notification.BigPictureStyle().bigPicture(flashPicture).setBigContentTitle(expandedHeader))
-        } else {
-            builder.setStyle(Notification.BigTextStyle().bigText(resumo))
-        }
-'''
-if old4 not in s: raise SystemExit('notification style block not found')
-s=s.replace(old4,new4)
+s=s[:start]+newfunc+s[end:]
 p.write_text(s)
+
 g=Path('app/build.gradle')
 gs=g.read_text().replace('versionCode 235','versionCode 236').replace('versionName "1.3.22"','versionName "1.3.23"')
 g.write_text(gs)
