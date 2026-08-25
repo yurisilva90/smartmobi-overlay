@@ -2613,116 +2613,89 @@ class TripReaderService : AccessibilityService() {
         sendToCloud("99", "ocr", "OCR_INATIVO", "OCR_ALERTA_DISPARADO", emptyList(), null, null, emptyList())
     }
     private fun showRouteNotification(
-        plat: String,
-        offer: Offer,
-        overallGrade: String,
-        metrics: List<FlashCard.Metric>,
-        declineReason: String?
-    ) {
-        val origem = offer.origem
-        val destino = offer.destino
-        val stops = offer.stopAddresses
-        val key = listOf(
-            plat, offer.valor?.toString() ?: "", origem ?: "", destino ?: "",
-            stops.joinToString("|"), overallGrade, declineReason ?: "",
-            offer.minPickup?.toString() ?: "", offer.kmPickup?.toString() ?: "",
-            offer.minTrip?.toString() ?: "", offer.kmTrip?.toString() ?: "",
-            metrics.joinToString("|") { "${it.label}:${it.value}:${it.grade}" }
-        ).joinToString("|")
-        if (key == lastNotifKey) return
-        lastNotifKey = key
+    plat: String,
+    offer: Offer,
+    overallGrade: String,
+    metrics: List<FlashCard.Metric>,
+    declineReason: String?
+) {
+    val origem = offer.origem
+    val destino = offer.destino
+    val totalMin = offer.min ?: listOfNotNull(offer.minPickup, offer.minTrip).sum().takeIf { it > 0 }
+    val totalKm = offer.km ?: listOfNotNull(offer.kmPickup, offer.kmTrip).sum().takeIf { it > 0.0 }
+    val key = listOf(
+        plat, offer.valor?.toString() ?: "", origem ?: "", destino ?: "",
+        overallGrade, declineReason ?: "", totalMin?.toString() ?: "",
+        totalKm?.toString() ?: "", metrics.joinToString("|") { "${it.label}:${it.value}:${it.grade}" }
+    ).joinToString("|")
+    if (key == lastNotifKey) return
+    lastNotifKey = key
 
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val existing = nm.getNotificationChannel(NOTIF_CHANNEL_ROUTE)
-            if (existing == null) {
-                val ch = NotificationChannel(
-                    NOTIF_CHANNEL_ROUTE, "MōB Flash — rota da corrida",
-                    NotificationManager.IMPORTANCE_LOW
-                )
-                ch.description = "Resumo silencioso da oferta, rota e resultado do MōB Flash"
-                ch.setSound(null, null)
-                ch.enableVibration(false)
-                ch.enableLights(false)
-                nm.createNotificationChannel(ch)
-            }
-        }
-
-        fun mapIntent(addr: String): PendingIntent {
-            // Open the place/address for inspection. Do NOT start navigation:
-            // the driver wants to inspect the location, photos and Street View
-            // when Google Maps has coverage before deciding on the offer.
-            val geoUri = Uri.parse("geo:0,0?q=" + Uri.encode(addr))
-            val geoIntent = Intent(Intent.ACTION_VIEW, geoUri).apply { setPackage("com.google.android.apps.maps") }
-            val genericIntent = Intent(Intent.ACTION_VIEW, geoUri)
-            val real = if (geoIntent.resolveActivity(packageManager) != null) geoIntent else genericIntent
-            return PendingIntent.getActivity(
-                this, addr.hashCode(), real,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-        }
-
-        val valorTxt = offer.valor?.let { "R$ ${fmtBr(it)}" }
-        val titulo = listOfNotNull(plat, valorTxt).joinToString(" · ")
-        val lines = ArrayList<String>()
-        if (offer.minPickup != null || offer.kmPickup != null) {
-            val pickup = listOfNotNull(
-                offer.minPickup?.let { "$it min" },
-                offer.kmPickup?.let { "${fmtBr(it)} km" }
-            ).joinToString(" · ")
-            if (pickup.isNotEmpty()) lines.add("Até o passageiro: $pickup")
-        }
-        val routeMin = offer.minTrip ?: offer.min
-        val routeKm = offer.kmTrip ?: offer.km
-        if (routeMin != null || routeKm != null) {
-            val route = listOfNotNull(
-                routeMin?.let { "$it min" },
-                routeKm?.let { "${fmtBr(it)} km" }
-            ).joinToString(" · ")
-            if (route.isNotEmpty()) lines.add("Rota da corrida: $route")
-        }
-        origem?.let { lines.add("Origem: $it") }
-        stops.forEachIndexed { i, addr -> lines.add("Parada ${i + 1}: $addr") }
-        if (offer.paradas > stops.size) {
-            val faltantes = offer.paradas - stops.size
-            lines.add(if (faltantes == 1) "1 parada adicional sem endereço legível" else "$faltantes paradas adicionais sem endereço legível")
-        }
-        destino?.let { lines.add("Destino: $it") }
-        val resumo = lines.joinToString("\n")
-
-        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Notification.Builder(this, NOTIF_CHANNEL_ROUTE)
-        } else {
-            @Suppress("DEPRECATION") Notification.Builder(this)
-        }
-        val visualLines = lines
-        val flashPicture = flashCard.renderNotificationBitmap(
-            plat, valorTxt, overallGrade, metrics, offer.min ?: routeMin ?: 0,
-            offer.km ?: routeKm ?: 0.0, declineReason, visualLines
+    val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && nm.getNotificationChannel(NOTIF_CHANNEL_ROUTE) == null) {
+        val ch = NotificationChannel(
+            NOTIF_CHANNEL_ROUTE, "MōB Flash — rota da corrida",
+            NotificationManager.IMPORTANCE_LOW
         )
-        builder.setContentTitle(titulo)
-            .setContentText(lines.firstOrNull() ?: titulo)
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setPriority(Notification.PRIORITY_LOW)
-            .setOnlyAlertOnce(true)
-            .setAutoCancel(false)
-            .setOngoing(false)
-        if (flashPicture != null) {
-            // Samsung/Android 10 pode esconder BigPicture enquanto a notificação
-            // está recolhida. LargeIcon mantém uma miniatura do Flash visível já
-            // no estado normal; ao expandir continua mostrando a imagem completa.
-            builder.setLargeIcon(flashPicture)
-            builder.setStyle(Notification.BigPictureStyle()
-                .bigPicture(flashPicture)
-                .setBigContentTitle(titulo)
-                .setSummaryText(lines.take(2).joinToString(" · ")))
-        } else {
-            builder.setStyle(Notification.BigTextStyle().bigText(resumo))
-        }
-        if (origem != null) builder.addAction(Notification.Action.Builder(null, "Origem", mapIntent(origem)).build())
-        if (destino != null) builder.addAction(Notification.Action.Builder(null, "Destino", mapIntent(destino)).build())
-        try { nm.notify(4103, builder.build()) } catch (_: Exception) {}
+        ch.description = "Resumo silencioso da oferta e resultado do MōB Flash"
+        ch.setSound(null, null); ch.enableVibration(false); ch.enableLights(false)
+        nm.createNotificationChannel(ch)
     }
+
+    fun mapIntent(addr: String): PendingIntent {
+        val geoUri = Uri.parse("geo:0,0?q=" + Uri.encode(addr))
+        val maps = Intent(Intent.ACTION_VIEW, geoUri).apply { setPackage("com.google.android.apps.maps") }
+        val generic = Intent(Intent.ACTION_VIEW, geoUri)
+        val real = if (maps.resolveActivity(packageManager) != null) maps else generic
+        return PendingIntent.getActivity(
+            this, addr.hashCode(), real,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    val valorTxt = offer.valor?.let { "R$ ${fmtBr(it)}" }
+    val platLabel = if (plat.equals("UBER", true)) "Uber" else "99"
+    val titulo = listOfNotNull(platLabel, valorTxt).joinToString(" - ")
+    val resumoLinha = listOfNotNull(
+        totalKm?.let { "${fmtBr(it)} km" },
+        totalMin?.let { "${it}m" }
+    ).joinToString(" - ")
+    val enderecoResumo = listOfNotNull(
+        origem?.let { "Origem: $it" },
+        destino?.let { "Destino: $it" }
+    ).joinToString("\n")
+
+    val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        Notification.Builder(this, NOTIF_CHANNEL_ROUTE)
+    } else {
+        @Suppress("DEPRECATION") Notification.Builder(this)
+    }
+    val flashPicture = flashCard.renderNotificationBitmap(
+        plat, valorTxt, overallGrade, metrics, totalMin ?: 0,
+        totalKm ?: 0.0, declineReason, emptyList()
+    )
+    builder.setContentTitle(titulo)
+        .setContentText(resumoLinha)
+        .setSmallIcon(R.mipmap.ic_launcher)
+        .setPriority(Notification.PRIORITY_LOW)
+        .setOnlyAlertOnce(true)
+        .setAutoCancel(false)
+        .setOngoing(false)
+
+    if (flashPicture != null) {
+        builder.setStyle(
+            Notification.BigPictureStyle()
+                .bigPicture(flashPicture)
+                .setBigContentTitle("$titulo\n$resumoLinha")
+                .setSummaryText(enderecoResumo)
+        )
+    } else if (enderecoResumo.isNotBlank()) {
+        builder.setStyle(Notification.BigTextStyle().bigText("$resumoLinha\n$enderecoResumo"))
+    }
+    if (origem != null) builder.addAction(Notification.Action.Builder(null, "Origem", mapIntent(origem)).build())
+    if (destino != null) builder.addAction(Notification.Action.Builder(null, "Destino", mapIntent(destino)).build())
+    try { nm.notify(4103, builder.build()) } catch (_: Exception) {}
+}
 
     private fun sendToCloud(
         plat: String, pkg: String, screenClass: String,
