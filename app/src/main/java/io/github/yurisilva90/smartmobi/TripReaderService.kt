@@ -64,6 +64,11 @@ class TripReaderService : AccessibilityService() {
             instance?.handleOfficialOperationalNotification(platform, keywords, actions)
         }
 
+        @JvmStatic
+        fun onOfficialRouteInfo(platform: String, origin: String?, dest: String?, stops: List<String>) {
+            instance?.handleOfficialRouteInfo(platform, origin, dest, stops)
+        }
+
         val UBER_PKGS = setOf("com.ubercab.driver", "com.ubercab")
         val NN_PKGS = setOf("com.app99.driver", "com.taxis99.driver")
         val GIGU_PKGS = setOf("co.gigu.app")
@@ -193,6 +198,12 @@ class TripReaderService : AccessibilityService() {
     private val OFFER_REFINE_WINDOW_MS = 950L
     private val OFFER_NEW_VALUE_CONFIRMATIONS = 2
     private val OFFICIAL_OFFER_HINT_MS = 12_000L
+    private var officialRoutePlatform: String? = null
+    private var officialRouteOrigin: String? = null
+    private var officialRouteDest: String? = null
+    private var officialRouteStops: List<String> = emptyList()
+    private var officialRouteUntilMs = 0L
+    private val OFFICIAL_ROUTE_HINT_MS = 20_000L
 
     private fun recentOfficialOfferHint(): String? =
         officialOfferHintPlatform?.takeIf { System.currentTimeMillis() <= officialOfferHintUntilMs }
@@ -405,6 +416,20 @@ class TripReaderService : AccessibilityService() {
         val strongArrival = keywords.any { it == "cheguei" || it == "iniciar" } ||
             actions.any { it == "cheguei" || it == "iniciar" }
         if (strongArrival) AutoTripCapture.markPickupArrived(plat)
+    }
+
+    private fun handleOfficialRouteInfo(plat: String, origin: String?, dest: String?, stops: List<String>) {
+        if (plat != "UBER" && plat != "99") return
+        officialRoutePlatform = plat
+        if (!origin.isNullOrBlank()) officialRouteOrigin = origin
+        if (!dest.isNullOrBlank()) officialRouteDest = dest
+        if (stops.isNotEmpty()) officialRouteStops = stops.filter { it.isNotBlank() }.distinct()
+        officialRouteUntilMs = System.currentTimeMillis() + OFFICIAL_ROUTE_HINT_MS
+    }
+
+    private fun enrichOfferWithOfficialRoute(plat: String, offer: Offer): Offer {
+        if (officialRoutePlatform != plat || System.currentTimeMillis() > officialRouteUntilMs) return offer
+        return offer.copy(origem=offer.origem ?: officialRouteOrigin, destino=offer.destino ?: officialRouteDest, stopAddresses=if (offer.stopAddresses.isNotEmpty()) offer.stopAddresses else officialRouteStops, paradas=maxOf(offer.paradas, if (offer.stopAddresses.isNotEmpty()) offer.stopAddresses.size else officialRouteStops.size))
     }
 
     private fun pollForeground() {
@@ -1231,7 +1256,8 @@ class TripReaderService : AccessibilityService() {
         offerMissStreak = 0
         lastRealState = "OFERTA"
 
-        val offer = parseOffer(texts)
+        val parsedOffer = parseOffer(texts)
+        val offer = enrichOfferWithOfficialRoute(plat, parsedOffer)
         val valor = offer.valor
         val km = offer.km
         val min = offer.min
@@ -1504,8 +1530,9 @@ class TripReaderService : AccessibilityService() {
         // que permite auditar as inconsistências (perna faltando, valor
         // dobrando etc.) depois, comparando o que a tela mostrava com o que
         // o app calculou naquele instante.
+        val notificationImage = try { bmp?.copy(Bitmap.Config.ARGB_8888, false) } catch (_: Exception) { null }
         saveSnapshot(plat, bmp, overallGrade, metrics, min ?: 0, km, offer, texts)
-        showRouteNotification(plat, offer, overallGrade, metrics, declineReason)
+        showRouteNotification(plat, offer, overallGrade, metrics, declineReason, notificationImage)
 
         main.post {
             flashCard.show(
@@ -2298,7 +2325,8 @@ class TripReaderService : AccessibilityService() {
         offer: Offer,
         overallGrade: String,
         metrics: List<FlashCard.Metric>,
-        declineReason: String?
+        declineReason: String?,
+        offerImage: Bitmap? = null
     ) {
         val origem = offer.origem
         val destino = offer.destino
@@ -2387,7 +2415,7 @@ class TripReaderService : AccessibilityService() {
             @Suppress("DEPRECATION") Notification.Builder(this)
         }
         builder.setContentTitle(titulo)
-            .setStyle(Notification.BigTextStyle().bigText(resumo))
+            .setStyle(if (offerImage != null) Notification.BigPictureStyle().bigPicture(offerImage).setSummaryText(resumo) else Notification.BigTextStyle().bigText(resumo))
             .setContentText(lines.firstOrNull() ?: titulo)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setPriority(Notification.PRIORITY_LOW)
@@ -2396,7 +2424,7 @@ class TripReaderService : AccessibilityService() {
             .setOngoing(false)
         if (origem != null) builder.addAction(Notification.Action.Builder(null, "Origem", mapIntent(origem)).build())
         if (destino != null) builder.addAction(Notification.Action.Builder(null, "Destino", mapIntent(destino)).build())
-        try { nm.notify(4103, builder.build()) } catch (_: Exception) {}
+        try { nm.notify(4103, builder.build()) } catch (_: Exception) {} finally { try { offerImage?.recycle() } catch (_: Exception) {} }
     }
 
     private fun sendToCloud(

@@ -75,6 +75,9 @@ class DriverNotificationListenerService : NotificationListenerService() {
 
         if (eventType == "posted") {
             TripReaderService.onOfficialOperationalNotification(platform, keywords.distinct(), actionLabels.distinct())
+            if (routeInfo.origin != null || routeInfo.dest != null || routeInfo.stops.isNotEmpty()) {
+                TripReaderService.onOfficialRouteInfo(platform, routeInfo.origin, routeInfo.dest, routeInfo.stops)
+            }
         }
 
         // Só vira gatilho forte quando a própria notificação traz sinais de
