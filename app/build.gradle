@@ -2,7 +2,7 @@ plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
 }
-// 1.3.16: captura bruta de oferta Uber via acessibilidade para diagnóstico.
+// 1.3.17: diagnóstico completo da árvore de acessibilidade da Uber em ofertas.
 android {
     namespace 'io.github.yurisilva90.smartmobi'
     compileSdk 34
