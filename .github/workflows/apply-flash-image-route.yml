@@ -1,6 +1,7 @@
 name: Apply Flash image and route
 on:
   push:
+    branches: ['fix/flash-notification-1-3-13-final']
     paths: ['.github/workflows/apply-flash-image-route.yml']
 jobs:
   patch:
@@ -19,8 +20,9 @@ jobs:
         run: python3 apply_flash_image_route.py
       - name: Compile
         run: chmod +x gradlew && ./gradlew assembleDebug --no-daemon
-      - name: Commit and sync
+      - name: Commit validated patch
         run: |
+          git checkout -- gradlew
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add app/src/main/java/io/github/yurisilva90/smartmobi/TripReaderService.kt app/src/main/java/io/github/yurisilva90/smartmobi/DriverNotificationListenerService.kt app/build.gradle
@@ -37,5 +39,4 @@ jobs:
             tools/finish_flash_notification.py \
             tools/patch_route_notification_v1313.py
           git commit -m 'fix: incluir imagem do Flash e completar rota da oferta'
-          git pull --rebase origin main
-          git push origin main
+          git push origin HEAD:fix/flash-notification-1-3-13-final
