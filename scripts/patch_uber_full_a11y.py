@@ -16,8 +16,7 @@ if 'sendUberFullAccessibilityDiagnostics' not in s:
             val rect = Rect()
             node.getBoundsInScreen(rect)
             val o = JSONObject().apply {
-                put("path", path)
-                put("depth", depth)
+                put("path", path); put("depth", depth)
                 put("class", node.className?.toString() ?: JSONObject.NULL)
                 put("package", node.packageName?.toString() ?: JSONObject.NULL)
                 put("view_id", node.viewIdResourceName ?: JSONObject.NULL)
@@ -33,25 +32,13 @@ if 'sendUberFullAccessibilityDiagnostics' not in s:
                     put("center_x", rect.centerX()); put("center_y", rect.centerY()); put("width", rect.width()); put("height", rect.height())
                 })
                 put("child_count", node.childCount)
-                put("clickable", node.isClickable)
-                put("long_clickable", node.isLongClickable)
-                put("focusable", node.isFocusable)
-                put("focused", node.isFocused)
-                put("accessibility_focused", node.isAccessibilityFocused)
-                put("selected", node.isSelected)
-                put("checkable", node.isCheckable)
-                put("checked", node.isChecked)
-                put("enabled", node.isEnabled)
-                put("password", node.isPassword)
-                put("scrollable", node.isScrollable)
-                put("visible_to_user", node.isVisibleToUser)
-                put("editable", node.isEditable)
-                put("dismissable", node.isDismissable)
+                put("clickable", node.isClickable); put("long_clickable", node.isLongClickable)
+                put("focusable", node.isFocusable); put("focused", node.isFocused); put("accessibility_focused", node.isAccessibilityFocused)
+                put("selected", node.isSelected); put("checkable", node.isCheckable); put("checked", node.isChecked)
+                put("enabled", node.isEnabled); put("password", node.isPassword); put("scrollable", node.isScrollable)
+                put("visible_to_user", node.isVisibleToUser); put("editable", node.isEditable); put("dismissable", node.isDismissable)
                 put("important_for_accessibility", if (Build.VERSION.SDK_INT >= 24) node.isImportantForAccessibility else true)
-                put("actions", JSONArray(node.actionList.map { a -> JSONObject().apply {
-                    put("id", a.id)
-                    put("label", a.label?.toString() ?: JSONObject.NULL)
-                }}))
+                put("actions", JSONArray(node.actionList.map { a -> JSONObject().apply { put("id", a.id); put("label", a.label?.toString() ?: JSONObject.NULL) } }))
                 val extrasObj = JSONObject()
                 try {
                     for (k in node.extras.keySet()) {
@@ -75,8 +62,7 @@ if 'sendUberFullAccessibilityDiagnostics' not in s:
         val now = System.currentTimeMillis()
         if (now - lastUberTreeDiagMs < 1800L) return
         lastUberTreeDiagMs = now
-        val trees = JSONArray()
-        val windowsJson = JSONArray()
+        val trees = JSONArray(); val windowsJson = JSONArray()
         try {
             for (w in windows) {
                 val root = w.root ?: continue
@@ -84,8 +70,7 @@ if 'sendUberFullAccessibilityDiagnostics' not in s:
                 if (!UBER_PKGS.contains(pkg)) continue
                 val rect = Rect(); w.getBoundsInScreen(rect)
                 windowsJson.put(JSONObject().apply {
-                    put("type", w.type); put("layer", w.layer); put("active", w.isActive); put("focused", w.isFocused)
-                    put("pkg", pkg)
+                    put("type", w.type); put("layer", w.layer); put("active", w.isActive); put("focused", w.isFocused); put("pkg", pkg)
                     put("bounds", JSONObject().apply { put("left",rect.left);put("top",rect.top);put("right",rect.right);put("bottom",rect.bottom) })
                 })
                 collectNodeDiagnostics(root, trees)
@@ -102,24 +87,15 @@ if 'sendUberFullAccessibilityDiagnostics' not in s:
                     put("platform", "UBER")
                     put("package", "accessibility-tree")
                     put("screen_class", "UBER_OFERTA_TREE")
-                    put("texts", JSONObject().apply {
-                        put("state", "OFERTA_TREE")
-                        put("raw", JSONArray(texts))
-                        put("windows", windowsJson)
-                        put("nodes", trees)
-                    })
+                    put("texts", JSONObject().apply { put("state", "OFERTA_TREE"); put("raw", JSONArray(texts)); put("windows", windowsJson); put("nodes", trees) })
                 }
                 val url = URL("$SUPABASE_URL/rest/v1/trip_reader_log")
                 val conn = url.openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"; conn.connectTimeout = 8000; conn.readTimeout = 8000; conn.doOutput = true
-                conn.setRequestProperty("Content-Type", "application/json")
-                conn.setRequestProperty("apikey", SUPABASE_ANON)
+                conn.setRequestProperty("Content-Type", "application/json"); conn.setRequestProperty("apikey", SUPABASE_ANON)
                 val authToken = prefs.getString(GpsService.KEY_ACCESS_TOKEN, null) ?: SUPABASE_ANON
-                conn.setRequestProperty("Authorization", "Bearer $authToken")
-                conn.setRequestProperty("Prefer", "return=minimal")
-                conn.outputStream.use { it.write(body.toString().toByteArray()) }
-                conn.responseCode
-                conn.disconnect()
+                conn.setRequestProperty("Authorization", "Bearer $authToken"); conn.setRequestProperty("Prefer", "return=minimal")
+                conn.outputStream.use { it.write(body.toString().toByteArray()) }; conn.responseCode; conn.disconnect()
             } catch (_: Exception) {}
         }
     }
@@ -127,14 +103,36 @@ if 'sendUberFullAccessibilityDiagnostics' not in s:
 '''
     s = s.replace(marker, helper + marker, 1)
 
-    old = '''                    sendToCloud(
+old_block = '''        if (realPlat != null && realTexts.isNotEmpty()) {
+            processRealOffer(realPlat, realTexts)
+        } else if (realPlat == null) {'''
+new_block = '''        if (realPlat != null && realTexts.isNotEmpty()) {
+            if (realPlat == "UBER") {
+                val uberRawJoined = realTexts.joinToString("  ")
+                val uberRawLow = uberRawJoined.lowercase(Locale.getDefault())
+                if (isOfferScreen(uberRawLow)) {
+                    sendToCloud(
                         "UBER", "accessibility-raw", "UBER_OFERTA_RAW", "OFERTA_RAW",
                         extractMoney(uberRawJoined), extractKm(uberRawLow), extractMin(uberRawLow), realTexts
-                    )'''
-    if old not in s:
-        raise SystemExit('Uber raw diagnostic block not found')
-    s = s.replace(old, old + '\n                    sendUberFullAccessibilityDiagnostics(realTexts)', 1)
-    p.write_text(s)
+                    )
+                    sendUberFullAccessibilityDiagnostics(realTexts)
+                }
+            }
+            processRealOffer(realPlat, realTexts)
+        } else if (realPlat == null) {'''
+if old_block in s:
+    s = s.replace(old_block, new_block, 1)
+elif 'sendUberFullAccessibilityDiagnostics(realTexts)' not in s:
+    raise SystemExit('accessibility offer block not found')
+
+raw_old = '                        put("raw", if (DEBUG_SEND_RAW_TEXT) JSONArray(texts) else JSONArray())'
+raw_new = '''                        val sendRaw = DEBUG_SEND_RAW_TEXT ||
+                            (plat == "UBER" && pkg == "accessibility-raw" && state == "OFERTA_RAW")
+                        put("raw", if (sendRaw) JSONArray(texts) else JSONArray())'''
+if raw_old in s:
+    s = s.replace(raw_old, raw_new, 1)
+
+p.write_text(s)
 
 g = Path('app/build.gradle')
 b = g.read_text()
