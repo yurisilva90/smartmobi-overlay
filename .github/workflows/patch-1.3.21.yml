@@ -1,0 +1,83 @@
+name: Patch MoB 1.3.21 capture buffers and adaptive 99 OCR
+
+on:
+  push:
+    paths:
+      - '.github/workflows/patch-1.3.21.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply v1.3.21 patch
+        shell: python
+        run: |
+          from pathlib import Path
+
+          p = Path('app/src/main/java/io/github/yurisilva90/smartmobi/AutoTripCapture.kt')
+          s = p.read_text()
+
+          old = '@Volatile private var buffer: Buffer? = null'
+          new = '''// v1.3.21 — captura automática 100% separada por plataforma.\n    // Uber e 99 podem ficar ativos ao mesmo tempo; uma transição da Uber nunca\n    // pode apagar ou substituir a corrida em andamento da 99 (e vice-versa).\n    private val buffersByPlat = HashMap<String, Buffer>()'''
+          assert old in s, 'buffer declaration not found'
+          s = s.replace(old, new, 1)
+
+          old = 'val b = buffer\n        return JSONObject().apply {'
+          new = '''val b = buffersByPlat.values.firstOrNull { it.tripStartedAt > 0L }\n            ?: buffersByPlat.values.firstOrNull()\n        return JSONObject().apply {'''
+          assert old in s, 'liveState buffer not found'
+          s = s.replace(old, new, 1)
+
+          s = s.replace('val b = buffer ?: return', 'val b = buffersByPlat[plat] ?: return')
+          s = s.replace('buffer = Buffer(', 'buffersByPlat[plat] = Buffer(')
+          s = s.replace('buffer?.gpsOriginLat', 'buffersByPlat[plat]?.gpsOriginLat')
+          s = s.replace('buffer?.gpsOriginLng', 'buffersByPlat[plat]?.gpsOriginLng')
+          s = s.replace('val b = buffer\n', 'val b = buffersByPlat[plat]\n')
+          s = s.replace('buffer = null', 'buffersByPlat.remove(plat)')
+
+          # Safety: no legacy shared buffer references may remain.
+          assert 'private var buffer:' not in s
+          assert 'buffer = null' not in s
+          p.write_text(s)
+
+          p = Path('app/src/main/java/io/github/yurisilva90/smartmobi/TripReaderService.kt')
+          s = p.read_text()
+
+          old = '''private var nn99OfferOcrUntilMs = 0L\n    private val NN99_OCR_GATE_HOLD_MS = 5_000L'''
+          new = '''private var nn99OfferOcrUntilMs = 0L\n    private var nn99OcrBurstUntilMs = 0L\n    private var last99IdleProbeMs = 0L\n    private val NN99_OCR_GATE_HOLD_MS = 7_000L\n    private val NN99_OCR_BURST_MS = 8_000L\n    // Mesmo sem marcador acessível, faz uma sondagem leve. Assim uma oferta\n    // Flutter que não publique o gatilho ainda tem várias chances de ser vista,\n    // sem manter ML Kit rodando a cada 600ms o tempo inteiro.\n    private val NN99_OCR_IDLE_PROBE_MS = 2_200L'''
+          assert old in s, '99 OCR gate declaration not found'
+          s = s.replace(old, new, 1)
+
+          old = '''private fun nn99OfferOcrGateActive(): Boolean =\n        System.currentTimeMillis() <= nn99OfferOcrUntilMs\n\n    private fun requestPriorityOcr(plat: String) {\n        lastOcrMs = 0L\n        requestOcrPass(plat)\n    }'''
+          new = '''private fun nn99OfferOcrGateActive(): Boolean {\n        val now = System.currentTimeMillis()\n        return now <= nn99OfferOcrUntilMs || now <= nn99OcrBurstUntilMs\n    }\n\n    private fun arm99OcrBurst() {\n        nn99OcrBurstUntilMs = System.currentTimeMillis() + NN99_OCR_BURST_MS\n    }\n\n    private fun requestPriorityOcr(plat: String) {\n        if (plat == "UBER") return\n        if (plat == "99") arm99OcrBurst()\n        lastOcrMs = 0L\n        requestOcrPass(plat)\n    }'''
+          assert old in s, 'gate active block not found'
+          s = s.replace(old, new, 1)
+
+          old = '''if (plat == "99") {\n            refresh99OfferOcrGate()\n            if (!nn99OfferOcrGateActive()) return\n        }'''
+          new = '''if (plat == "99") {\n            refresh99OfferOcrGate()\n            if (!nn99OfferOcrGateActive()) {\n                val probeNow = System.currentTimeMillis()\n                if (probeNow - last99IdleProbeMs < NN99_OCR_IDLE_PROBE_MS) return\n                last99IdleProbeMs = probeNow\n            }\n        }'''
+          assert old in s, 'requestOcr gate block not found'
+          s = s.replace(old, new, 1)
+
+          old = '''val isOffer = isOfferScreen(low)\n            // Ponte OCR -> status (só 99):'''
+          new = '''val isOffer = isOfferScreen(low)\n            // Uma sondagem que encontra qualquer assinatura plausível de oferta\n            // abre uma rajada de 8s para obter leituras melhores antes do card sumir.\n            if (plat == "99") {\n                val moneySeen = extractMoney(joined).isNotEmpty()\n                val offerish = isOffer || low.contains("aceitar por") ||\n                    low.contains("escolher") || low.contains("corrida") && moneySeen\n                if (offerish) arm99OcrBurst()\n            }\n            // Ponte OCR -> status (só 99):'''
+          assert old in s, 'OCR callback anchor not found'
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+
+          p = Path('app/build.gradle')
+          s = p.read_text()
+          s = s.replace('// 1.3.20: estados Uber/99 totalmente independentes; status agregado por prioridade.\n// build trigger v1.3.20', '// 1.3.21: captura por plataforma + OCR adaptativo da 99.\n// build trigger v1.3.21')
+          s = s.replace('versionCode 233', 'versionCode 234')
+          s = s.replace('versionName "1.3.20"', 'versionName "1.3.21"')
+          p.write_text(s)
+
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/io/github/yurisilva90/smartmobi/AutoTripCapture.kt app/src/main/java/io/github/yurisilva90/smartmobi/TripReaderService.kt app/build.gradle
+          git commit -m "MoB 1.3.21: isolate auto-trip capture and adaptive 99 OCR"
+          git push
