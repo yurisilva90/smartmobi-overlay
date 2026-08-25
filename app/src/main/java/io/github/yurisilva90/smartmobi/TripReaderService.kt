@@ -1046,10 +1046,30 @@ class TripReaderService : AccessibilityService() {
             .replace(Regex("""[\s,.;:–—-]+"""), " ")
             .trim()
 
-        fun candidateAt(index: Int): String? {
+        // Dentro do trecho imediatamente ligado a uma perna (min/km), a posição
+        // já é uma evidência forte de endereço. Por isso aceitamos nomes de locais
+        // sem "Rua" ou número, mas continuamos rejeitando métricas, botões e UI.
+        fun looksLikeContextAddress(raw: String): Boolean {
+            if (looksLikeAddress(raw)) return true
+            val sl = cleanAddress(raw).lowercase(Locale.getDefault())
+            if (sl.length < 5 || sl.length > 140) return false
+            if (!Regex("""[a-záàâãéèêíïóôõöúç]""", RegexOption.IGNORE_CASE).containsMatchIn(sl)) return false
+            if (Regex("""^\(?\s*\d{1,3}([.,]\d+)?\s*(min|minutos|km|m)\b""").containsMatchIn(sl)) return false
+            if (Regex("""^[x%\d.,\s]+$""").containsMatchIn(sl)) return false
+            val blocked = listOf(
+                "aceitar", "selecionar", "escolher", "recusar", "corridas", "corrida",
+                "r$", "/km", "tarifa", "taxa de espera", "dinheiro", "pgto. no app",
+                "perfil essencial", "perfil premium", "perfil prata", "online", "buscando",
+                "verif.", "cpf", "negocia", "qr code", "não afeta", "nao afeta"
+            )
+            if (blocked.any { sl.contains(it) }) return false
+            return true
+        }
+
+        fun candidateAt(index: Int, contextual: Boolean = false): String? {
             if (index !in texts.indices) return null
             val cur = cleanAddress(texts[index])
-            if (looksLikeAddress(cur)) return cur
+            if (looksLikeAddress(cur) || (contextual && looksLikeContextAddress(cur))) return cur
             // Alguns OCRs quebram "Rua X" e "120 - Bairro" em linhas distintas.
             val hasStreet = Regex("""\b(rua|r\.?|av\.?|avenida|estrada|travessa|alameda|rodovia|pra[çc]a|largo|ladeira|rod\.?|via\b)""", RegexOption.IGNORE_CASE).containsMatchIn(cur)
             if (hasStreet && index + 1 in texts.indices) {
@@ -1073,7 +1093,7 @@ class TripReaderService : AccessibilityService() {
 
         val indexed = ArrayList<Pair<Int, String>>()
         fun addCandidate(index: Int, value: String?) {
-            val v = value?.let(::cleanAddress)?.takeIf { looksLikeAddress(it) } ?: return
+            val v = value?.let(::cleanAddress)?.takeIf { looksLikeAddress(it) || looksLikeContextAddress(it) } ?: return
             val n = normAddress(v)
             if (indexed.none { normAddress(it.second) == n }) indexed.add(index to v)
         }
@@ -1085,7 +1105,7 @@ class TripReaderService : AccessibilityService() {
             val scanEnd = minOf(nextLeg?.minus(1) ?: blockEnd, legIdx + 8, blockEnd)
             if (legIdx + 1 <= scanEnd) {
                 for (j in (legIdx + 1)..scanEnd) {
-                    val c = candidateAt(j)
+                    val c = candidateAt(j, contextual = true)
                     if (c != null) { addCandidate(j, c); break }
                 }
             }
@@ -2472,6 +2492,10 @@ class TripReaderService : AccessibilityService() {
             .setAutoCancel(false)
             .setOngoing(false)
         if (flashPicture != null) {
+            // Samsung/Android 10 pode esconder BigPicture enquanto a notificação
+            // está recolhida. LargeIcon mantém uma miniatura do Flash visível já
+            // no estado normal; ao expandir continua mostrando a imagem completa.
+            builder.setLargeIcon(flashPicture)
             builder.setStyle(Notification.BigPictureStyle()
                 .bigPicture(flashPicture)
                 .setBigContentTitle(titulo)
