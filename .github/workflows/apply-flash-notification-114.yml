@@ -16,6 +16,21 @@ jobs:
           java-version: '17'
       - name: Apply patch
         run: python3 tools/patch_flash_notification_114.py
+      - name: Normalize Android compatibility
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app/src/main/java/io/github/yurisilva90/smartmobi/TripReaderService.kt')
+          s=p.read_text()
+          s=s.replace('            .setSilent(true)\n','')
+          s=s.replace(
+              'plat, overallGrade, metrics, routeMin ?: 0, routeKm ?: 0.0, declineReason, visualLines',
+              'plat, overallGrade, metrics, offer.min ?: routeMin ?: 0, offer.km ?: routeKm ?: 0.0, declineReason, visualLines'
+          )
+          assert '.setSilent(true)' not in s
+          assert 'offer.min ?: routeMin ?: 0' in s
+          p.write_text(s)
+          PY
       - name: Compile
         run: |
           chmod +x gradlew
