@@ -6,8 +6,10 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Typeface
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -15,6 +17,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
+import android.util.Base64
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
@@ -23,11 +26,17 @@ import android.webkit.*
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import kotlin.concurrent.thread
+import kotlin.math.ceil
+import kotlin.math.roundToInt
 
 class MainActivity : AppCompatActivity() {
 
@@ -35,6 +44,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var webProgress: ProgressBar
     private lateinit var splashView: FrameLayout
     private var fileCallback: ValueCallback<Array<Uri>>? = null
+    private var pendingVideoUri: Uri? = null
+    private var pendingChooserWantsVideo = false
     private var splashDone = false
     private var webReady   = false
     private var pendingScreen: String? = null
@@ -230,6 +241,62 @@ class MainActivity : AppCompatActivity() {
         }, 600)
     }
 
+    private fun isNotificationAccessEnabled(): Boolean = try {
+        NotificationManagerCompat.getEnabledListenerPackages(this).contains(packageName)
+    } catch (_: Exception) { false }
+
+    private fun emitNativeVideoJs(js: String) {
+        runOnUiThread { if (webReady) webView.evaluateJavascript(js, null) }
+    }
+
+    private fun extractSelectedVideoFramesNative(token: String, maxFrames: Int, maxWidth: Int): Boolean {
+        val uri = pendingVideoUri ?: return false
+        thread(isDaemon = true) {
+            val retriever = MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(this, uri)
+                val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                if (durationMs <= 0L) throw IllegalStateException("duração do vídeo indisponível")
+                val srcW = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 720
+                val srcH = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 1280
+                val safeMaxWidth = maxWidth.coerceIn(320, 1080)
+                val outW = srcW.coerceAtMost(safeMaxWidth).coerceAtLeast(1)
+                val outH = ((srcH.toDouble() / srcW.coerceAtLeast(1)) * outW).roundToInt().coerceAtLeast(1)
+                val count = ceil(durationMs / 900.0).toInt().coerceIn(1, maxFrames.coerceIn(1, 90))
+                var emitted = 0
+                for (i in 0 until count) {
+                    val atMs = if (count <= 1) 0L else ((durationMs - 1L) * i / (count - 1))
+                    var bmp: Bitmap? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                        retriever.getScaledFrameAtTime(atMs * 1000L, MediaMetadataRetriever.OPTION_CLOSEST, outW, outH)
+                    } else {
+                        retriever.getFrameAtTime(atMs * 1000L, MediaMetadataRetriever.OPTION_CLOSEST)
+                    }
+                    if (bmp != null && (bmp.width != outW || bmp.height != outH)) {
+                        val scaled = Bitmap.createScaledBitmap(bmp, outW, outH, true)
+                        if (scaled !== bmp) bmp.recycle()
+                        bmp = scaled
+                    }
+                    if (bmp != null) {
+                        val bos = ByteArrayOutputStream()
+                        bmp.compress(Bitmap.CompressFormat.JPEG, 78, bos)
+                        bmp.recycle()
+                        val dataUrl = "data:image/jpeg;base64," + Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP)
+                        emitted++
+                        emitNativeVideoJs("window.__mobNativeVideoFrame&&window.__mobNativeVideoFrame(${JSONObject.quote(token)},${JSONObject.quote(dataUrl)});")
+                    }
+                    emitNativeVideoJs("window.__mobNativeVideoProgress&&window.__mobNativeVideoProgress(${JSONObject.quote(token)},${i + 1},$count);")
+                }
+                if (emitted == 0) throw IllegalStateException("nenhum quadro pôde ser decodificado")
+                emitNativeVideoJs("window.__mobNativeVideoDone&&window.__mobNativeVideoDone(${JSONObject.quote(token)},$emitted,$durationMs);")
+            } catch (e: Exception) {
+                emitNativeVideoJs("window.__mobNativeVideoError&&window.__mobNativeVideoError(${JSONObject.quote(token)},${JSONObject.quote(e.message ?: "falha ao decodificar vídeo")});")
+            } finally {
+                try { retriever.release() } catch (_: Exception) {}
+            }
+        }
+        return true
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebView() {
         webView.settings.apply {
@@ -381,6 +448,20 @@ class MainActivity : AppCompatActivity() {
             // de "serviço conectado neste processo" durante diagnóstico.
             @JavascriptInterface fun isA11yConnected(): Boolean = TripReaderService.instance != null
 
+            // Notificações oficiais Uber/99 — permissão separada da Acessibilidade.
+            @JavascriptInterface fun isNotificationAccessEnabled(): Boolean = this@MainActivity.isNotificationAccessEnabled()
+            @JavascriptInterface fun openNotificationAccessSettings() {
+                runOnUiThread {
+                    try { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+                    catch (_: Exception) { Toast.makeText(this@MainActivity, "Não foi possível abrir o acesso às notificações.", Toast.LENGTH_LONG).show() }
+                }
+            }
+
+            // O WebView do Android 10 pode falhar ao decodificar alguns MP4.
+            @JavascriptInterface fun hasNativeVideoFrameExtraction(): Boolean = true
+            @JavascriptInterface fun extractSelectedVideoFrames(token: String, maxFrames: Int, maxWidth: Int): Boolean =
+                this@MainActivity.extractSelectedVideoFramesNative(token, maxFrames, maxWidth)
+
             // Salva a configuração do MōB Flash (lida pelo TripReaderService via SharedPreferences)
             // configJson vem pronto do JS: {"enabled":..,"custoPorKm":..,"kpis":{...}}
             @JavascriptInterface fun saveFlashConfig(configJson: String) {
@@ -404,7 +485,10 @@ class MainActivity : AppCompatActivity() {
             override fun onPermissionRequest(r: PermissionRequest) = r.grant(r.resources)
             override fun onShowFileChooser(v: WebView, cb: ValueCallback<Array<Uri>>, p: FileChooserParams): Boolean {
                 fileCallback = cb
-                try { startActivityForResult(p.createIntent(), REQ_FILE) } catch (e: Exception) { cb.onReceiveValue(arrayOf()); fileCallback = null }
+                pendingChooserWantsVideo = p.acceptTypes.any { it?.lowercase()?.contains("video") == true }
+                try { startActivityForResult(p.createIntent(), REQ_FILE) } catch (e: Exception) {
+                    cb.onReceiveValue(arrayOf()); fileCallback = null; pendingChooserWantsVideo = false
+                }
                 return true
             }
         }
@@ -438,7 +522,15 @@ class MainActivity : AppCompatActivity() {
     @Deprecated("") override fun onActivityResult(req: Int, result: Int, data: Intent?) {
         super.onActivityResult(req, result, data)
         if (req == REQ_FILE) {
-            fileCallback?.onReceiveValue(if (data?.data != null) arrayOf(data.data!!) else arrayOf())
+            val uri = data?.data
+            if (uri != null) {
+                val mime = try { contentResolver.getType(uri) } catch (_: Exception) { null }
+                pendingVideoUri = if (mime?.startsWith("video/") == true || (mime == null && pendingChooserWantsVideo)) uri else null
+            } else {
+                pendingVideoUri = null
+            }
+            pendingChooserWantsVideo = false
+            fileCallback?.onReceiveValue(if (uri != null) arrayOf(uri) else arrayOf())
             fileCallback = null
         }
         if (req == REQ_SCREEN_CAPTURE && Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {

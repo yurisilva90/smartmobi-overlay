@@ -1,0 +1,54 @@
+[
+    {
+        "merged": "io.github.yurisilva90.smartmobi.app-merged_res-33:/mipmap-xxxhdpi_ic_launcher.png.flat",
+        "source": "io.github.yurisilva90.smartmobi.app-main-35:/mipmap-xxxhdpi/ic_launcher.png"
+    },
+    {
+        "merged": "io.github.yurisilva90.smartmobi.app-merged_res-33:/mipmap-hdpi_ic_launcher_round.png.flat",
+        "source": "io.github.yurisilva90.smartmobi.app-main-35:/mipmap-hdpi/ic_launcher_round.png"
+    },
+    {
+        "merged": "io.github.yurisilva90.smartmobi.app-merged_res-33:/mipmap-hdpi_ic_launcher.png.flat",
+        "source": "io.github.yurisilva90.smartmobi.app-main-35:/mipmap-hdpi/ic_launcher.png"
+    },
+    {
+        "merged": "io.github.yurisilva90.smartmobi.app-merged_res-33:/mipmap-xxhdpi_ic_launcher.png.flat",
+        "source": "io.github.yurisilva90.smartmobi.app-main-35:/mipmap-xxhdpi/ic_launcher.png"
+    },
+    {
+        "merged": "io.github.yurisilva90.smartmobi.app-merged_res-33:/mipmap-mdpi_ic_launcher_round.png.flat",
+        "source": "io.github.yurisilva90.smartmobi.app-main-35:/mipmap-mdpi/ic_launcher_round.png"
+    },
+    {
+        "merged": "io.github.yurisilva90.smartmobi.app-merged_res-33:/drawable_ic_platform_99.png.flat",
+        "source": "io.github.yurisilva90.smartmobi.app-main-35:/drawable/ic_platform_99.png"
+    },
+    {
+        "merged": "io.github.yurisilva90.smartmobi.app-merged_res-33:/drawable_ic_platform_uber.png.flat",
+        "source": "io.github.yurisilva90.smartmobi.app-main-35:/drawable/ic_platform_uber.png"
+    },
+    {
+        "merged": "io.github.yurisilva90.smartmobi.app-merged_res-33:/mipmap-xhdpi_ic_launcher_round.png.flat",
+        "source": "io.github.yurisilva90.smartmobi.app-main-35:/mipmap-xhdpi/ic_launcher_round.png"
+    },
+    {
+        "merged": "io.github.yurisilva90.smartmobi.app-merged_res-33:/mipmap-xxhdpi_ic_launcher_round.png.flat",
+        "source": "io.github.yurisilva90.smartmobi.app-main-35:/mipmap-xxhdpi/ic_launcher_round.png"
+    },
+    {
+        "merged": "io.github.yurisilva90.smartmobi.app-merged_res-33:/xml_trip_reader_config.xml.flat",
+        "source": "io.github.yurisilva90.smartmobi.app-main-35:/xml/trip_reader_config.xml"
+    },
+    {
+        "merged": "io.github.yurisilva90.smartmobi.app-merged_res-33:/mipmap-mdpi_ic_launcher.png.flat",
+        "source": "io.github.yurisilva90.smartmobi.app-main-35:/mipmap-mdpi/ic_launcher.png"
+    },
+    {
+        "merged": "io.github.yurisilva90.smartmobi.app-merged_res-33:/mipmap-xxxhdpi_ic_launcher_round.png.flat",
+        "source": "io.github.yurisilva90.smartmobi.app-main-35:/mipmap-xxxhdpi/ic_launcher_round.png"
+    },
+    {
+        "merged": "io.github.yurisilva90.smartmobi.app-merged_res-33:/mipmap-xhdpi_ic_launcher.png.flat",
+        "source": "io.github.yurisilva90.smartmobi.app-main-35:/mipmap-xhdpi/ic_launcher.png"
+    }
+]

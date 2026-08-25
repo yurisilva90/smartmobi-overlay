@@ -54,6 +54,11 @@ class TripReaderService : AccessibilityService() {
         // de uma referência estática pra instância ativa.
         @Volatile var instance: TripReaderService? = null
 
+        @JvmStatic
+        fun onOfficialNotification(platform: String, texts: List<String>, offerHint: Boolean) {
+            instance?.handleOfficialNotification(platform, texts, offerHint)
+        }
+
         val UBER_PKGS = setOf("com.ubercab.driver", "com.ubercab")
         val NN_PKGS = setOf("com.app99.driver", "com.taxis99.driver")
         val GIGU_PKGS = setOf("co.gigu.app")
@@ -175,8 +180,22 @@ class TripReaderService : AccessibilityService() {
     private var visualOfferState: VisualOfferState? = null
     private var pendingNewOfferValue: Double? = null
     private var pendingNewOfferCount = 0
+    private var pendingPlatformSwitch: String? = null
+    private var pendingPlatformSwitchCount = 0
+    private var officialOfferHintPlatform: String? = null
+    private var officialOfferHintUntilMs = 0L
+    private val lastPartialRetryMsByPlat = HashMap<String, Long>()
     private val OFFER_REFINE_WINDOW_MS = 950L
     private val OFFER_NEW_VALUE_CONFIRMATIONS = 2
+    private val OFFICIAL_OFFER_HINT_MS = 12_000L
+
+    private fun recentOfficialOfferHint(): String? =
+        officialOfferHintPlatform?.takeIf { System.currentTimeMillis() <= officialOfferHintUntilMs }
+
+    private fun shortVisualPlatformLock(): String? {
+        val v = visualOfferState ?: return null
+        return v.platform.takeIf { lastFlashSig.isNotEmpty() && System.currentTimeMillis() - v.firstSeenMs < 4_000L }
+    }
 
     private fun offerQualityScore(o: Offer): Int {
         var score = o.legsFound * 4
@@ -327,6 +346,55 @@ class TripReaderService : AccessibilityService() {
         sendToCloud("?", "?", "DIAG", "FGPLAT_NULO", emptyList(), null, null, detail)
     }
 
+    private fun platformOfPackage(pkg: String?): String? = when {
+        pkg == null -> null
+        UBER_PKGS.contains(pkg) -> "UBER"
+        NN_PKGS.contains(pkg) -> "99"
+        else -> null
+    }
+
+    private fun chooseForegroundPlatform(): String? {
+        val hint = recentOfficialOfferHint()
+        val visualLock = shortVisualPlatformLock()
+        var bestPlat: String? = null
+        var bestScore = Long.MIN_VALUE
+        try {
+            val rect = Rect()
+            for (w in windows) {
+                val wp = w.root?.packageName?.toString() ?: continue
+                val plat = platformOfPackage(wp) ?: continue
+                if (w.type != AccessibilityWindowInfo.TYPE_APPLICATION && w.type != AccessibilityWindowInfo.TYPE_SYSTEM) continue
+                w.getBoundsInScreen(rect)
+                val area = rect.width().coerceAtLeast(0).toLong() * rect.height().coerceAtLeast(0).toLong()
+                var score = area
+                if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION) score += 2_000_000_000L
+                if (w.isActive) score += 6_000_000_000L
+                if (w.isFocused) score += 12_000_000_000L
+                if (plat == visualLock) score += 14_000_000_000L
+                if (plat == hint) score += 30_000_000_000L
+                if (score > bestScore) { bestScore = score; bestPlat = plat }
+            }
+        } catch (_: Exception) {}
+        return bestPlat
+    }
+
+    private fun requestPriorityOcr(plat: String) {
+        lastOcrMs = 0L
+        requestOcrPass(plat)
+    }
+
+    private fun handleOfficialNotification(plat: String, texts: List<String>, offerHint: Boolean) {
+        if (!offerHint || (plat != "UBER" && plat != "99")) return
+        officialOfferHintPlatform = plat
+        officialOfferHintUntilMs = System.currentTimeMillis() + OFFICIAL_OFFER_HINT_MS
+        main.post {
+            val low = texts.joinToString(" ").lowercase(Locale.getDefault())
+            if (texts.isNotEmpty() && isOfferScreen(low)) processRealOffer(plat, texts)
+            requestPriorityOcr(plat)
+            main.postDelayed({ requestPriorityOcr(plat) }, 320L)
+        }
+    }
+
     private fun pollForeground() {
         // BUG CONFIRMADO EM ANÁLISE REAL (13/07/2026): pegar a primeira janela
         // do loop (ordem de z-order) fazia uma PiP pequena da 99/Uber — que
@@ -336,32 +404,7 @@ class TripReaderService : AccessibilityService() {
         // OCR (que fotografa a tela inteira) lia texto quase todo da Uber,
         // gerando cards e logs com platform errado. Agora escolhe pela MAIOR
         // área visível entre as janelas candidatas, não pela primeira.
-        var fgPlat: String? = null
-        var bestArea = -1
-        try {
-            val rect = Rect()
-            for (w in windows) {
-                val wp = w.root?.packageName?.toString() ?: continue
-                // AMPLIADO (24/07/2026, confirmado em log real via
-                // FGPLAT_NULO): o card de oferta durante corrida ativa
-                // aparece como janela TYPE_SYSTEM, não TYPE_APPLICATION —
-                // caía fora daqui, fgPlat ficava nulo, nada rodava (nem
-                // OCR, nem log nenhum). Seguro ampliar porque o filtro de
-                // pacote (NN_PKGS/UBER_PKGS) abaixo já exclui qualquer
-                // janela de sistema de outro app (Samsung, systemui etc) —
-                // só passa se for da 99/Uber mesmo.
-                if ((w.type != AccessibilityWindowInfo.TYPE_APPLICATION &&
-                     w.type != AccessibilityWindowInfo.TYPE_SYSTEM) || !w.isActive) continue
-                val cand = when {
-                    NN_PKGS.contains(wp)   -> "99"
-                    UBER_PKGS.contains(wp) -> "UBER"
-                    else -> null
-                } ?: continue
-                w.getBoundsInScreen(rect)
-                val area = rect.width().coerceAtLeast(0) * rect.height().coerceAtLeast(0)
-                if (area > bestArea) { bestArea = area; fgPlat = cand }
-            }
-        } catch (_: Exception) {}
+        val fgPlat = chooseForegroundPlatform()
         if (fgPlat != null) {
             requestOcrPass(fgPlat)
         } else if (GpsService.isRunning) {
@@ -458,6 +501,7 @@ class TripReaderService : AccessibilityService() {
         //    e coleta metadados das janelas pra diagnóstico ──
         val textsByPkg = LinkedHashMap<String, ArrayList<String>>()
         val pkgArea = HashMap<String, Int>()
+        val pkgPriority = HashMap<String, Int>()
         val winMeta = ArrayList<String>()
         var nnWindowSeen = false
         var nnIsForeground = false
@@ -477,6 +521,9 @@ class TripReaderService : AccessibilityService() {
                     w.getBoundsInScreen(rect)
                     val area = rect.width().coerceAtLeast(0) * rect.height().coerceAtLeast(0)
                     if (area > (pkgArea[wp] ?: 0)) pkgArea[wp] = area
+                    val priority = (if (w.isFocused) 8 else 0) + (if (w.isActive) 4 else 0) +
+                        (if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION) 2 else 0)
+                    if (priority > (pkgPriority[wp] ?: -1)) pkgPriority[wp] = priority
                     if (NN_PKGS.contains(wp)) {
                         nnWindowSeen = true; nnNodeCount += (lst.size - before)
                         if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION && w.isActive) nnIsForeground = true
@@ -500,9 +547,19 @@ class TripReaderService : AccessibilityService() {
         // visível entre Uber/99, não pela primeira encontrada (que favorecia
         // uma PiP pequena por causa do z-order, mesmo com a Uber ocupando
         // quase toda a tela por baixo).
+        val eventPlat = platformOfPackage(evPkg)
+        val hintPlat = recentOfficialOfferHint()
+        val visualLock = shortVisualPlatformLock()
         val realPkg = textsByPkg.keys
             .filter { UBER_PKGS.contains(it) || NN_PKGS.contains(it) }
-            .maxByOrNull { pkgArea[it] ?: 0 }
+            .maxByOrNull { pkg ->
+                val p = platformOfPackage(pkg)
+                var score = (pkgPriority[pkg] ?: 0).toLong() * 1_000_000_000L + (pkgArea[pkg] ?: 0).toLong()
+                if (p == eventPlat && (pkgPriority[pkg] ?: 0) > 0) score += 3_000_000_000L
+                if (p == visualLock) score += 12_000_000_000L
+                if (p == hintPlat) score += 30_000_000_000L
+                score
+            }
         val realPlat = when {
             realPkg != null && UBER_PKGS.contains(realPkg) -> "UBER"
             realPkg != null && NN_PKGS.contains(realPkg)   -> "99"
@@ -1163,26 +1220,30 @@ class TripReaderService : AccessibilityService() {
         val km = offer.km
         val min = offer.min
 
-        if (valor == null || valor < 5.0 || valor > 2000.0 || km == null || km <= 0.0 || km > 150.0) {
+        if (valor == null || valor < 5.0 || valor > 2000.0) {
+            bmp?.recycle(); return
+        }
+        if (km == null || km <= 0.0 || km > 150.0) {
+            // A oferta existe e o valor principal já é confiável, mas faltou
+            // distância nesta leitura. Registra o fragmento e força uma nova
+            // captura em vez de descartar a oferta silenciosamente.
+            AutoTripCapture.onOfferSeen(this, plat, AutoTripCapture.OfferSnapshot(
+                value = valor, dinamico = offer.dinamico, multiplicador = offer.multiplicador,
+                kmPickup = offer.kmPickup, kmTrip = offer.kmTrip,
+                durPickupSec = offer.minPickup?.let { it * 60 }, durTripSec = offer.minTrip?.let { it * 60 },
+                origin = offer.origem, dest = offer.destino
+            ))
+            val nowPartial = System.currentTimeMillis()
+            if (nowPartial - (lastPartialRetryMsByPlat[plat] ?: 0L) > 450L) {
+                lastPartialRetryMsByPlat[plat] = nowPartial
+                main.postDelayed({ requestPriorityOcr(plat) }, 220L)
+            }
             bmp?.recycle(); return
         }
 
-        // Alimenta o buffer de captura automática com TODA leitura válida —
-        // independente da lógica de estabilidade do card visual abaixo (essa
-        // é só pra não "piscar" na tela; a captura quer o dado mais completo,
-        // mesmo que só apareça numa releitura que o card visual descartou).
-        AutoTripCapture.onOfferSeen(this, plat, AutoTripCapture.OfferSnapshot(
-            value = valor, dinamico = offer.dinamico, multiplicador = offer.multiplicador,
-            kmPickup = offer.kmPickup, kmTrip = offer.kmTrip,
-            durPickupSec = offer.minPickup?.let { it * 60 }, durTripSec = offer.minTrip?.let { it * 60 },
-            origin = offer.origem, dest = offer.destino
-        ))
-
-        // Flash 1.3.7 — primeira leitura como base. A mesma oferta não muda
-        // indefinidamente conforme o OCR oscila. Por 950ms aceitamos somente
-        // uma leitura CLARAMENTE mais completa; depois o card fica congelado.
-        // Se surgir outro valor sem a tela ter ficado vazia, exige 2 leituras
-        // consecutivas desse novo valor para separar oferta nova de ruído.
+        // Alimenta o buffer de captura automática apenas depois de resolver
+        // a identidade da plataforma. Uma leitura isolada da outra plataforma
+        // não pode contaminar a corrida ativa.
         val nowVisual = System.currentTimeMillis()
         val activeVisual = visualOfferState
         var visualChanged = false
@@ -1192,15 +1253,39 @@ class TripReaderService : AccessibilityService() {
             visualOfferState = VisualOfferState(plat, offer, nowVisual, token)
             pendingNewOfferValue = null
             pendingNewOfferCount = 0
+            pendingPlatformSwitch = null
+            pendingPlatformSwitchCount = 0
             lastFlashSig = token
             lastFlashSigSetMs = nowVisual
             visualChanged = true
         }
 
+        if (activeVisual != null && lastFlashSig.isNotEmpty() && activeVisual.platform != plat) {
+            val strongOfficialSwitch = recentOfficialOfferHint() == plat
+            if (!strongOfficialSwitch) {
+                if (pendingPlatformSwitch == plat) pendingPlatformSwitchCount++
+                else { pendingPlatformSwitch = plat; pendingPlatformSwitchCount = 1 }
+                if (pendingPlatformSwitchCount < 2) {
+                    bmp?.recycle()
+                    main.post { flashCard.keepAlive(15000L) }
+                    return
+                }
+            }
+        } else {
+            pendingPlatformSwitch = null
+            pendingPlatformSwitchCount = 0
+        }
+
+        AutoTripCapture.onOfferSeen(this, plat, AutoTripCapture.OfferSnapshot(
+            value = valor, dinamico = offer.dinamico, multiplicador = offer.multiplicador,
+            kmPickup = offer.kmPickup, kmTrip = offer.kmTrip,
+            durPickupSec = offer.minPickup?.let { it * 60 }, durTripSec = offer.minTrip?.let { it * 60 },
+            origin = offer.origem, dest = offer.destino
+        ))
+
         if (activeVisual == null || lastFlashSig.isEmpty()) {
             startVisualOffer()
         } else if (activeVisual.platform != plat) {
-            // Troca real de app/plataforma é uma oferta nova inequívoca.
             startVisualOffer()
         } else {
             val activeValue = activeVisual.offer.valor ?: valor
@@ -1221,15 +1306,11 @@ class TripReaderService : AccessibilityService() {
                     pendingNewOfferValue = valor
                     pendingNewOfferCount = 1
                 }
-                if (pendingNewOfferCount >= OFFER_NEW_VALUE_CONFIRMATIONS) {
-                    startVisualOffer()
-                }
+                if (pendingNewOfferCount >= OFFER_NEW_VALUE_CONFIRMATIONS) startVisualOffer()
             }
         }
 
         if (!visualChanged) {
-            // A oferta continua na tela, então apenas renova o auto-hide; não
-            // redesenha, não salva outro snapshot e principalmente não fala.
             bmp?.recycle()
             main.post { flashCard.keepAlive(15000L) }
             return
@@ -1468,6 +1549,8 @@ class TripReaderService : AccessibilityService() {
             visualOfferState = null
             pendingNewOfferValue = null
             pendingNewOfferCount = 0
+            pendingPlatformSwitch = null
+            pendingPlatformSwitchCount = 0
             main.post { flashCard.hide() }
         }
     }

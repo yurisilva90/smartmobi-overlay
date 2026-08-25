@@ -30,6 +30,7 @@ object ScreenOcrService {
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
     @Volatile private var busy = false
     @Volatile private var busySinceMs = 0L
+    @Volatile private var retryQueued = false
 
     fun captureAndRecognize(onResult: (List<String>, Bitmap?) -> Unit, onError: ((String) -> Unit)? = null) {
         // Em Android 10 ou inferior, delega integralmente ao fluxo antigo de
@@ -47,7 +48,15 @@ object ScreenOcrService {
             if (System.currentTimeMillis() - busySinceMs > 1500) {
                 busy = false
             } else {
-                onError?.invoke("ocupado")
+                // Uma oferta nova não deve ser perdida só porque o OCR anterior
+                // ainda está terminando. Mantém no máximo um retry pendente.
+                if (!retryQueued) {
+                    retryQueued = true
+                    main.postDelayed({
+                        retryQueued = false
+                        captureAndRecognize(onResult, onError)
+                    }, 180L)
+                }
                 return
             }
         }

@@ -1,0 +1,332 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="io.github.yurisilva90.smartmobi"
+4    android:versionCode="222"
+5    android:versionName="1.3.9-debug" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="24"
+9        android:targetSdkVersion="34" />
+10
+11    <uses-permission android:name="android.permission.INTERNET" />
+11-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:3:5-66
+11-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:3:22-64
+12    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+12-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:4:5-78
+12-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:4:22-76
+13    <uses-permission android:name="android.permission.CAMERA" />
+13-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:5:5-64
+13-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:5:22-62
+14    <uses-permission android:name="android.permission.VIBRATE" />
+14-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:6:5-65
+14-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:6:22-63
+15    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+15-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:7:5-78
+15-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:7:22-76
+16    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+16-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:8:5-80
+16-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:8:22-78
+17    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+17-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:9:5-84
+17-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:9:22-82
+18    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+18-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:10:5-76
+18-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:10:22-74
+19    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+19-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:11:5-85
+19-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:11:22-83
+20    <!-- Necessário apenas para o fallback de captura em Android 10 ou inferior. -->
+21    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+21-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:13:5-93
+21-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:13:22-91
+22    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+22-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:14:5-77
+22-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:14:22-75
+23    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+23-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:15:5-94
+23-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:15:22-92
+24    <!-- Notificações (Android 13+) -->
+25    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+25-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:17:5-76
+25-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:17:22-74
+26
+27    <permission
+27-->[androidx.core:core:1.12.0] /home/runner/.gradle/caches/transforms-3/a8839a1cec5dcf6ecf5205d86b16ef03/transformed/core-1.12.0/AndroidManifest.xml:22:5-24:47
+28        android:name="io.github.yurisilva90.smartmobi.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+28-->[androidx.core:core:1.12.0] /home/runner/.gradle/caches/transforms-3/a8839a1cec5dcf6ecf5205d86b16ef03/transformed/core-1.12.0/AndroidManifest.xml:23:9-81
+29        android:protectionLevel="signature" />
+29-->[androidx.core:core:1.12.0] /home/runner/.gradle/caches/transforms-3/a8839a1cec5dcf6ecf5205d86b16ef03/transformed/core-1.12.0/AndroidManifest.xml:24:9-44
+30
+31    <uses-permission android:name="io.github.yurisilva90.smartmobi.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
+31-->[androidx.core:core:1.12.0] /home/runner/.gradle/caches/transforms-3/a8839a1cec5dcf6ecf5205d86b16ef03/transformed/core-1.12.0/AndroidManifest.xml:26:5-97
+31-->[androidx.core:core:1.12.0] /home/runner/.gradle/caches/transforms-3/a8839a1cec5dcf6ecf5205d86b16ef03/transformed/core-1.12.0/AndroidManifest.xml:26:22-94
+32
+33    <application
+33-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:18:5-64:19
+34        android:allowBackup="true"
+34-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:19:9-35
+35        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+35-->[androidx.core:core:1.12.0] /home/runner/.gradle/caches/transforms-3/a8839a1cec5dcf6ecf5205d86b16ef03/transformed/core-1.12.0/AndroidManifest.xml:28:18-86
+36        android:debuggable="true"
+37        android:extractNativeLibs="false"
+38        android:icon="@mipmap/ic_launcher"
+38-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:20:9-43
+39        android:label="@string/app_name"
+39-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:21:9-41
+40        android:roundIcon="@mipmap/ic_launcher_round"
+40-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:22:9-54
+41        android:supportsRtl="true"
+41-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:23:9-35
+42        android:theme="@style/AppTheme"
+42-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:24:9-40
+43        android:usesCleartextTraffic="true" >
+43-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:25:9-44
+44        <activity
+44-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:26:9-34:20
+45            android:name="io.github.yurisilva90.smartmobi.MainActivity"
+45-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:26:19-47
+46            android:configChanges="orientation|screenSize|keyboardHidden"
+46-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:27:13-74
+47            android:exported="true"
+47-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:26:48-71
+48            android:label="@string/app_name"
+48-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:26:72-104
+49            android:launchMode="singleTop"
+49-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:29:13-43
+50            android:windowSoftInputMode="adjustResize" >
+50-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:28:13-55
+51            <intent-filter>
+51-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:30:13-33:29
+52                <action android:name="android.intent.action.MAIN" />
+52-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:31:17-68
+52-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:31:25-66
+53
+54                <category android:name="android.intent.category.LAUNCHER" />
+54-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:32:17-76
+54-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:32:27-74
+55            </intent-filter>
+56        </activity>
+57
+58        <service
+58-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:35:9-36:55
+59            android:name="io.github.yurisilva90.smartmobi.GpsService"
+59-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:35:18-44
+60            android:exported="false"
+60-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:35:45-69
+61            android:foregroundServiceType="location" />
+61-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:36:13-53
+62        <!--
+63             Android 7-10: fallback de captura da tela via MediaProjection.
+64             Android 11+ continua usando AccessibilityService.takeScreenshot().
+65        -->
+66        <service
+66-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:39:9-40:62
+67            android:name="io.github.yurisilva90.smartmobi.LegacyScreenOcrService"
+67-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:39:18-56
+68            android:exported="false"
+68-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:39:57-81
+69            android:foregroundServiceType="mediaProjection" />
+69-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:40:13-60
+70        <!-- Receiver para botões de ação rápida nas notificações de reporte -->
+71        <receiver
+71-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:42:9-82
+72            android:name="io.github.yurisilva90.smartmobi.ReporteQuickReceiver"
+72-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:42:19-55
+73            android:exported="false" />
+73-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:42:56-80
+74        <!-- PROVA DE CONCEITO: leitor de tela Uber/99 (só leitura) -->
+75        <service
+75-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:44:9-53:19
+76            android:name="io.github.yurisilva90.smartmobi.TripReaderService"
+76-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:44:18-51
+77            android:exported="false"
+77-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:45:13-37
+78            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE" >
+78-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:46:13-79
+79            <intent-filter>
+79-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:47:13-49:29
+80                <action android:name="android.accessibilityservice.AccessibilityService" />
+80-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:48:17-91
+80-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:48:25-89
+81            </intent-filter>
+82
+83            <meta-data
+83-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:50:13-52:61
+84                android:name="android.accessibilityservice"
+84-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:51:17-60
+85                android:resource="@xml/trip_reader_config" />
+85-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:52:17-59
+86        </service>
+87        <!--
+88             Fonte oficial de eventos de notificação de Uber/99. O usuário
+89             concede o acesso manualmente nas configurações do Android.
+90        -->
+91        <service
+91-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:56:9-63:19
+92            android:name="io.github.yurisilva90.smartmobi.DriverNotificationListenerService"
+92-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:56:18-67
+93            android:exported="true"
+93-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:58:13-36
+94            android:label="@string/app_name"
+94-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:57:13-45
+95            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" >
+95-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:59:13-87
+96            <intent-filter>
+96-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:60:13-62:29
+97                <action android:name="android.service.notification.NotificationListenerService" />
+97-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:61:17-98
+97-->/home/runner/work/smartmobi-overlay/smartmobi-overlay/app/src/main/AndroidManifest.xml:61:25-96
+98            </intent-filter>
+99        </service>
+100        <service
+100-->[com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /home/runner/.gradle/caches/transforms-3/8ba6cfca616f54b048c7f8619fa0d670/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:9:9-15:19
+101            android:name="com.google.mlkit.common.internal.MlKitComponentDiscoveryService"
+101-->[com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /home/runner/.gradle/caches/transforms-3/8ba6cfca616f54b048c7f8619fa0d670/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:10:13-91
+102            android:directBootAware="true"
+102-->[com.google.mlkit:common:18.11.0] /home/runner/.gradle/caches/transforms-3/cf4efab42279705c27239f00efb5124c/transformed/common-18.11.0/AndroidManifest.xml:17:13-43
+103            android:exported="false" >
+103-->[com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /home/runner/.gradle/caches/transforms-3/8ba6cfca616f54b048c7f8619fa0d670/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:11:13-37
+104            <meta-data
+104-->[com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /home/runner/.gradle/caches/transforms-3/8ba6cfca616f54b048c7f8619fa0d670/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:12:13-14:85
+105                android:name="com.google.firebase.components:com.google.mlkit.vision.text.internal.TextRegistrar"
+105-->[com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /home/runner/.gradle/caches/transforms-3/8ba6cfca616f54b048c7f8619fa0d670/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:13:17-114
+106                android:value="com.google.firebase.components.ComponentRegistrar" />
+106-->[com.google.android.gms:play-services-mlkit-text-recognition-common:19.1.0] /home/runner/.gradle/caches/transforms-3/8ba6cfca616f54b048c7f8619fa0d670/transformed/play-services-mlkit-text-recognition-common-19.1.0/AndroidManifest.xml:14:17-82
+107            <meta-data
+107-->[com.google.mlkit:vision-common:17.3.0] /home/runner/.gradle/caches/transforms-3/e6aed3f9b3d1f9531c07bb2990050a5d/transformed/vision-common-17.3.0/AndroidManifest.xml:12:13-14:85
+108                android:name="com.google.firebase.components:com.google.mlkit.vision.common.internal.VisionCommonRegistrar"
+108-->[com.google.mlkit:vision-common:17.3.0] /home/runner/.gradle/caches/transforms-3/e6aed3f9b3d1f9531c07bb2990050a5d/transformed/vision-common-17.3.0/AndroidManifest.xml:13:17-124
+109                android:value="com.google.firebase.components.ComponentRegistrar" />
+109-->[com.google.mlkit:vision-common:17.3.0] /home/runner/.gradle/caches/transforms-3/e6aed3f9b3d1f9531c07bb2990050a5d/transformed/vision-common-17.3.0/AndroidManifest.xml:14:17-82
+110            <meta-data
+110-->[com.google.mlkit:common:18.11.0] /home/runner/.gradle/caches/transforms-3/cf4efab42279705c27239f00efb5124c/transformed/common-18.11.0/AndroidManifest.xml:20:13-22:85
+111                android:name="com.google.firebase.components:com.google.mlkit.common.internal.CommonComponentRegistrar"
+111-->[com.google.mlkit:common:18.11.0] /home/runner/.gradle/caches/transforms-3/cf4efab42279705c27239f00efb5124c/transformed/common-18.11.0/AndroidManifest.xml:21:17-120
+112                android:value="com.google.firebase.components.ComponentRegistrar" />
+112-->[com.google.mlkit:common:18.11.0] /home/runner/.gradle/caches/transforms-3/cf4efab42279705c27239f00efb5124c/transformed/common-18.11.0/AndroidManifest.xml:22:17-82
+113        </service>
+114
+115        <provider
+115-->[com.google.mlkit:common:18.11.0] /home/runner/.gradle/caches/transforms-3/cf4efab42279705c27239f00efb5124c/transformed/common-18.11.0/AndroidManifest.xml:9:9-13:38
+116            android:name="com.google.mlkit.common.internal.MlKitInitProvider"
+116-->[com.google.mlkit:common:18.11.0] /home/runner/.gradle/caches/transforms-3/cf4efab42279705c27239f00efb5124c/transformed/common-18.11.0/AndroidManifest.xml:10:13-78
+117            android:authorities="io.github.yurisilva90.smartmobi.mlkitinitprovider"
+117-->[com.google.mlkit:common:18.11.0] /home/runner/.gradle/caches/transforms-3/cf4efab42279705c27239f00efb5124c/transformed/common-18.11.0/AndroidManifest.xml:11:13-69
+118            android:exported="false"
+118-->[com.google.mlkit:common:18.11.0] /home/runner/.gradle/caches/transforms-3/cf4efab42279705c27239f00efb5124c/transformed/common-18.11.0/AndroidManifest.xml:12:13-37
+119            android:initOrder="99" />
+119-->[com.google.mlkit:common:18.11.0] /home/runner/.gradle/caches/transforms-3/cf4efab42279705c27239f00efb5124c/transformed/common-18.11.0/AndroidManifest.xml:13:13-35
+120
+121        <activity
+121-->[com.google.android.gms:play-services-base:18.5.0] /home/runner/.gradle/caches/transforms-3/ab0dacd2c7da4fec2ea9cc6e97e31a06/transformed/play-services-base-18.5.0/AndroidManifest.xml:5:9-173
+122            android:name="com.google.android.gms.common.api.GoogleApiActivity"
+122-->[com.google.android.gms:play-services-base:18.5.0] /home/runner/.gradle/caches/transforms-3/ab0dacd2c7da4fec2ea9cc6e97e31a06/transformed/play-services-base-18.5.0/AndroidManifest.xml:5:19-85
+123            android:exported="false"
+123-->[com.google.android.gms:play-services-base:18.5.0] /home/runner/.gradle/caches/transforms-3/ab0dacd2c7da4fec2ea9cc6e97e31a06/transformed/play-services-base-18.5.0/AndroidManifest.xml:5:146-170
+124            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+124-->[com.google.android.gms:play-services-base:18.5.0] /home/runner/.gradle/caches/transforms-3/ab0dacd2c7da4fec2ea9cc6e97e31a06/transformed/play-services-base-18.5.0/AndroidManifest.xml:5:86-145
+125
+126        <meta-data
+126-->[com.google.android.gms:play-services-basement:18.4.0] /home/runner/.gradle/caches/transforms-3/9066c8fadd012dd97d199301afe28051/transformed/play-services-basement-18.4.0/AndroidManifest.xml:6:9-122
+127            android:name="com.google.android.gms.version"
+127-->[com.google.android.gms:play-services-basement:18.4.0] /home/runner/.gradle/caches/transforms-3/9066c8fadd012dd97d199301afe28051/transformed/play-services-basement-18.4.0/AndroidManifest.xml:6:20-65
+128            android:value="@integer/google_play_services_version" />
+128-->[com.google.android.gms:play-services-basement:18.4.0] /home/runner/.gradle/caches/transforms-3/9066c8fadd012dd97d199301afe28051/transformed/play-services-basement-18.4.0/AndroidManifest.xml:6:66-119
+129
+130        <provider
+130-->[androidx.emoji2:emoji2:1.2.0] /home/runner/.gradle/caches/transforms-3/4d060ff8a3f08e67539a73e9464ab0d9/transformed/emoji2-1.2.0/AndroidManifest.xml:24:9-32:20
+131            android:name="androidx.startup.InitializationProvider"
+131-->[androidx.emoji2:emoji2:1.2.0] /home/runner/.gradle/caches/transforms-3/4d060ff8a3f08e67539a73e9464ab0d9/transformed/emoji2-1.2.0/AndroidManifest.xml:25:13-67
+132            android:authorities="io.github.yurisilva90.smartmobi.androidx-startup"
+132-->[androidx.emoji2:emoji2:1.2.0] /home/runner/.gradle/caches/transforms-3/4d060ff8a3f08e67539a73e9464ab0d9/transformed/emoji2-1.2.0/AndroidManifest.xml:26:13-68
+133            android:exported="false" >
+133-->[androidx.emoji2:emoji2:1.2.0] /home/runner/.gradle/caches/transforms-3/4d060ff8a3f08e67539a73e9464ab0d9/transformed/emoji2-1.2.0/AndroidManifest.xml:27:13-37
+134            <meta-data
+134-->[androidx.emoji2:emoji2:1.2.0] /home/runner/.gradle/caches/transforms-3/4d060ff8a3f08e67539a73e9464ab0d9/transformed/emoji2-1.2.0/AndroidManifest.xml:29:13-31:52
+135                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+135-->[androidx.emoji2:emoji2:1.2.0] /home/runner/.gradle/caches/transforms-3/4d060ff8a3f08e67539a73e9464ab0d9/transformed/emoji2-1.2.0/AndroidManifest.xml:30:17-75
+136                android:value="androidx.startup" />
+136-->[androidx.emoji2:emoji2:1.2.0] /home/runner/.gradle/caches/transforms-3/4d060ff8a3f08e67539a73e9464ab0d9/transformed/emoji2-1.2.0/AndroidManifest.xml:31:17-49
+137            <meta-data
+137-->[androidx.lifecycle:lifecycle-process:2.6.1] /home/runner/.gradle/caches/transforms-3/147d2088b6ac63df86dd83eaddd13032/transformed/lifecycle-process-2.6.1/AndroidManifest.xml:29:13-31:52
+138                android:name="androidx.lifecycle.ProcessLifecycleInitializer"
+138-->[androidx.lifecycle:lifecycle-process:2.6.1] /home/runner/.gradle/caches/transforms-3/147d2088b6ac63df86dd83eaddd13032/transformed/lifecycle-process-2.6.1/AndroidManifest.xml:30:17-78
+139                android:value="androidx.startup" />
+139-->[androidx.lifecycle:lifecycle-process:2.6.1] /home/runner/.gradle/caches/transforms-3/147d2088b6ac63df86dd83eaddd13032/transformed/lifecycle-process-2.6.1/AndroidManifest.xml:31:17-49
+140            <meta-data
+140-->[androidx.profileinstaller:profileinstaller:1.3.0] /home/runner/.gradle/caches/transforms-3/0b5e2459744af70a88f18a434e638d11/transformed/profileinstaller-1.3.0/AndroidManifest.xml:29:13-31:52
+141                android:name="androidx.profileinstaller.ProfileInstallerInitializer"
+141-->[androidx.profileinstaller:profileinstaller:1.3.0] /home/runner/.gradle/caches/transforms-3/0b5e2459744af70a88f18a434e638d11/transformed/profileinstaller-1.3.0/AndroidManifest.xml:30:17-85
+142                android:value="androidx.startup" />
+142-->[androidx.profileinstaller:profileinstaller:1.3.0] /home/runner/.gradle/caches/transforms-3/0b5e2459744af70a88f18a434e638d11/transformed/profileinstaller-1.3.0/AndroidManifest.xml:31:17-49
+143        </provider>
+144
+145        <service
+145-->[com.google.android.datatransport:transport-backend-cct:2.3.3] /home/runner/.gradle/caches/transforms-3/e8536ed86db3b88aab16677bf6dfddb3/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:29:9-35:19
+146            android:name="com.google.android.datatransport.runtime.backends.TransportBackendDiscovery"
+146-->[com.google.android.datatransport:transport-backend-cct:2.3.3] /home/runner/.gradle/caches/transforms-3/e8536ed86db3b88aab16677bf6dfddb3/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:30:13-103
+147            android:exported="false" >
+147-->[com.google.android.datatransport:transport-backend-cct:2.3.3] /home/runner/.gradle/caches/transforms-3/e8536ed86db3b88aab16677bf6dfddb3/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:31:13-37
+148            <meta-data
+148-->[com.google.android.datatransport:transport-backend-cct:2.3.3] /home/runner/.gradle/caches/transforms-3/e8536ed86db3b88aab16677bf6dfddb3/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:32:13-34:39
+149                android:name="backend:com.google.android.datatransport.cct.CctBackendFactory"
+149-->[com.google.android.datatransport:transport-backend-cct:2.3.3] /home/runner/.gradle/caches/transforms-3/e8536ed86db3b88aab16677bf6dfddb3/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:33:17-94
+150                android:value="cct" />
+150-->[com.google.android.datatransport:transport-backend-cct:2.3.3] /home/runner/.gradle/caches/transforms-3/e8536ed86db3b88aab16677bf6dfddb3/transformed/transport-backend-cct-2.3.3/AndroidManifest.xml:34:17-36
+151        </service>
+152        <service
+152-->[com.google.android.datatransport:transport-runtime:2.2.6] /home/runner/.gradle/caches/transforms-3/a2e6f380d5f54682c65cd9f75f2eeda2/transformed/transport-runtime-2.2.6/AndroidManifest.xml:26:9-30:19
+153            android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.JobInfoSchedulerService"
+153-->[com.google.android.datatransport:transport-runtime:2.2.6] /home/runner/.gradle/caches/transforms-3/a2e6f380d5f54682c65cd9f75f2eeda2/transformed/transport-runtime-2.2.6/AndroidManifest.xml:27:13-117
+154            android:exported="false"
+154-->[com.google.android.datatransport:transport-runtime:2.2.6] /home/runner/.gradle/caches/transforms-3/a2e6f380d5f54682c65cd9f75f2eeda2/transformed/transport-runtime-2.2.6/AndroidManifest.xml:28:13-37
+155            android:permission="android.permission.BIND_JOB_SERVICE" >
+155-->[com.google.android.datatransport:transport-runtime:2.2.6] /home/runner/.gradle/caches/transforms-3/a2e6f380d5f54682c65cd9f75f2eeda2/transformed/transport-runtime-2.2.6/AndroidManifest.xml:29:13-69
+156        </service>
+157
+158        <receiver
+158-->[com.google.android.datatransport:transport-runtime:2.2.6] /home/runner/.gradle/caches/transforms-3/a2e6f380d5f54682c65cd9f75f2eeda2/transformed/transport-runtime-2.2.6/AndroidManifest.xml:32:9-34:40
+159            android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.AlarmManagerSchedulerBroadcastReceiver"
+159-->[com.google.android.datatransport:transport-runtime:2.2.6] /home/runner/.gradle/caches/transforms-3/a2e6f380d5f54682c65cd9f75f2eeda2/transformed/transport-runtime-2.2.6/AndroidManifest.xml:33:13-132
+160            android:exported="false" />
+160-->[com.google.android.datatransport:transport-runtime:2.2.6] /home/runner/.gradle/caches/transforms-3/a2e6f380d5f54682c65cd9f75f2eeda2/transformed/transport-runtime-2.2.6/AndroidManifest.xml:34:13-37
+161        <receiver
+161-->[androidx.profileinstaller:profileinstaller:1.3.0] /home/runner/.gradle/caches/transforms-3/0b5e2459744af70a88f18a434e638d11/transformed/profileinstaller-1.3.0/AndroidManifest.xml:34:9-52:20
+162            android:name="androidx.profileinstaller.ProfileInstallReceiver"
+162-->[androidx.profileinstaller:profileinstaller:1.3.0] /home/runner/.gradle/caches/transforms-3/0b5e2459744af70a88f18a434e638d11/transformed/profileinstaller-1.3.0/AndroidManifest.xml:35:13-76
+163            android:directBootAware="false"
+163-->[androidx.profileinstaller:profileinstaller:1.3.0] /home/runner/.gradle/caches/transforms-3/0b5e2459744af70a88f18a434e638d11/transformed/profileinstaller-1.3.0/AndroidManifest.xml:36:13-44
+164            android:enabled="true"
+164-->[androidx.profileinstaller:profileinstaller:1.3.0] /home/runner/.gradle/caches/transforms-3/0b5e2459744af70a88f18a434e638d11/transformed/profileinstaller-1.3.0/AndroidManifest.xml:37:13-35
+165            android:exported="true"
+165-->[androidx.profileinstaller:profileinstaller:1.3.0] /home/runner/.gradle/caches/transforms-3/0b5e2459744af70a88f18a434e638d11/transformed/profileinstaller-1.3.0/AndroidManifest.xml:38:13-36
+166            android:permission="android.permission.DUMP" >
+166-->[androidx.profileinstaller:profileinstaller:1.3.0] /home/runner/.gradle/caches/transforms-3/0b5e2459744af70a88f18a434e638d11/transformed/profileinstaller-1.3.0/AndroidManifest.xml:39:13-57
+167            <intent-filter>
+167-->[androidx.profileinstaller:profileinstaller:1.3.0] /home/runner/.gradle/caches/transforms-3/0b5e2459744af70a88f18a434e638d11/transformed/profileinstaller-1.3.0/AndroidManifest.xml:40:13-42:29
+168                <action android:name="androidx.profileinstaller.action.INSTALL_PROFILE" />
+168-->[androidx.profileinstaller:profileinstaller:1.3.0] /home/runner/.gradle/caches/transforms-3/0b5e2459744af70a88f18a434e638d11/transformed/profileinstaller-1.3.0/AndroidManifest.xml:41:17-91
+168-->[androidx.profileinstaller:profileinstaller:1.3.0] /home/runner/.gradle/caches/transforms-3/0b5e2459744af70a88f18a434e638d11/transformed/profileinstaller-1.3.0/AndroidManifest.xml:41:25-88
+169            </intent-filter>
+170            <intent-filter>
+170-->[androidx.profileinstaller:profileinstaller:1.3.0] /home/runner/.gradle/caches/transforms-3/0b5e2459744af70a88f18a434e638d11/transformed/profileinstaller-1.3.0/AndroidManifest.xml:43:13-45:29
+171                <action android:name="androidx.profileinstaller.action.SKIP_FILE" />
+171-->[androidx.profileinstaller:profileinstaller:1.3.0] /home/runner/.gradle/caches/transforms-3/0b5e2459744af70a88f18a434e638d11/transformed/profileinstaller-1.3.0/AndroidManifest.xml:44:17-85
+171-->[androidx.profileinstaller:profileinstaller:1.3.0] /home/runner/.gradle/caches/transforms-3/0b5e2459744af70a88f18a434e638d11/transformed/profileinstaller-1.3.0/AndroidManifest.xml:44:25-82
+172            </intent-filter>
+173            <intent-filter>
+173-->[androidx.profileinstaller:profileinstaller:1.3.0] /home/runner/.gradle/caches/transforms-3/0b5e2459744af70a88f18a434e638d11/transformed/profileinstaller-1.3.0/AndroidManifest.xml:46:13-48:29
+174                <action android:name="androidx.profileinstaller.action.SAVE_PROFILE" />
+174-->[androidx.profileinstaller:profileinstaller:1.3.0] /home/runner/.gradle/caches/transforms-3/0b5e2459744af70a88f18a434e638d11/transformed/profileinstaller-1.3.0/AndroidManifest.xml:47:17-88
+174-->[androidx.profileinstaller:profileinstaller:1.3.0] /home/runner/.gradle/caches/transforms-3/0b5e2459744af70a88f18a434e638d11/transformed/profileinstaller-1.3.0/AndroidManifest.xml:47:25-85
+175            </intent-filter>
+176            <intent-filter>
+176-->[androidx.profileinstaller:profileinstaller:1.3.0] /home/runner/.gradle/caches/transforms-3/0b5e2459744af70a88f18a434e638d11/transformed/profileinstaller-1.3.0/AndroidManifest.xml:49:13-51:29
+177                <action android:name="androidx.profileinstaller.action.BENCHMARK_OPERATION" />
+177-->[androidx.profileinstaller:profileinstaller:1.3.0] /home/runner/.gradle/caches/transforms-3/0b5e2459744af70a88f18a434e638d11/transformed/profileinstaller-1.3.0/AndroidManifest.xml:50:17-95
+177-->[androidx.profileinstaller:profileinstaller:1.3.0] /home/runner/.gradle/caches/transforms-3/0b5e2459744af70a88f18a434e638d11/transformed/profileinstaller-1.3.0/AndroidManifest.xml:50:25-92
+178            </intent-filter>
+179        </receiver>
+180    </application>
+181
+182</manifest>

@@ -1,0 +1,22 @@
+R_DEF: Internal format may change without notice
+local
+color bg
+color blue
+color blue_dark
+color card
+color green
+color green_dark
+color mob_gray
+color orange
+color red
+color text_primary
+color text_secondary
+color white
+drawable ic_platform_99
+drawable ic_platform_uber
+mipmap ic_launcher
+mipmap ic_launcher_round
+string app_name
+string trip_reader_desc
+style AppTheme
+xml trip_reader_config

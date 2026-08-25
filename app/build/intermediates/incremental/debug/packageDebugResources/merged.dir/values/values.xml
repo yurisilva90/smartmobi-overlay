@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg">#F7F9FC</color>
+    <color name="blue">#0A2F6B</color>
+    <color name="blue_dark">#061830</color>
+    <color name="card">#FFFFFF</color>
+    <color name="green">#22C55E</color>
+    <color name="green_dark">#16A34A</color>
+    <color name="mob_gray">#9CA3AF</color>
+    <color name="orange">#F59E0B</color>
+    <color name="red">#EF4444</color>
+    <color name="text_primary">#0A2F6B</color>
+    <color name="text_secondary">#64748B</color>
+    <color name="white">#FFFFFF</color>
+    <string name="app_name">MōB</string>
+    <string name="trip_reader_desc">Modo de teste: lê as telas de oferta e corrida da Uber e da 99 para calcular a lucratividade da sua jornada automaticamente. Nenhum dado é usado fora do seu app MōB.</string>
+    <style name="AppTheme" parent="Theme.MaterialComponents.Light.NoActionBar">
+        <item name="colorPrimary">@color/blue</item>
+        <item name="colorPrimaryDark">@color/blue_dark</item>
+        <item name="colorAccent">@color/blue</item>
+        <item name="android:windowBackground">@color/bg</item>
+    </style>
+</resources>

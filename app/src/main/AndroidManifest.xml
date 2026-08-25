@@ -51,5 +51,15 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/trip_reader_config"/>
         </service>
+        <!-- Fonte oficial de eventos de notificação de Uber/99. O usuário
+             concede o acesso manualmente nas configurações do Android. -->
+        <service android:name=".DriverNotificationListenerService"
+            android:label="@string/app_name"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService"/>
+            </intent-filter>
+        </service>
     </application>
 </manifest>
