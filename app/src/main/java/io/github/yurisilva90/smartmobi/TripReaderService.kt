@@ -121,12 +121,23 @@ class TripReaderService : AccessibilityService() {
         // 50/50 sempre garante maioria pro lado que realmente domina.
         private const val TRIP_STATE_DEBOUNCE = 3
         private const val TRIP_STATE_DEBOUNCE_WINDOW = 5
-        private val tripSubStateHistory = ArrayDeque<String>()
-        // Não é mais "private" (16/08/2026) — ProactiveAlert.kt precisa
-        // saber o estado atual (online/buscar/corrida) pra decidir se pode
-        // mostrar um alerta proativo e com qual tempo de espera (10s
-        // corrida / 5s online). Nada na lógica de detecção mudou, só ficou
-        // legível de fora.
+
+        // v1.3.20 — estado 100% separado por plataforma.
+        // Antes Uber e 99 escreviam no MESMO histórico de debounce e no mesmo
+        // confirmedTripSubState. Assim, abrir a Uber durante uma corrida da 99
+        // injetava votos "online" no buffer da 99 e derrubava o botão para Online.
+        // Cada plataforma agora mantém seu histórico + estado próprios. O campo
+        // público abaixo vira apenas a visão consolidada usada pelo widget/alertas.
+        private val tripSubStateHistoryByPlat = HashMap<String, ArrayDeque<String>>()
+        private val confirmedTripSubStateByPlat = hashMapOf(
+            "UBER" to "online",
+            "99" to "online"
+        )
+        private fun tripStateFor(plat: String): String =
+            confirmedTripSubStateByPlat[plat] ?: "online"
+
+        // ProactiveAlert/FloatingWidget continuam lendo um único estado visual.
+        // Prioridade: qualquer corrida ativa > qualquer busca ativa > online.
         var confirmedTripSubState = "online"
     }
 
@@ -1953,7 +1964,7 @@ class TripReaderService : AccessibilityService() {
         // gatilho armado abaixo nunca dispararia). Agora "Buscando" derruba
         // buscar E corrida pra Online — protegido pelo mesmo debounce de
         // maioria de 5 contra leitura solta errada.
-        if (confirmedTripSubState != "online" && nn99BuscandoOcrRe.containsMatchIn(joinedOcrText)) {
+        if (tripStateFor("99") != "online" && nn99BuscandoOcrRe.containsMatchIn(joinedOcrText)) {
             nn99ReachedPickup = false
             nn99ReachedPickupReason = "ocr:buscando"
             nn99KnownDestAddr = null
@@ -2027,7 +2038,7 @@ class TripReaderService : AccessibilityService() {
         // investigando), esse texto corrige sozinho. Mesmo padrão do
         // Buscando acima: continua "votando" a cada leitura até o debounce
         // confirmar, nunca desiste na primeira.
-        if (confirmedTripSubState != "corrida" && !temChegueAntes && !temEspera && nn99CobrarPagamentoRe.containsMatchIn(joinedOcrText)) {
+        if (tripStateFor("99") != "corrida" && !temChegueAntes && !temEspera && nn99CobrarPagamentoRe.containsMatchIn(joinedOcrText)) {
             nn99ReachedPickup = true
             nn99ReachedPickupReason = "ocr:cobrar_pagamento"
             nn99LastActiveSignalMs = System.currentTimeMillis()
@@ -2039,7 +2050,7 @@ class TripReaderService : AccessibilityService() {
         // só aparece pertinho do fim). Tela de navegação pode estar
         // minimizada (barra inferior só) sem esse texto — nesse caso não
         // reforça nada, mas também não atrapalha (só fica de olho).
-        if (confirmedTripSubState != "corrida" && !temChegueAntes && !temEspera && nn99FinalizarCorridaRe.containsMatchIn(joinedOcrText)) {
+        if (tripStateFor("99") != "corrida" && !temChegueAntes && !temEspera && nn99FinalizarCorridaRe.containsMatchIn(joinedOcrText)) {
             nn99ReachedPickup = true
             nn99ReachedPickupReason = "ocr:finalizar_corrida"
             nn99LastActiveSignalMs = System.currentTimeMillis()
@@ -2068,7 +2079,7 @@ class TripReaderService : AccessibilityService() {
             // Só desliga quando o debounce CONFIRMOU de verdade — continua
             // votando a cada leitura enquanto "Buscando" aparecer (bug do
             // v1.0.54 corrigido no v1.0.55: desligava no primeiro voto).
-            if (confirmedTripSubState == "online") {
+            if (tripStateFor("99") == "online") {
                 nn99WaitingBuscandoViaOcr = false
             }
         }
@@ -2099,7 +2110,7 @@ class TripReaderService : AccessibilityService() {
         }
 
         val rpBefore = nn99ReachedPickup
-        val ev = RuleEngine.evaluate("99", texts, nn99ReachedPickup, addrChanged = addressChanged, currentlyOnline = confirmedTripSubState == "online")
+        val ev = RuleEngine.evaluate("99", texts, nn99ReachedPickup, addrChanged = addressChanged, currentlyOnline = tripStateFor("99") == "online")
         val raw: String
         if (ev.matched) {
             nn99ReachedPickup = ev.newReachedPickup
@@ -2118,7 +2129,7 @@ class TripReaderService : AccessibilityService() {
             nn99DebugRPBefore = rpBefore
             nn99DebugRPAfter = nn99ReachedPickup
             nn99DebugAddrChanged = addressChanged
-            nn99DebugCurrentlyOnline = confirmedTripSubState == "online"
+            nn99DebugCurrentlyOnline = tripStateFor("99") == "online"
             nn99DebugMatchedRule = ev.matchedRuleKey ?: "nenhuma"
             nn99DebugRaw = raw
             applyTripSubStateDebounced(raw, "99")
@@ -2135,11 +2146,11 @@ class TripReaderService : AccessibilityService() {
             // pontes de OCR em checkNn99OcrStatusBridge — essas votam direto,
             // fora daqui), a leitura simplesmente NÃO vota. Buscar/Corrida
             // na 99 passam a ser decididos só por quem tem sinal de fato.
-            raw = confirmedTripSubState
+            raw = tripStateFor("99")
             nn99DebugRPBefore = rpBefore
             nn99DebugRPAfter = nn99ReachedPickup
             nn99DebugAddrChanged = addressChanged
-            nn99DebugCurrentlyOnline = confirmedTripSubState == "online"
+            nn99DebugCurrentlyOnline = tripStateFor("99") == "online"
             nn99DebugMatchedRule = "nenhuma"
             nn99DebugRaw = raw
         }
@@ -2162,55 +2173,43 @@ class TripReaderService : AccessibilityService() {
         // dinheiro=false até validar — não é pra chutar aqui.
     }
 
-    // Debounce compartilhado por Uber e 99 — exige N leituras seguidas e
-    // consistentes antes de confirmar a troca (evita "piscar" por ruído).
+    // v1.3.20 — debounce independente por plataforma. Uber nunca mais vota
+    // no buffer da 99 e vice-versa. O widget recebe somente o agregado visual.
     private fun applyTripSubStateDebounced(raw: String, plat: String) {
         val windowSize = RuleEngine.config("trip_state_debounce_window", TRIP_STATE_DEBOUNCE_WINDOW.toDouble()).toInt().coerceAtLeast(1)
         val required = RuleEngine.config("trip_state_debounce", TRIP_STATE_DEBOUNCE.toDouble()).toInt().coerceAtLeast(1)
 
-        tripSubStateHistory.addLast(raw)
-        while (tripSubStateHistory.size > windowSize) tripSubStateHistory.removeFirst()
+        val history = tripSubStateHistoryByPlat.getOrPut(plat) { ArrayDeque<String>() }
+        history.addLast(raw)
+        while (history.size > windowSize) history.removeFirst()
 
-        val counts = tripSubStateHistory.groupingBy { it }.eachCount()
+        val counts = history.groupingBy { it }.eachCount()
         val best = counts.maxByOrNull { it.value } ?: return
-        if (best.value >= required && confirmedTripSubState != best.key) {
-            val prev = confirmedTripSubState
-            confirmedTripSubState = best.key
-            MainActivity.floatingWidget?.updateTripState(best.key)
-            // BUG CONFIRMADO EM CORRIDA REAL (18/07/2026, corrida da
-            // Fabiane): o endereço "conhecido" não tinha sido limpo direito
-            // entre corridas (algum reset individual — Buscando/avaliação —
-            // podia ser "batido" por uma leitura de endereço solta no meio
-            // do caminho, deixando resíduo). O primeiro endereço da corrida
-            // NOVA parecia "diferente" desse resíduo e disparava a
-            // heurística de troca de endereço na hora errada (virava
-            // Corrida direto, sem nunca passar por Buscar). Corrigido na
-            // fonte única de verdade: toda vez que o status CONFIRMADO
-            // (pós-debounce, não leitura crua) vira Online na 99, limpa o
-            // endereço conhecido aqui — garante corrida nova sempre começa
-            // com endereço em branco, não importa qual mecanismo confirmou
-            // o Online.
-            // BUG NOVO CONFIRMADO (19/07/2026, log ao vivo): o ajuste da
-            // Fabiane só limpava o ENDEREÇO ao virar Online — mas a flag
-            // nn99ReachedPickup em si podia continuar presa em true de
-            // antes (viu no diagnóstico: RPantes=true já no primeiro
-            // instante de "online", muito antes de qualquer corrida nova
-            // começar). Resultado: corrida nova nascia direto em Corrida,
-            // porque a flag nunca tinha sido resetada de verdade, só o
-            // endereço. Corrigido juntando os dois resets no mesmo lugar —
-            // toda vez que o status confirmado vira Online, zera endereço
-            // E flag juntos, sempre.
+        val currentPlatState = tripStateFor(plat)
+        if (best.value >= required && currentPlatState != best.key) {
+            val prev = currentPlatState
+            confirmedTripSubStateByPlat[plat] = best.key
+
+            // Visão única do botão: uma plataforma online não pode apagar a
+            // atividade da outra. Corrida sempre vence Buscar, que vence Online.
+            confirmedTripSubState = when {
+                confirmedTripSubStateByPlat.values.any { it == "corrida" } -> "corrida"
+                confirmedTripSubStateByPlat.values.any { it == "buscar" } -> "buscar"
+                else -> "online"
+            }
+            MainActivity.floatingWidget?.updateTripState(confirmedTripSubState)
+
+            // Reset exclusivo da 99 — nunca acionado por transição da Uber.
             if (plat == "99" && best.key == "online") {
                 nn99KnownDestAddr = null
                 nn99ReachedPickup = false
                 nn99NavSemChegueCount = 0
                 nn99ReachedPickupReason = "online_confirmado"
             }
-            // Captura automática: só reage a transição CONFIRMADA (pós-debounce),
-            // nunca a leituras cruas — evita abrir/fechar registro por ruído.
+
+            // Captura e persistência recebem a transição da plataforma correta,
+            // preservando início/meio/fim independentes para Uber e 99.
             AutoTripCapture.onStateTransition(this, plat, prev, best.key)
-            // Persistência independente da corrida financeira: cada trecho de
-            // Online/Buscar/Corrida sobrevive mesmo sem oferta completa.
             JourneyStatusTracker.onStateTransition(this, plat, prev, best.key)
         }
     }
