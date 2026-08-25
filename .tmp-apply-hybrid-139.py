@@ -1,0 +1,721 @@
+from pathlib import Path
+import re
+
+
+def replace_once(text, old, new, label):
+    n = text.count(old)
+    if n != 1:
+        raise SystemExit(f'{label}: esperado 1, encontrado {n}')
+    return text.replace(old, new, 1)
+
+# ── build.gradle ──────────────────────────────────────────────
+p = Path('app/build.gradle')
+s = p.read_text(encoding='utf-8')
+s = replace_once(s,
+    '// 1.3.8: status simples Aguardando confirmação/Confirmada + origem separada por tag.',
+    '// 1.3.9: notificações oficiais Uber/99 + plataforma estável + vídeo nativo.',
+    'comentário versão')
+s = replace_once(s, 'versionCode 221', 'versionCode 222', 'versionCode')
+s = replace_once(s, 'versionName "1.3.8"', 'versionName "1.3.9"', 'versionName')
+p.write_text(s, encoding='utf-8')
+
+# ── Manifest: NotificationListenerService ────────────────────
+p = Path('app/src/main/AndroidManifest.xml')
+s = p.read_text(encoding='utf-8')
+marker = '''        <service android:name=".TripReaderService"
+            android:exported="false"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService"/>
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/trip_reader_config"/>
+        </service>'''
+replacement = marker + '''
+        <!-- Fonte oficial de eventos de notificação de Uber/99. O usuário
+             concede o acesso manualmente nas configurações do Android. -->
+        <service android:name=".DriverNotificationListenerService"
+            android:label="@string/app_name"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService"/>
+            </intent-filter>
+        </service>'''
+s = replace_once(s, marker, replacement, 'manifest TripReader')
+p.write_text(s, encoding='utf-8')
+
+# ── Novo listener de notificações ────────────────────────────
+notif = r'''package io.github.yurisilva90.smartmobi
+
+import android.app.Notification
+import android.os.Build
+import android.provider.Settings
+import android.service.notification.NotificationListenerService
+import android.service.notification.StatusBarNotification
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.security.MessageDigest
+import java.util.Locale
+import kotlin.concurrent.thread
+
+/**
+ * Captura somente metadados estruturados das notificações oficiais da Uber/99.
+ * Não persiste nome, endereço ou texto bruto. O texto completo existe apenas em
+ * memória pelo tempo necessário para extrair sinais operacionais e, quando há
+ * evidência forte de oferta, antecipar a leitura do Flash.
+ */
+class DriverNotificationListenerService : NotificationListenerService() {
+
+    companion object {
+        private val UBER = setOf("com.ubercab.driver", "com.ubercab")
+        private val NN99 = setOf("com.app99.driver", "com.taxis99.driver")
+    }
+
+    override fun onNotificationPosted(sbn: StatusBarNotification?) {
+        sbn ?: return
+        capture(sbn, "posted")
+    }
+
+    override fun onNotificationRemoved(sbn: StatusBarNotification?) {
+        sbn ?: return
+        capture(sbn, "removed")
+    }
+
+    private fun platformFor(pkg: String): String? = when {
+        UBER.contains(pkg) -> "UBER"
+        NN99.contains(pkg) -> "99"
+        else -> null
+    }
+
+    private fun capture(sbn: StatusBarNotification, eventType: String) {
+        val platform = platformFor(sbn.packageName) ?: return
+        val n = sbn.notification ?: return
+        val extras = n.extras
+
+        val title = extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
+        val text = extras?.getCharSequence(Notification.EXTRA_TEXT)?.toString().orEmpty()
+        val big = extras?.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString().orEmpty()
+        val sub = extras?.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString().orEmpty()
+        val info = extras?.getCharSequence(Notification.EXTRA_INFO_TEXT)?.toString().orEmpty()
+        val summary = extras?.getCharSequence(Notification.EXTRA_SUMMARY_TEXT)?.toString().orEmpty()
+        val lines = try {
+            extras?.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)?.map { it.toString() } ?: emptyList()
+        } catch (_: Exception) { emptyList() }
+
+        val parts = ArrayList<String>()
+        listOf(title, text, big, sub, info, summary).filterTo(parts) { it.isNotBlank() }
+        lines.filterTo(parts) { it.isNotBlank() }
+        val joined = parts.joinToString(" ").replace(Regex("\\s+"), " ").trim()
+        val low = joined.lowercase(Locale("pt", "BR"))
+
+        val money = extractMoney(joined)
+        val kms = extractKm(low)
+        val mins = extractMinutes(low)
+        val keywords = extractKeywords(low)
+        val actionLabels = ArrayList<String>()
+        try {
+            n.actions?.forEach { a -> operationalAction(a.title?.toString().orEmpty())?.let { actionLabels.add(it) } }
+        } catch (_: Exception) {}
+
+        // Só vira gatilho forte quando a própria notificação traz sinais de
+        // oferta. Uma notificação genérica de status nunca troca Uber↔99.
+        val hasMoney = money.any { it >= 5.0 }
+        val actionOffer = actionLabels.any { it == "aceitar" || it == "recusar" }
+        val keywordOffer = keywords.any { it in setOf("oferta", "nova_corrida", "nova_viagem", "aceitar", "recusar") }
+        val offerHint = eventType == "posted" && !n.isOngoing && (actionOffer || (hasMoney && (keywordOffer || kms.isNotEmpty() || mins.isNotEmpty())))
+
+        if (offerHint) {
+            // O texto não é persistido. Só é passado em memória ao leitor
+            // para fixar a plataforma e antecipar uma captura prioritária.
+            TripReaderService.onOfficialNotification(platform, parts, true)
+        }
+
+        persistStructured(
+            sbn, n, platform, eventType,
+            title.isNotBlank(), text.isNotBlank(), big.isNotBlank(), joined.length,
+            money, kms, mins, keywords.distinct(), actionLabels.distinct(), offerHint
+        )
+    }
+
+    private fun operationalAction(raw: String): String? {
+        val s = raw.lowercase(Locale("pt", "BR"))
+        return when {
+            "aceit" in s -> "aceitar"
+            "recus" in s || "rejeit" in s -> "recusar"
+            "cheguei" in s || "chegar" in s -> "cheguei"
+            "iniciar" in s -> "iniciar"
+            "finalizar" in s || "encerrar" in s -> "finalizar"
+            "abrir" in s || "ver" == s.trim() -> "abrir"
+            else -> null
+        }
+    }
+
+    private fun extractKeywords(low: String): List<String> {
+        val out = ArrayList<String>()
+        fun add(key: String, vararg needles: String) { if (needles.any { low.contains(it) }) out.add(key) }
+        add("oferta", "oferta")
+        add("nova_corrida", "nova corrida", "nova solicitação", "nova solicitacao")
+        add("nova_viagem", "nova viagem")
+        add("aceitar", "aceitar", "aceite")
+        add("recusar", "recusar", "rejeitar")
+        add("passageiro", "passageiro")
+        add("embarque", "embarque")
+        add("cheguei", "cheguei", "chegar")
+        add("iniciar", "iniciar viagem", "iniciar corrida")
+        add("finalizar", "finalizar viagem", "encerrar viagem", "encerrar corrida")
+        add("online", "online")
+        add("offline", "offline")
+        add("corrida", "corrida")
+        add("viagem", "viagem")
+        return out
+    }
+
+    private fun extractMoney(s: String): List<Double> {
+        val out = ArrayList<Double>()
+        Regex("""(?i)r\$\s*([\d.]+(?:,\d{1,2})?)""").findAll(s).forEach { m ->
+            m.groupValues[1].replace(".", "").replace(",", ".").toDoubleOrNull()?.let { if (it in 0.01..5000.0) out.add(it) }
+        }
+        return out.distinct()
+    }
+
+    private fun extractKm(s: String): List<Double> {
+        val out = ArrayList<Double>()
+        Regex("""(\d{1,3}(?:[.,]\d+)?)\s*km\b""", RegexOption.IGNORE_CASE).findAll(s).forEach { m ->
+            m.groupValues[1].replace(",", ".").toDoubleOrNull()?.let { if (it in 0.01..500.0) out.add(it) }
+        }
+        return out.distinct()
+    }
+
+    private fun extractMinutes(s: String): List<Int> {
+        val out = ArrayList<Int>()
+        Regex("""(\d{1,3})\s*min(?:uto|utos)?\b""", RegexOption.IGNORE_CASE).findAll(s).forEach { m ->
+            m.groupValues[1].toIntOrNull()?.let { if (it in 1..600) out.add(it) }
+        }
+        return out.distinct()
+    }
+
+    private fun hash(s: String?): String? {
+        if (s.isNullOrBlank()) return null
+        return MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }
+    }
+
+    private fun persistStructured(
+        sbn: StatusBarNotification,
+        n: Notification,
+        platform: String,
+        eventType: String,
+        titlePresent: Boolean,
+        textPresent: Boolean,
+        bigTextPresent: Boolean,
+        contentLength: Int,
+        money: List<Double>,
+        kms: List<Double>,
+        mins: List<Int>,
+        keywords: List<String>,
+        actionLabels: List<String>,
+        offerHint: Boolean
+    ) {
+        thread(isDaemon = true) {
+            try {
+                val prefs = getSharedPreferences(GpsService.PREFS_NAME, MODE_PRIVATE)
+                val userId = prefs.getString(GpsService.KEY_USER_ID, null) ?: return@thread
+                val token = prefs.getString(GpsService.KEY_ACCESS_TOKEN, null) ?: return@thread
+                val deviceId = try { Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID) } catch (_: Exception) { null }
+                val channel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) n.channelId else null
+                val extrasKeys = try { n.extras?.keySet()?.sorted()?.take(80) ?: emptyList() } catch (_: Exception) { emptyList() }
+                // Hash somente do formato operacional já sanitizado; texto bruto/PII não entra.
+                val shape = listOf(platform, channel ?: "", n.category ?: "", money.joinToString(","), kms.joinToString(","), mins.joinToString(","), keywords.joinToString(","), actionLabels.joinToString(",")).joinToString("|")
+
+                val body = JSONObject().apply {
+                    put("user_id", userId)
+                    put("device_id", deviceId ?: JSONObject.NULL)
+                    put("platform", platform)
+                    put("package", sbn.packageName)
+                    put("event_type", eventType)
+                    put("notification_id", sbn.id)
+                    put("tag_hash", hash(sbn.tag) ?: JSONObject.NULL)
+                    put("key_hash", hash(sbn.key) ?: JSONObject.NULL)
+                    put("channel_id", channel ?: JSONObject.NULL)
+                    put("category", n.category ?: JSONObject.NULL)
+                    put("post_time_ms", sbn.postTime)
+                    put("is_ongoing", n.isOngoing)
+                    put("flags", n.flags)
+                    put("title_present", titlePresent)
+                    put("text_present", textPresent)
+                    put("big_text_present", bigTextPresent)
+                    put("content_length", contentLength)
+                    put("content_hash", hash(shape) ?: JSONObject.NULL)
+                    put("extras_keys", JSONArray(extrasKeys))
+                    put("action_labels", JSONArray(actionLabels))
+                    put("money_values", JSONArray(money))
+                    put("km_values", JSONArray(kms))
+                    put("minute_values", JSONArray(mins))
+                    put("keywords", JSONArray(keywords))
+                    put("offer_hint", offerHint)
+                }
+
+                val conn = URL("${TripReaderService.SUPABASE_URL}/rest/v1/driver_notification_events").openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.connectTimeout = 7000
+                conn.readTimeout = 7000
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("apikey", TripReaderService.SUPABASE_ANON)
+                conn.setRequestProperty("Authorization", "Bearer $token")
+                conn.setRequestProperty("Prefer", "return=minimal")
+                conn.outputStream.use { it.write(body.toString().toByteArray()) }
+                conn.responseCode
+                conn.disconnect()
+            } catch (_: Exception) {}
+        }
+    }
+}
+'''
+Path('app/src/main/java/io/github/yurisilva90/smartmobi/DriverNotificationListenerService.kt').write_text(notif, encoding='utf-8')
+
+# ── MainActivity: permissão notificações + decodificação nativa ─
+p = Path('app/src/main/java/io/github/yurisilva90/smartmobi/MainActivity.kt')
+s = p.read_text(encoding='utf-8')
+s = replace_once(s, 'import android.graphics.Color\n', 'import android.graphics.Bitmap\nimport android.graphics.Color\n', 'import Bitmap')
+s = replace_once(s, 'import android.net.Uri\n', 'import android.media.MediaMetadataRetriever\nimport android.net.Uri\n', 'import MediaMetadataRetriever')
+s = replace_once(s, 'import android.provider.Settings\n', 'import android.provider.Settings\nimport android.util.Base64\n', 'import Base64')
+s = replace_once(s, 'import androidx.core.app.ActivityCompat\n', 'import androidx.core.app.ActivityCompat\nimport androidx.core.app.NotificationManagerCompat\n', 'import NotificationManagerCompat')
+s = replace_once(s, 'import androidx.core.view.WindowInsetsControllerCompat\n', 'import androidx.core.view.WindowInsetsControllerCompat\nimport org.json.JSONObject\nimport java.io.ByteArrayOutputStream\nimport kotlin.concurrent.thread\nimport kotlin.math.ceil\nimport kotlin.math.roundToInt\n', 'imports vídeo')
+s = replace_once(s,
+    '    private var fileCallback: ValueCallback<Array<Uri>>? = null\n    private var splashDone = false',
+    '    private var fileCallback: ValueCallback<Array<Uri>>? = null\n    private var pendingVideoUri: Uri? = null\n    private var pendingChooserWantsVideo = false\n    private var splashDone = false',
+    'campos vídeo')
+
+marker = '''    private fun refreshNativePermissionUi() {
+        if (!webReady) return
+        val js = "if(typeof renderFlashPerms==='function') renderFlashPerms();"
+        webView.evaluateJavascript(js, null)
+        // Alguns aparelhos religam/reconectam o AccessibilityService alguns
+        // milissegundos depois do retorno das Configurações. Uma segunda leitura evita
+        // mostrar estado antigo nesse intervalo.
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (webReady) webView.evaluateJavascript(js, null)
+        }, 600)
+    }
+'''
+addition = marker + r'''
+    private fun isNotificationAccessEnabled(): Boolean = try {
+        NotificationManagerCompat.getEnabledListenerPackages(this).contains(packageName)
+    } catch (_: Exception) { false }
+
+    private fun emitNativeVideoJs(js: String) {
+        runOnUiThread { if (webReady) webView.evaluateJavascript(js, null) }
+    }
+
+    private fun extractSelectedVideoFramesNative(token: String, maxFrames: Int, maxWidth: Int): Boolean {
+        val uri = pendingVideoUri ?: return false
+        thread(isDaemon = true) {
+            val retriever = MediaMetadataRetriever()
+            try {
+                retriever.setDataSource(this, uri)
+                val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                if (durationMs <= 0L) throw IllegalStateException("duração do vídeo indisponível")
+                val srcW = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 720
+                val srcH = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 1280
+                val safeMaxWidth = maxWidth.coerceIn(320, 1080)
+                val outW = srcW.coerceAtMost(safeMaxWidth).coerceAtLeast(1)
+                val outH = ((srcH.toDouble() / srcW.coerceAtLeast(1)) * outW).roundToInt().coerceAtLeast(1)
+                val count = ceil(durationMs / 900.0).toInt().coerceIn(1, maxFrames.coerceIn(1, 90))
+                var emitted = 0
+                for (i in 0 until count) {
+                    val atMs = if (count <= 1) 0L else ((durationMs - 1L) * i / (count - 1))
+                    var bmp: Bitmap? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                        retriever.getScaledFrameAtTime(atMs * 1000L, MediaMetadataRetriever.OPTION_CLOSEST, outW, outH)
+                    } else {
+                        retriever.getFrameAtTime(atMs * 1000L, MediaMetadataRetriever.OPTION_CLOSEST)
+                    }
+                    if (bmp != null && (bmp.width != outW || bmp.height != outH)) {
+                        val scaled = Bitmap.createScaledBitmap(bmp, outW, outH, true)
+                        if (scaled !== bmp) bmp.recycle()
+                        bmp = scaled
+                    }
+                    if (bmp != null) {
+                        val bos = ByteArrayOutputStream()
+                        bmp.compress(Bitmap.CompressFormat.JPEG, 78, bos)
+                        bmp.recycle()
+                        val dataUrl = "data:image/jpeg;base64," + Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP)
+                        emitted++
+                        emitNativeVideoJs("window.__mobNativeVideoFrame&&window.__mobNativeVideoFrame(${JSONObject.quote(token)},${JSONObject.quote(dataUrl)});")
+                    }
+                    emitNativeVideoJs("window.__mobNativeVideoProgress&&window.__mobNativeVideoProgress(${JSONObject.quote(token)},${i + 1},$count);")
+                }
+                if (emitted == 0) throw IllegalStateException("nenhum quadro pôde ser decodificado")
+                emitNativeVideoJs("window.__mobNativeVideoDone&&window.__mobNativeVideoDone(${JSONObject.quote(token)},$emitted,$durationMs);")
+            } catch (e: Exception) {
+                emitNativeVideoJs("window.__mobNativeVideoError&&window.__mobNativeVideoError(${JSONObject.quote(token)},${JSONObject.quote(e.message ?: "falha ao decodificar vídeo")});")
+            } finally {
+                try { retriever.release() } catch (_: Exception) {}
+            }
+        }
+        return true
+    }
+'''
+s = replace_once(s, marker, addition, 'métodos nativos')
+
+bridge_marker = '''            @JavascriptInterface fun isA11yConnected(): Boolean = TripReaderService.instance != null
+
+            // Salva a configuração do MōB Flash'''
+bridge_add = '''            @JavascriptInterface fun isA11yConnected(): Boolean = TripReaderService.instance != null
+
+            // Notificações oficiais Uber/99 — permissão separada da Acessibilidade.
+            @JavascriptInterface fun isNotificationAccessEnabled(): Boolean = this@MainActivity.isNotificationAccessEnabled()
+            @JavascriptInterface fun openNotificationAccessSettings() {
+                runOnUiThread {
+                    try { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+                    catch (_: Exception) { Toast.makeText(this@MainActivity, "Não foi possível abrir o acesso às notificações.", Toast.LENGTH_LONG).show() }
+                }
+            }
+
+            // O WebView do Android 10 pode falhar ao decodificar alguns MP4.
+            @JavascriptInterface fun hasNativeVideoFrameExtraction(): Boolean = true
+            @JavascriptInterface fun extractSelectedVideoFrames(token: String, maxFrames: Int, maxWidth: Int): Boolean =
+                this@MainActivity.extractSelectedVideoFramesNative(token, maxFrames, maxWidth)
+
+            // Salva a configuração do MōB Flash'''
+s = replace_once(s, bridge_marker, bridge_add, 'bridge notificações/vídeo')
+
+chooser_old = '''            override fun onShowFileChooser(v: WebView, cb: ValueCallback<Array<Uri>>, p: FileChooserParams): Boolean {
+                fileCallback = cb
+                try { startActivityForResult(p.createIntent(), REQ_FILE) } catch (e: Exception) { cb.onReceiveValue(arrayOf()); fileCallback = null }
+                return true
+            }'''
+chooser_new = '''            override fun onShowFileChooser(v: WebView, cb: ValueCallback<Array<Uri>>, p: FileChooserParams): Boolean {
+                fileCallback = cb
+                pendingChooserWantsVideo = p.acceptTypes.any { it?.lowercase()?.contains("video") == true }
+                try { startActivityForResult(p.createIntent(), REQ_FILE) } catch (e: Exception) {
+                    cb.onReceiveValue(arrayOf()); fileCallback = null; pendingChooserWantsVideo = false
+                }
+                return true
+            }'''
+s = replace_once(s, chooser_old, chooser_new, 'file chooser')
+
+result_old = '''        if (req == REQ_FILE) {
+            fileCallback?.onReceiveValue(if (data?.data != null) arrayOf(data.data!!) else arrayOf())
+            fileCallback = null
+        }'''
+result_new = '''        if (req == REQ_FILE) {
+            val uri = data?.data
+            if (uri != null) {
+                val mime = try { contentResolver.getType(uri) } catch (_: Exception) { null }
+                pendingVideoUri = if (mime?.startsWith("video/") == true || (mime == null && pendingChooserWantsVideo)) uri else null
+            } else {
+                pendingVideoUri = null
+            }
+            pendingChooserWantsVideo = false
+            fileCallback?.onReceiveValue(if (uri != null) arrayOf(uri) else arrayOf())
+            fileCallback = null
+        }'''
+s = replace_once(s, result_old, result_new, 'onActivityResult vídeo')
+p.write_text(s, encoding='utf-8')
+
+# ── ScreenOcrService: fila curta em vez de perder frame ocupado ─
+p = Path('app/src/main/java/io/github/yurisilva90/smartmobi/ScreenOcrService.kt')
+s = p.read_text(encoding='utf-8')
+s = replace_once(s,
+    '    @Volatile private var busy = false\n    @Volatile private var busySinceMs = 0L',
+    '    @Volatile private var busy = false\n    @Volatile private var busySinceMs = 0L\n    @Volatile private var retryQueued = false',
+    'retryQueued')
+old_busy = '''        if (busy) {
+            if (System.currentTimeMillis() - busySinceMs > 1500) {
+                busy = false
+            } else {
+                onError?.invoke("ocupado")
+                return
+            }
+        }'''
+new_busy = '''        if (busy) {
+            if (System.currentTimeMillis() - busySinceMs > 1500) {
+                busy = false
+            } else {
+                // Uma oferta nova não deve ser perdida só porque o OCR anterior
+                // ainda está terminando. Mantém no máximo um retry pendente.
+                if (!retryQueued) {
+                    retryQueued = true
+                    main.postDelayed({
+                        retryQueued = false
+                        captureAndRecognize(onResult, onError)
+                    }, 180L)
+                }
+                return
+            }
+        }'''
+s = replace_once(s, old_busy, new_busy, 'busy OCR')
+p.write_text(s, encoding='utf-8')
+
+# ── TripReaderService: plataforma e gatilho oficial ──────────
+p = Path('app/src/main/java/io/github/yurisilva90/smartmobi/TripReaderService.kt')
+s = p.read_text(encoding='utf-8')
+s = replace_once(s,
+    '        @Volatile var instance: TripReaderService? = null\n',
+    '''        @Volatile var instance: TripReaderService? = null
+
+        @JvmStatic
+        fun onOfficialNotification(platform: String, texts: List<String>, offerHint: Boolean) {
+            instance?.handleOfficialNotification(platform, texts, offerHint)
+        }
+''',
+    'bridge notificação TripReader')
+
+fields_old = '''    private var pendingNewOfferValue: Double? = null
+    private var pendingNewOfferCount = 0
+    private val OFFER_REFINE_WINDOW_MS = 950L
+    private val OFFER_NEW_VALUE_CONFIRMATIONS = 2
+'''
+fields_new = '''    private var pendingNewOfferValue: Double? = null
+    private var pendingNewOfferCount = 0
+    private var pendingPlatformSwitch: String? = null
+    private var pendingPlatformSwitchCount = 0
+    private var officialOfferHintPlatform: String? = null
+    private var officialOfferHintUntilMs = 0L
+    private val lastPartialRetryMsByPlat = HashMap<String, Long>()
+    private val OFFER_REFINE_WINDOW_MS = 950L
+    private val OFFER_NEW_VALUE_CONFIRMATIONS = 2
+    private val OFFICIAL_OFFER_HINT_MS = 12_000L
+
+    private fun recentOfficialOfferHint(): String? =
+        officialOfferHintPlatform?.takeIf { System.currentTimeMillis() <= officialOfferHintUntilMs }
+
+    private fun shortVisualPlatformLock(): String? {
+        val v = visualOfferState ?: return null
+        return v.platform.takeIf { lastFlashSig.isNotEmpty() && System.currentTimeMillis() - v.firstSeenMs < 4_000L }
+    }
+'''
+s = replace_once(s, fields_old, fields_new, 'campos plataforma')
+
+poll_marker = '    private fun pollForeground() {\n'
+helpers = r'''    private fun platformOfPackage(pkg: String?): String? = when {
+        pkg == null -> null
+        UBER_PKGS.contains(pkg) -> "UBER"
+        NN_PKGS.contains(pkg) -> "99"
+        else -> null
+    }
+
+    private fun chooseForegroundPlatform(): String? {
+        val hint = recentOfficialOfferHint()
+        val visualLock = shortVisualPlatformLock()
+        var bestPlat: String? = null
+        var bestScore = Long.MIN_VALUE
+        try {
+            val rect = Rect()
+            for (w in windows) {
+                val wp = w.root?.packageName?.toString() ?: continue
+                val plat = platformOfPackage(wp) ?: continue
+                if (w.type != AccessibilityWindowInfo.TYPE_APPLICATION && w.type != AccessibilityWindowInfo.TYPE_SYSTEM) continue
+                w.getBoundsInScreen(rect)
+                val area = rect.width().coerceAtLeast(0).toLong() * rect.height().coerceAtLeast(0).toLong()
+                var score = area
+                if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION) score += 2_000_000_000L
+                if (w.isActive) score += 6_000_000_000L
+                if (w.isFocused) score += 12_000_000_000L
+                if (plat == visualLock) score += 14_000_000_000L
+                if (plat == hint) score += 30_000_000_000L
+                if (score > bestScore) { bestScore = score; bestPlat = plat }
+            }
+        } catch (_: Exception) {}
+        return bestPlat
+    }
+
+    private fun requestPriorityOcr(plat: String) {
+        lastOcrMs = 0L
+        requestOcrPass(plat)
+    }
+
+    private fun handleOfficialNotification(plat: String, texts: List<String>, offerHint: Boolean) {
+        if (!offerHint || (plat != "UBER" && plat != "99")) return
+        officialOfferHintPlatform = plat
+        officialOfferHintUntilMs = System.currentTimeMillis() + OFFICIAL_OFFER_HINT_MS
+        main.post {
+            val low = texts.joinToString(" ").lowercase(Locale.getDefault())
+            if (texts.isNotEmpty() && isOfferScreen(low)) processRealOffer(plat, texts)
+            requestPriorityOcr(plat)
+            main.postDelayed({ requestPriorityOcr(plat) }, 320L)
+        }
+    }
+
+'''
+s = replace_once(s, poll_marker, helpers + poll_marker, 'helpers foreground')
+
+pat = re.compile(r'''        var fgPlat: String\? = null\n        var bestArea = -1\n        try \{\n            val rect = Rect\(\)\n            for \(w in windows\) \{.*?        \} catch \(_: Exception\) \{\}\n        if \(fgPlat != null\) \{''', re.S)
+repl = '''        val fgPlat = chooseForegroundPlatform()
+        if (fgPlat != null) {'''
+s, n = pat.subn(repl, s, count=1)
+if n != 1:
+    raise SystemExit(f'poll foreground: {n}')
+
+s = replace_once(s,
+    '        val pkgArea = HashMap<String, Int>()\n        val winMeta = ArrayList<String>()',
+    '        val pkgArea = HashMap<String, Int>()\n        val pkgPriority = HashMap<String, Int>()\n        val winMeta = ArrayList<String>()',
+    'pkgPriority')
+area_old = '''                    val area = rect.width().coerceAtLeast(0) * rect.height().coerceAtLeast(0)
+                    if (area > (pkgArea[wp] ?: 0)) pkgArea[wp] = area
+                    if (NN_PKGS.contains(wp)) {'''
+area_new = '''                    val area = rect.width().coerceAtLeast(0) * rect.height().coerceAtLeast(0)
+                    if (area > (pkgArea[wp] ?: 0)) pkgArea[wp] = area
+                    val priority = (if (w.isFocused) 8 else 0) + (if (w.isActive) 4 else 0) +
+                        (if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION) 2 else 0)
+                    if (priority > (pkgPriority[wp] ?: -1)) pkgPriority[wp] = priority
+                    if (NN_PKGS.contains(wp)) {'''
+s = replace_once(s, area_old, area_new, 'priority janelas')
+
+real_old = '''        val realPkg = textsByPkg.keys
+            .filter { UBER_PKGS.contains(it) || NN_PKGS.contains(it) }
+            .maxByOrNull { pkgArea[it] ?: 0 }
+'''
+real_new = '''        val eventPlat = platformOfPackage(evPkg)
+        val hintPlat = recentOfficialOfferHint()
+        val visualLock = shortVisualPlatformLock()
+        val realPkg = textsByPkg.keys
+            .filter { UBER_PKGS.contains(it) || NN_PKGS.contains(it) }
+            .maxByOrNull { pkg ->
+                val p = platformOfPackage(pkg)
+                var score = (pkgPriority[pkg] ?: 0).toLong() * 1_000_000_000L + (pkgArea[pkg] ?: 0).toLong()
+                if (p == eventPlat && (pkgPriority[pkg] ?: 0) > 0) score += 3_000_000_000L
+                if (p == visualLock) score += 12_000_000_000L
+                if (p == hintPlat) score += 30_000_000_000L
+                score
+            }
+'''
+s = replace_once(s, real_old, real_new, 'realPkg')
+
+valid_old = '''        if (valor == null || valor < 5.0 || valor > 2000.0 || km == null || km <= 0.0 || km > 150.0) {
+            bmp?.recycle(); return
+        }
+
+        // Alimenta o buffer de captura automática com TODA leitura válida —'''
+valid_new = '''        if (valor == null || valor < 5.0 || valor > 2000.0) {
+            bmp?.recycle(); return
+        }
+        if (km == null || km <= 0.0 || km > 150.0) {
+            // A oferta existe e o valor principal já é confiável, mas faltou
+            // distância nesta leitura. Registra o fragmento e força uma nova
+            // captura em vez de descartar a oferta silenciosamente.
+            AutoTripCapture.onOfferSeen(this, plat, AutoTripCapture.OfferSnapshot(
+                value = valor, dinamico = offer.dinamico, multiplicador = offer.multiplicador,
+                kmPickup = offer.kmPickup, kmTrip = offer.kmTrip,
+                durPickupSec = offer.minPickup?.let { it * 60 }, durTripSec = offer.minTrip?.let { it * 60 },
+                origin = offer.origem, dest = offer.destino
+            ))
+            val nowPartial = System.currentTimeMillis()
+            if (nowPartial - (lastPartialRetryMsByPlat[plat] ?: 0L) > 450L) {
+                lastPartialRetryMsByPlat[plat] = nowPartial
+                main.postDelayed({ requestPriorityOcr(plat) }, 220L)
+            }
+            bmp?.recycle(); return
+        }
+
+        // Alimenta o buffer de captura automática com TODA leitura válida —'''
+s = replace_once(s, valid_old, valid_new, 'oferta parcial')
+
+start = s.index('        // Alimenta o buffer de captura automática com TODA leitura válida —')
+end = s.index('        // Feed social:', start)
+new_block = r'''        // Alimenta o buffer de captura automática apenas depois de resolver
+        // a identidade da plataforma. Uma leitura isolada da outra plataforma
+        // não pode contaminar a corrida ativa.
+        val nowVisual = System.currentTimeMillis()
+        val activeVisual = visualOfferState
+        var visualChanged = false
+
+        fun startVisualOffer() {
+            val token = "$plat|$nowVisual|${(valor * 100.0).toInt()}"
+            visualOfferState = VisualOfferState(plat, offer, nowVisual, token)
+            pendingNewOfferValue = null
+            pendingNewOfferCount = 0
+            pendingPlatformSwitch = null
+            pendingPlatformSwitchCount = 0
+            lastFlashSig = token
+            lastFlashSigSetMs = nowVisual
+            visualChanged = true
+        }
+
+        if (activeVisual != null && lastFlashSig.isNotEmpty() && activeVisual.platform != plat) {
+            val strongOfficialSwitch = recentOfficialOfferHint() == plat
+            if (!strongOfficialSwitch) {
+                if (pendingPlatformSwitch == plat) pendingPlatformSwitchCount++
+                else { pendingPlatformSwitch = plat; pendingPlatformSwitchCount = 1 }
+                if (pendingPlatformSwitchCount < 2) {
+                    bmp?.recycle()
+                    main.post { flashCard.keepAlive(15000L) }
+                    return
+                }
+            }
+        } else {
+            pendingPlatformSwitch = null
+            pendingPlatformSwitchCount = 0
+        }
+
+        AutoTripCapture.onOfferSeen(this, plat, AutoTripCapture.OfferSnapshot(
+            value = valor, dinamico = offer.dinamico, multiplicador = offer.multiplicador,
+            kmPickup = offer.kmPickup, kmTrip = offer.kmTrip,
+            durPickupSec = offer.minPickup?.let { it * 60 }, durTripSec = offer.minTrip?.let { it * 60 },
+            origin = offer.origem, dest = offer.destino
+        ))
+
+        if (activeVisual == null || lastFlashSig.isEmpty()) {
+            startVisualOffer()
+        } else if (activeVisual.platform != plat) {
+            startVisualOffer()
+        } else {
+            val activeValue = activeVisual.offer.valor ?: valor
+            val sameValue = kotlin.math.abs(valor - activeValue) < 0.02
+            if (sameValue) {
+                pendingNewOfferValue = null
+                pendingNewOfferCount = 0
+                if (nowVisual - activeVisual.firstSeenMs <= OFFER_REFINE_WINDOW_MS &&
+                    isClearlyBetterOffer(offer, activeVisual.offer)) {
+                    activeVisual.offer = offer
+                    visualChanged = true
+                }
+            } else {
+                val pending = pendingNewOfferValue
+                if (pending != null && kotlin.math.abs(valor - pending) < 0.02) {
+                    pendingNewOfferCount++
+                } else {
+                    pendingNewOfferValue = valor
+                    pendingNewOfferCount = 1
+                }
+                if (pendingNewOfferCount >= OFFER_NEW_VALUE_CONFIRMATIONS) startVisualOffer()
+            }
+        }
+
+        if (!visualChanged) {
+            bmp?.recycle()
+            main.post { flashCard.keepAlive(15000L) }
+            return
+        }
+
+'''
+s = s[:start] + new_block + s[end:]
+
+hide_old = '''            pendingNewOfferValue = null
+            pendingNewOfferCount = 0
+            main.post { flashCard.hide() }'''
+hide_new = '''            pendingNewOfferValue = null
+            pendingNewOfferCount = 0
+            pendingPlatformSwitch = null
+            pendingPlatformSwitchCount = 0
+            main.post { flashCard.hide() }'''
+s = replace_once(s, hide_old, hide_new, 'reset platform switch')
+p.write_text(s, encoding='utf-8')
+
+checks = {
+    'app/build.gradle': ['versionCode 222', 'versionName "1.3.9"'],
+    'app/src/main/AndroidManifest.xml': ['DriverNotificationListenerService', 'BIND_NOTIFICATION_LISTENER_SERVICE'],
+    'app/src/main/java/io/github/yurisilva90/smartmobi/MainActivity.kt': ['extractSelectedVideoFramesNative', 'isNotificationAccessEnabled', 'ACTION_NOTIFICATION_LISTENER_SETTINGS'],
+    'app/src/main/java/io/github/yurisilva90/smartmobi/TripReaderService.kt': ['onOfficialNotification', 'chooseForegroundPlatform', 'pendingPlatformSwitchCount', 'requestPriorityOcr'],
+    'app/src/main/java/io/github/yurisilva90/smartmobi/ScreenOcrService.kt': ['retryQueued'],
+    'app/src/main/java/io/github/yurisilva90/smartmobi/DriverNotificationListenerService.kt': ['driver_notification_events', 'offerHint']
+}
+for fn, needles in checks.items():
+    txt = Path(fn).read_text(encoding='utf-8')
+    for needle in needles:
+        if needle not in txt:
+            raise SystemExit(f'{fn}: faltou {needle}')
