@@ -49,6 +49,18 @@ class FlashCard(private val context: Context) {
     private var pendingPhrase: String? = null
     private var lastSpokenGrade: String? = null
     private var lastSpokenReason: String? = null
+    private var activeOfferToken: String? = null
+    private var pendingOfferSpeechGrade: String? = null
+    private var pendingOfferSpeechReason: String? = null
+    private var pendingOfferSpeechReasonSpoken: String? = null
+    private val OFFER_SPEECH_DELAY_MS = 1050L
+    private val offerSpeechRunnable = Runnable {
+        val grade = pendingOfferSpeechGrade ?: return@Runnable
+        val reason = pendingOfferSpeechReason
+        speakGrade(grade, pendingOfferSpeechReasonSpoken ?: reason)
+        lastSpokenGrade = grade
+        lastSpokenReason = reason
+    }
     private val audioManager by lazy { context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager }
 
     // PEDIDO (17/07/2026): "não tá tocando áudio em nenhuma" — até agora
@@ -213,7 +225,7 @@ class FlashCard(private val context: Context) {
     // o normal é o TripReaderService chamar hide() sozinho quando a oferta some (~1s).
     private var lastShownSignature: String = ""
 
-    fun show(platform: String, overallGrade: String, metrics: List<Metric>, totalMin: Int, totalKm: Double, declineReason: String? = null, declineReasonShort: String? = null, declineReasonSpoken: String? = null, autoHideMs: Long = 20000L) {
+    fun show(platform: String, overallGrade: String, metrics: List<Metric>, totalMin: Int, totalKm: Double, declineReason: String? = null, declineReasonShort: String? = null, declineReasonSpoken: String? = null, offerToken: String? = null, autoHideMs: Long = 20000L) {
         // Prioridade ABSOLUTA (16/08/2026, pedido do Yuri): se um alerta
         // proativo (Fiscalização/Lotação) estiver na tela, cai na hora,
         // sem exceção — oferta chegando nunca pode competir com isso pela
@@ -261,27 +273,48 @@ class FlashCard(private val context: Context) {
             // motorista não ouvia nada. Agora fala quando o card tava
             // escondido OU quando o veredito (cor + motivo) mudou — refino
             // da mesma oferta continua mudo, oferta nova sempre fala.
-            val gradeChanged = overallGrade != lastSpokenGrade || declineReason != lastSpokenReason
-            if (wasHidden || gradeChanged) {
-                lastSpokenGrade = overallGrade
-                lastSpokenReason = declineReason
-                // CORRIGIDO (24/07/2026, pedido do Yuri): o texto do card
-                // junta vários motivos com "·" (ponto médio) — bonito no
-                // card, mas o motor de voz lê esse caractere como "ponto"
-                // em voz alta ("buscar longe ponto nota baixa"). Fala usa
-                // uma versão separada, com vírgula, que soa natural.
-                speakGrade(overallGrade, declineReasonSpoken ?: declineReason)
+            if (offerToken != null) {
+                // Uma oferta = uma fala. O card aparece na primeira leitura,
+                // mas a voz espera ~1s para a janela de refinamento terminar.
+                // Releituras da MESMA oferta apenas atualizam o veredito que
+                // está pendente; nunca criam uma segunda fala.
+                pendingOfferSpeechGrade = overallGrade
+                pendingOfferSpeechReason = declineReason
+                pendingOfferSpeechReasonSpoken = declineReasonSpoken ?: declineReason
+                if (offerToken != activeOfferToken) {
+                    handler.removeCallbacks(offerSpeechRunnable)
+                    activeOfferToken = offerToken
+                    handler.postDelayed(offerSpeechRunnable, OFFER_SPEECH_DELAY_MS)
+                }
+            } else {
+                // Compatibilidade para alertas/chamadas antigas sem token.
+                val gradeChanged = overallGrade != lastSpokenGrade || declineReason != lastSpokenReason
+                if (wasHidden || gradeChanged) {
+                    lastSpokenGrade = overallGrade
+                    lastSpokenReason = declineReason
+                    speakGrade(overallGrade, declineReasonSpoken ?: declineReason)
+                }
             }
         }
     }
 
+    fun keepAlive(autoHideMs: Long = 20000L) {
+        handler.removeCallbacks(hideRunnable)
+        if (container != null) handler.postDelayed(hideRunnable, autoHideMs)
+    }
+
     fun hide() {
         handler.removeCallbacks(hideRunnable)
+        handler.removeCallbacks(offerSpeechRunnable)
         handler.post {
             container?.let { try { wm.removeView(it) } catch (_: Exception) {} }
             container = null
             lastSpokenGrade = null
             lastSpokenReason = null
+            activeOfferToken = null
+            pendingOfferSpeechGrade = null
+            pendingOfferSpeechReason = null
+            pendingOfferSpeechReasonSpoken = null
             lastShownSignature = ""
         }
     }

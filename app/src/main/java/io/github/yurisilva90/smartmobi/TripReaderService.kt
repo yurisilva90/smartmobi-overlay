@@ -163,6 +163,40 @@ class TripReaderService : AccessibilityService() {
     // plataforma, elimina esse cruzamento.
     private val lastOfferValorByPlat = HashMap<String, Double>()
     private val bestLegsForOfferByPlat = HashMap<String, Int>()
+    // Flash 1.3.7: identidade visual estável da oferta. O OCR pode reler a
+    // mesma tela várias vezes por segundo; essas releituras refinam a primeira
+    // somente numa janela curta e nunca reabrem/re-falam a mesma oferta.
+    private data class VisualOfferState(
+        val platform: String,
+        var offer: Offer,
+        val firstSeenMs: Long,
+        val token: String
+    )
+    private var visualOfferState: VisualOfferState? = null
+    private var pendingNewOfferValue: Double? = null
+    private var pendingNewOfferCount = 0
+    private val OFFER_REFINE_WINDOW_MS = 950L
+    private val OFFER_NEW_VALUE_CONFIRMATIONS = 2
+
+    private fun offerQualityScore(o: Offer): Int {
+        var score = o.legsFound * 4
+        if (o.km != null) score += 1
+        if (o.min != null) score += 1
+        if (o.rkmDirect != null) score += 1
+        if (o.nota != null) score += 1
+        if (o.corridas != null) score += 2
+        if (o.origem != null) score += 1
+        if (o.destino != null) score += 1
+        return score
+    }
+
+    private fun isClearlyBetterOffer(candidate: Offer, current: Offer): Boolean {
+        // Nunca troca uma leitura de 2 pernas por uma de 1 perna. A melhora
+        // precisa acrescentar informação de verdade (2ª perna, nota+contagem,
+        // endereço etc.), não apenas oscilar um número do OCR.
+        if (candidate.legsFound < current.legsFound) return false
+        return offerQualityScore(candidate) > offerQualityScore(current)
+    }
     // Feed social: controla o filtro de faixa do alerta automático de
     // dinâmico (ver dinamicoTier() e postDynamicAlert() mais abaixo).
     private val lastDinamicoTierByPlat = HashMap<String, Int>()
@@ -718,7 +752,8 @@ class TripReaderService : AccessibilityService() {
         // valor: "Aceitar por R$12,06" é a âncora mais confiável
         var valor: Double? = null
         Regex("""aceitar por\s*r\$\s*([\d.]+,\d{2})""").find(low)?.let {
-            valor = moneyToDouble(it.groupValues[1])
+            val parsed = moneyToDouble(it.groupValues[1])
+            if (parsed != null && parsed >= 5.0) valor = parsed
         }
 
         // R$/km direto: "R$3,55/km"
@@ -817,9 +852,13 @@ class TripReaderService : AccessibilityService() {
             // mais compridas, ganhando por ordem de leitura.
             val dinamicoValues = listOfNotNull(
                 dinamicoBase.takeIf { it > 0 }, dinamicoEspera.takeIf { it > 0 },
-                dinamicoEmbarque.takeIf { it > 0 }, dinamicoDeslocamento.takeIf { it > 0 }
+                dinamicoEmbarque.takeIf { it > 0 }, dinamicoDeslocamento.takeIf { it > 0 },
+                dinamicoUber.takeIf { it > 0 }
             )
-            val monies = extractMoney(joined).mapNotNull { moneyToDouble(it) }.filter { it > 0 }
+            // Piso absoluto aprovado: nenhum candidato abaixo de R$5 pode ser
+            // valor total da corrida. Esses números continuam disponíveis como
+            // dinâmico/adicional, mas não competem com a tarifa principal.
+            val monies = extractMoney(joined).mapNotNull { moneyToDouble(it) }.filter { it >= 5.0 }
                 .filter { rkmDirect == null || kotlin.math.abs(it - rkmDirect) > 0.01 }
                 .filter { cand -> dinamicoValues.none { kotlin.math.abs(cand - it) < 0.01 } }
             valor = if (rkmDirect != null && km != null) {
@@ -836,6 +875,10 @@ class TripReaderService : AccessibilityService() {
                 monies.firstOrNull { (it / km!!) in 0.4..12.0 } ?: monies.firstOrNull()
             } else monies.firstOrNull()
         }
+
+        // Rede final: mesmo que algum caminho novo de parser seja adicionado
+        // no futuro, valor abaixo do piso nunca escapa como tarifa principal.
+        if (valor != null && valor!! < 5.0) valor = null
 
         // fallback de km: valor / rkm direto
         if (km == null && valor != null && rkmDirect != null && rkmDirect > 0) {
@@ -1120,7 +1163,7 @@ class TripReaderService : AccessibilityService() {
         val km = offer.km
         val min = offer.min
 
-        if (valor == null || valor <= 0.0 || valor > 2000.0 || km == null || km <= 0.0 || km > 150.0) {
+        if (valor == null || valor < 5.0 || valor > 2000.0 || km == null || km <= 0.0 || km > 150.0) {
             bmp?.recycle(); return
         }
 
@@ -1135,26 +1178,62 @@ class TripReaderService : AccessibilityService() {
             origin = offer.origem, dest = offer.destino
         ))
 
-        // A mesma oferta (mesmo valor, MESMA PLATAFORMA) não pode "regredir"
-        // pra uma leitura com menos pernas do que uma que já conseguimos ler
-        // certo — foi exatamente essa oscilação (1 perna ↔ 2 pernas) que
-        // fazia o card piscar e trocar de km/tempo o tempo todo numa mesma
-        // oferta. Escopado por plataforma (ver comentário na declaração das
-        // variáveis) pra não cruzar Uber com 99 quando os dois rodam juntos.
-        val prevValor = lastOfferValorByPlat[plat]
-        if (prevValor != null && kotlin.math.abs(valor - prevValor) < 0.02) {
-            val bestLegs = bestLegsForOfferByPlat[plat] ?: 0
-            if (offer.legsFound < bestLegs) { bmp?.recycle(); return }
-            if (offer.legsFound > bestLegs) bestLegsForOfferByPlat[plat] = offer.legsFound
-        } else {
-            lastOfferValorByPlat[plat] = valor
-            bestLegsForOfferByPlat[plat] = offer.legsFound
+        // Flash 1.3.7 — primeira leitura como base. A mesma oferta não muda
+        // indefinidamente conforme o OCR oscila. Por 950ms aceitamos somente
+        // uma leitura CLARAMENTE mais completa; depois o card fica congelado.
+        // Se surgir outro valor sem a tela ter ficado vazia, exige 2 leituras
+        // consecutivas desse novo valor para separar oferta nova de ruído.
+        val nowVisual = System.currentTimeMillis()
+        val activeVisual = visualOfferState
+        var visualChanged = false
+
+        fun startVisualOffer() {
+            val token = "$plat|$nowVisual|${(valor * 100.0).toInt()}"
+            visualOfferState = VisualOfferState(plat, offer, nowVisual, token)
+            pendingNewOfferValue = null
+            pendingNewOfferCount = 0
+            lastFlashSig = token
+            lastFlashSigSetMs = nowVisual
+            visualChanged = true
         }
 
-        val sig = "$plat|$valor|$km|$min|${offer.nota}"
-        if (sig == lastFlashSig) { bmp?.recycle(); return }
-        lastFlashSig = sig
-        lastFlashSigSetMs = System.currentTimeMillis()
+        if (activeVisual == null || lastFlashSig.isEmpty()) {
+            startVisualOffer()
+        } else if (activeVisual.platform != plat) {
+            // Troca real de app/plataforma é uma oferta nova inequívoca.
+            startVisualOffer()
+        } else {
+            val activeValue = activeVisual.offer.valor ?: valor
+            val sameValue = kotlin.math.abs(valor - activeValue) < 0.02
+            if (sameValue) {
+                pendingNewOfferValue = null
+                pendingNewOfferCount = 0
+                if (nowVisual - activeVisual.firstSeenMs <= OFFER_REFINE_WINDOW_MS &&
+                    isClearlyBetterOffer(offer, activeVisual.offer)) {
+                    activeVisual.offer = offer
+                    visualChanged = true
+                }
+            } else {
+                val pending = pendingNewOfferValue
+                if (pending != null && kotlin.math.abs(valor - pending) < 0.02) {
+                    pendingNewOfferCount++
+                } else {
+                    pendingNewOfferValue = valor
+                    pendingNewOfferCount = 1
+                }
+                if (pendingNewOfferCount >= OFFER_NEW_VALUE_CONFIRMATIONS) {
+                    startVisualOffer()
+                }
+            }
+        }
+
+        if (!visualChanged) {
+            // A oferta continua na tela, então apenas renova o auto-hide; não
+            // redesenha, não salva outro snapshot e principalmente não fala.
+            bmp?.recycle()
+            main.post { flashCard.keepAlive(15000L) }
+            return
+        }
 
         // Feed social: oferta com dinâmico vira alerta automático tipo
         // "dinamico" pra comunidade, na localização atual do motorista.
@@ -1340,6 +1419,7 @@ class TripReaderService : AccessibilityService() {
                 declineReason = declineReason,
                 declineReasonShort = declineReasonShort,
                 declineReasonSpoken = declineReasonSpoken,
+                offerToken = visualOfferState?.token,
                 autoHideMs = 15000L
             )
         }
@@ -1385,6 +1465,9 @@ class TripReaderService : AccessibilityService() {
             offerMissStreak = 0
             lastOfferValorByPlat.clear()
             bestLegsForOfferByPlat.clear()
+            visualOfferState = null
+            pendingNewOfferValue = null
+            pendingNewOfferCount = 0
             main.post { flashCard.hide() }
         }
     }
