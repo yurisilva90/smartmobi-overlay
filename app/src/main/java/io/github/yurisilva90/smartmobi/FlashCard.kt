@@ -309,6 +309,7 @@ class FlashCard(private val context: Context) {
      */
     fun renderNotificationBitmap(
         platform: String,
+        offerValueText: String?,
         overallGrade: String,
         metrics: List<Metric>,
         totalMin: Int,
@@ -331,19 +332,28 @@ class FlashCard(private val context: Context) {
                     }
                 }
 
-                val verdict = when (overallGrade) {
-                    "g" -> "ACEITAR"
-                    "a" -> "ANALISAR"
-                    else -> "RECUSAR"
-                }
-                outer.addView(TextView(context).apply {
-                    text = "MōB Flash · $verdict"
-                    textSize = 13f
-                    setTypeface(Typeface.DEFAULT_BOLD)
-                    setTextColor(colorOf(overallGrade))
+                val header = LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER
                     setPadding(dp(4), dp(2), dp(4), dp(7))
-                }, LinearLayout.LayoutParams(
+                }
+                header.addView(TextView(context).apply {
+                    text = platform
+                    textSize = 13f
+                    setTypeface(Typeface.DEFAULT_BOLD)
+                    setTextColor(Color.WHITE)
+                    gravity = Gravity.CENTER
+                })
+                if (!offerValueText.isNullOrBlank()) {
+                    header.addView(TextView(context).apply {
+                        text = "  ·  $offerValueText"
+                        textSize = 16f
+                        setTypeface(Typeface.DEFAULT_BOLD)
+                        setTextColor(colorOf(overallGrade))
+                        gravity = Gravity.CENTER
+                    })
+                }
+                outer.addView(header, LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT
                 ))

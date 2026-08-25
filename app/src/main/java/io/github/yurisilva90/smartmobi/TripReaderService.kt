@@ -394,6 +394,51 @@ class TripReaderService : AccessibilityService() {
         return bestPlat
     }
 
+    // v1.3.19 — OCR policy:
+    // • Uber: offer data comes from AccessibilityService; never run OCR.
+    // • 99: AccessibilityService only arms OCR while an offer sheet is present.
+    //   Keep a short grace window because Flutter can replace/remove accessible
+    //   nodes slightly before the visual offer disappears.
+    private var nn99OfferOcrUntilMs = 0L
+    private val NN99_OCR_GATE_HOLD_MS = 5_000L
+
+    private fun nodeHas99OfferMarker(node: AccessibilityNodeInfo?, depth: Int = 0): Boolean {
+        node ?: return false
+        if (depth > 40) return false
+        try {
+            val id = node.viewIdResourceName?.lowercase(Locale.getDefault()) ?: ""
+            if (id.contains("flu_v2_btm_sht_top_container_landscape")) return true
+            for (i in 0 until node.childCount) {
+                if (nodeHas99OfferMarker(node.getChild(i), depth + 1)) return true
+            }
+        } catch (_: Exception) {}
+        return false
+    }
+
+    private fun refresh99OfferOcrGate() {
+        var signal = false
+        val texts = ArrayList<String>()
+        try {
+            for (w in windows) {
+                val root = w.root ?: continue
+                val pkg = root.packageName?.toString() ?: continue
+                if (!NN_PKGS.contains(pkg)) continue
+                collectTexts(root, texts)
+                if (nodeHas99OfferMarker(root)) signal = true
+            }
+        } catch (_: Exception) {}
+        val low = texts.joinToString(" ").lowercase(Locale.getDefault())
+        if (low.contains("toque para selecionar") ||
+            low.contains("opções de corridas") || low.contains("opcoes de corridas") ||
+            Regex("""\d+\s*corrida\(s\).*op[cç][oõ]es\s+de\s+corridas""", RegexOption.IGNORE_CASE).containsMatchIn(low)) {
+            signal = true
+        }
+        if (signal) nn99OfferOcrUntilMs = System.currentTimeMillis() + NN99_OCR_GATE_HOLD_MS
+    }
+
+    private fun nn99OfferOcrGateActive(): Boolean =
+        System.currentTimeMillis() <= nn99OfferOcrUntilMs
+
     private fun requestPriorityOcr(plat: String) {
         lastOcrMs = 0L
         requestOcrPass(plat)
@@ -714,6 +759,13 @@ class TripReaderService : AccessibilityService() {
     private var lastOcrLogMs = 0L
     private var lastOcrMissMs = 0L
     private fun requestOcrPass(plat: String) {
+        // Uber is 100% accessibility for offers from v1.3.19 onward.
+        if (plat == "UBER") return
+        // 99 only spends OCR while its accessible offer-state signal is alive.
+        if (plat == "99") {
+            refresh99OfferOcrGate()
+            if (!nn99OfferOcrGateActive()) return
+        }
         if (!ScreenOcrService.isActive) {
             // Sem isso não dá pra saber se o problema é permissão ou parser —
             // loga no máx a cada 5s pra não inundar.
@@ -2544,11 +2596,6 @@ class TripReaderService : AccessibilityService() {
         val origem = offer.origem
         val destino = offer.destino
         val stops = offer.stopAddresses
-        val verdict = when (overallGrade) {
-            "g" -> "ACEITAR"
-            "a" -> "ANALISAR"
-            else -> "RECUSAR"
-        }
         val key = listOf(
             plat, offer.valor?.toString() ?: "", origem ?: "", destino ?: "",
             stops.joinToString("|"), overallGrade, declineReason ?: "",
@@ -2576,16 +2623,13 @@ class TripReaderService : AccessibilityService() {
         }
 
         fun mapIntent(addr: String): PendingIntent {
-            val navUri = Uri.parse("google.navigation:q=" + Uri.encode(addr))
-            val navIntent = Intent(Intent.ACTION_VIEW, navUri).apply { setPackage("com.google.android.apps.maps") }
+            // Open the place/address for inspection. Do NOT start navigation:
+            // the driver wants to inspect the location, photos and Street View
+            // when Google Maps has coverage before deciding on the offer.
             val geoUri = Uri.parse("geo:0,0?q=" + Uri.encode(addr))
             val geoIntent = Intent(Intent.ACTION_VIEW, geoUri).apply { setPackage("com.google.android.apps.maps") }
             val genericIntent = Intent(Intent.ACTION_VIEW, geoUri)
-            val real = when {
-                navIntent.resolveActivity(packageManager) != null -> navIntent
-                geoIntent.resolveActivity(packageManager) != null -> geoIntent
-                else -> genericIntent
-            }
+            val real = if (geoIntent.resolveActivity(packageManager) != null) geoIntent else genericIntent
             return PendingIntent.getActivity(
                 this, addr.hashCode(), real,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -2593,7 +2637,7 @@ class TripReaderService : AccessibilityService() {
         }
 
         val valorTxt = offer.valor?.let { "R$ ${fmtBr(it)}" }
-        val titulo = "$plat · " + listOfNotNull(valorTxt, verdict).joinToString(" · ")
+        val titulo = listOfNotNull(plat, valorTxt).joinToString(" · ")
         val lines = ArrayList<String>()
         if (offer.minPickup != null || offer.kmPickup != null) {
             val pickup = listOfNotNull(
@@ -2618,9 +2662,6 @@ class TripReaderService : AccessibilityService() {
             lines.add(if (faltantes == 1) "1 parada adicional sem endereço legível" else "$faltantes paradas adicionais sem endereço legível")
         }
         destino?.let { lines.add("Destino: $it") }
-        val metricText = metrics.joinToString(" · ") { "${it.label} ${it.value}" }
-        lines.add(if (metricText.isNotBlank()) "Flash: $verdict · $metricText" else "Flash: $verdict")
-        declineReason?.let { lines.add("Motivo: $it") }
         val resumo = lines.joinToString("\n")
 
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -2628,9 +2669,10 @@ class TripReaderService : AccessibilityService() {
         } else {
             @Suppress("DEPRECATION") Notification.Builder(this)
         }
-        val visualLines = lines.filterNot { it.startsWith("Flash:") || it.startsWith("Motivo:") }
+        val visualLines = lines
         val flashPicture = flashCard.renderNotificationBitmap(
-            plat, overallGrade, metrics, offer.min ?: routeMin ?: 0, offer.km ?: routeKm ?: 0.0, declineReason, visualLines
+            plat, valorTxt, overallGrade, metrics, offer.min ?: routeMin ?: 0,
+            offer.km ?: routeKm ?: 0.0, declineReason, visualLines
         )
         builder.setContentTitle(titulo)
             .setContentText(lines.firstOrNull() ?: titulo)
