@@ -2,7 +2,7 @@ plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
 }
-// 1.3.12: checklist completo de permissões + alerta preventivo de permissões antes das ofertas.
+// 1.3.13: notificação do Flash com imagem da oferta e rota enriquecida por OCR + notificação oficial.
 android {
     namespace 'io.github.yurisilva90.smartmobi'
     compileSdk 34
