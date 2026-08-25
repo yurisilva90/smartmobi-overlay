@@ -2,6 +2,7 @@ plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
 }
+// 1.3.5: bridge nativa para status e métricas em tempo real da jornada atual.
 android {
     namespace 'io.github.yurisilva90.smartmobi'
     compileSdk 34
