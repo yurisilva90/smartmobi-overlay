@@ -183,6 +183,7 @@ class TripReaderService : AccessibilityService() {
 
     override fun onServiceConnected() {
         instance = this
+        JourneyStatusTracker.restore(this)
         val info = AccessibilityServiceInfo().apply {
             eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
                          AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
@@ -260,6 +261,7 @@ class TripReaderService : AccessibilityService() {
     private val pollRunnable = object : Runnable {
         override fun run() {
             try { pollForeground() } catch (_: Exception) {}
+            try { JourneyStatusTracker.checkpoint(this@TripReaderService) } catch (_: Exception) {}
             main.postDelayed(this, 600)
         }
     }
@@ -1861,6 +1863,9 @@ class TripReaderService : AccessibilityService() {
             // Captura automática: só reage a transição CONFIRMADA (pós-debounce),
             // nunca a leituras cruas — evita abrir/fechar registro por ruído.
             AutoTripCapture.onStateTransition(this, plat, prev, best.key)
+            // Persistência independente da corrida financeira: cada trecho de
+            // Online/Buscar/Corrida sobrevive mesmo sem oferta completa.
+            JourneyStatusTracker.onStateTransition(this, plat, prev, best.key)
         }
     }
 

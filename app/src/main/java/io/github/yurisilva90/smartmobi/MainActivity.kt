@@ -51,6 +51,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         instance = this
+        JourneyStatusTracker.restore(this)
         pendingScreen = intent.getStringExtra("open_screen")
         // Vigia do OCR: se o app estava fechado e o motorista tocou na
         // notificação de "leitura de tela parou", o extra chega no onCreate
@@ -289,6 +290,7 @@ class MainActivity : AppCompatActivity() {
                 floatingWidget = null
             }
             @JavascriptInterface fun stopFloating() {
+                JourneyStatusTracker.endSession(this@MainActivity)
                 floatingWidget?.hide()
                 floatingWidget = null
                 stopGpsService()
@@ -300,6 +302,12 @@ class MainActivity : AppCompatActivity() {
             @JavascriptInterface fun isGpsRunning(): Boolean = GpsService.isRunning
             // Estado vivo Online/Buscar/Corrida + marcos de tempo/km da corrida atual.
             @JavascriptInterface fun getLiveTripState(): String = AutoTripCapture.liveStateJson()
+            // Linha do tempo da Jornada, independente de auto_trips.
+            @JavascriptInterface fun getJourneyStatusTimeline(): String =
+                JourneyStatusTracker.timelineJson(this@MainActivity)
+            @JavascriptInterface fun setJourneySession(sessionId: String, date: String, startMs: Long, startKm: Double, isNew: Boolean) {
+                JourneyStatusTracker.setSession(this@MainActivity, sessionId, date, startMs, startKm, isNew)
+            }
             // Km exato no instante da última virada de dia (00:00) capturada
             // durante a jornada atual. -1.0 = ainda não cruzou meia-noite
             // (ou o app já consumiu/limpou o snapshot anterior).
@@ -324,10 +332,12 @@ class MainActivity : AppCompatActivity() {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
             }
             @JavascriptInterface fun pauseGpsService() {
+                JourneyStatusTracker.pause(this@MainActivity)
                 val i = Intent(this@MainActivity, GpsService::class.java).apply { action = "PAUSE" }
                 startService(i)
             }
             @JavascriptInterface fun resumeGpsService() {
+                JourneyStatusTracker.resume(this@MainActivity)
                 val i = Intent(this@MainActivity, GpsService::class.java).apply { action = "RESUME" }
                 startService(i)
             }
