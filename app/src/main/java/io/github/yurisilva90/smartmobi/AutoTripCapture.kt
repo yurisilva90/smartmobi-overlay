@@ -84,6 +84,7 @@ object AutoTripCapture {
         val acceptedAt: Long,
         val pickupStartedAt: Long,
         val pickupStartKm: Double,
+        var pickupArrivedAt: Long = 0L,
         var tripStartedAt: Long = 0L,
         var tripStartKm: Double = 0.0,
         var tripEndedAt: Long = 0L,
@@ -120,6 +121,9 @@ object AutoTripCapture {
                 put("acceptedAt", b.acceptedAt)
                 put("pickupStartedAt", b.pickupStartedAt)
                 put("pickupStartKm", b.pickupStartKm)
+                put("pickupArrivedAt", b.pickupArrivedAt)
+                val waitEnd = if (b.tripStartedAt > 0) b.tripStartedAt else System.currentTimeMillis()
+                put("passengerWaitSec", if (b.pickupArrivedAt > 0 && waitEnd >= b.pickupArrivedAt) ((waitEnd - b.pickupArrivedAt) / 1000L).toInt() else JSONObject.NULL)
                 put("tripStartedAt", b.tripStartedAt)
                 put("tripStartKm", b.tripStartKm)
             }
@@ -291,6 +295,14 @@ object AutoTripCapture {
 
     // Nome do passageiro: one-shot — só preenche se ainda estava vazio (não
     // existe "nome mais completo", é uma substituição única quando aparece).
+    // Marca a chegada física ao passageiro apenas quando existe uma corrida em Buscar.
+    // É one-shot: releituras/notificações repetidas nunca reiniciam o cronômetro.
+    fun markPickupArrived(plat: String, atMs: Long = System.currentTimeMillis()) {
+        val b = buffer ?: return
+        if (b.platform != plat || b.tripStartedAt > 0L || b.pickupArrivedAt > 0L) return
+        b.pickupArrivedAt = atMs
+    }
+
     fun setPassengerNameIfEmpty(plat: String, name: String?) {
         val b = buffer ?: return
         if (b.platform != plat) return
@@ -541,6 +553,8 @@ object AutoTripCapture {
                     put("dinheiro", b.dinheiro)
                     put("accepted_at", iso(b.acceptedAt))
                     put("pickup_started_at", iso(b.pickupStartedAt))
+                    put("pickup_arrived_at", iso(b.pickupArrivedAt))
+                    put("passenger_wait_sec", if (b.pickupArrivedAt > 0L && b.tripStartedAt >= b.pickupArrivedAt) ((b.tripStartedAt - b.pickupArrivedAt) / 1000L).toInt() else JSONObject.NULL)
                     put("trip_started_at", iso(b.tripStartedAt))
                     put("trip_ended_at", iso(b.tripEndedAt))
                     put("status", status)

@@ -59,6 +59,11 @@ class TripReaderService : AccessibilityService() {
             instance?.handleOfficialNotification(platform, texts, offerHint)
         }
 
+        @JvmStatic
+        fun onOfficialOperationalNotification(platform: String, keywords: List<String>, actions: List<String>) {
+            instance?.handleOfficialOperationalNotification(platform, keywords, actions)
+        }
+
         val UBER_PKGS = setOf("com.ubercab.driver", "com.ubercab")
         val NN_PKGS = setOf("com.app99.driver", "com.taxis99.driver")
         val GIGU_PKGS = setOf("co.gigu.app")
@@ -393,6 +398,13 @@ class TripReaderService : AccessibilityService() {
             requestPriorityOcr(plat)
             main.postDelayed({ requestPriorityOcr(plat) }, 320L)
         }
+    }
+
+    private fun handleOfficialOperationalNotification(plat: String, keywords: List<String>, actions: List<String>) {
+        if (plat != "UBER" && plat != "99") return
+        val strongArrival = keywords.any { it == "cheguei" || it == "iniciar" } ||
+            actions.any { it == "cheguei" || it == "iniciar" }
+        if (strongArrival) AutoTripCapture.markPickupArrived(plat)
     }
 
     private fun pollForeground() {
@@ -1624,6 +1636,11 @@ class TripReaderService : AccessibilityService() {
         // as variações de tela da corrida (ver comentário acima) — mesma
         // âncora usada pro estado "corrida" serve pro nome, one-shot.
         val joined = texts.joinToString(" ")
+        val joinedLow = joined.lowercase(Locale.getDefault())
+        if (joinedLow.contains("cheguei") || joinedLow.contains("aguardando passageiro") ||
+            joinedLow.contains("iniciar viagem") || joinedLow.contains("iniciar corrida")) {
+            AutoTripCapture.markPickupArrived("UBER")
+        }
         uberDestinoDeRe.find(joined)?.groupValues?.getOrNull(1)?.trim()?.let {
             if (it.isNotEmpty()) AutoTripCapture.setPassengerNameIfEmpty("UBER", it)
         }
@@ -1818,6 +1835,7 @@ class TripReaderService : AccessibilityService() {
         // o navegador SEM "Chegue antes de" sustentado (contador abaixo).
         val temEspera = nn99EsperaOcrRe.containsMatchIn(joinedOcrText)
         if (temEspera && !temChegueAntes) {
+            AutoTripCapture.markPickupArrived("99")
             nn99ReachedPickupReason = "ocr:espera_embarque"
             nn99LastActiveSignalMs = System.currentTimeMillis()
             applyTripSubStateDebounced("buscar", "99")
@@ -2376,7 +2394,6 @@ class TripReaderService : AccessibilityService() {
             .setOnlyAlertOnce(true)
             .setAutoCancel(false)
             .setOngoing(false)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) builder.setTimeoutAfter(20 * 60 * 1000L)
         if (origem != null) builder.addAction(Notification.Action.Builder(null, "Origem", mapIntent(origem)).build())
         if (destino != null) builder.addAction(Notification.Action.Builder(null, "Destino", mapIntent(destino)).build())
         try { nm.notify(4103, builder.build()) } catch (_: Exception) {}

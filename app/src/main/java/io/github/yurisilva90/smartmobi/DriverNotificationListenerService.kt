@@ -73,6 +73,10 @@ class DriverNotificationListenerService : NotificationListenerService() {
             n.actions?.forEach { a -> operationalAction(a.title?.toString().orEmpty())?.let { actionLabels.add(it) } }
         } catch (_: Exception) {}
 
+        if (eventType == "posted") {
+            TripReaderService.onOfficialOperationalNotification(platform, keywords.distinct(), actionLabels.distinct())
+        }
+
         // Só vira gatilho forte quando a própria notificação traz sinais de
         // oferta. Uma notificação genérica de status nunca troca Uber↔99.
         val hasMoney = money.any { it >= 5.0 }
