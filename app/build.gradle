@@ -2,8 +2,8 @@ plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
 }
-// 1.3.22: notificação compacta 2 linhas + imagem somente do card.
-// build trigger v1.3.22
+// 1.3.23: corrige associação Uber/99 na oferta e layout expandido da notificação.
+// build trigger v1.3.23
 android {
     namespace 'io.github.yurisilva90.smartmobi'
     compileSdk 34
