@@ -1,6 +1,8 @@
 package io.github.yurisilva90.smartmobi
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
@@ -24,6 +26,8 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
 // ══════════════════════════════════════════════════════════════════
@@ -296,6 +300,107 @@ class FlashCard(private val context: Context) {
                 }
             }
         }
+    }
+
+    /**
+     * Renderiza uma cópia visual do próprio MōB Flash para a notificação.
+     * Não usa o print bruto da oferta: a imagem mostra o veredito, os mesmos
+     * indicadores do overlay e, abaixo, os dados úteis da rota.
+     */
+    fun renderNotificationBitmap(
+        platform: String,
+        overallGrade: String,
+        metrics: List<Metric>,
+        totalMin: Int,
+        totalKm: Double,
+        declineReason: String? = null,
+        detailLines: List<String> = emptyList()
+    ): Bitmap? {
+        fun renderNow(): Bitmap? {
+            return try {
+                val cardWidthPx = widthFor(metrics.size)
+                val imageWidthPx = maxOf(cardWidthPx, dp(344))
+                val outer = LinearLayout(context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    setPadding(dp(8), dp(8), dp(8), dp(10))
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.RECTANGLE
+                        cornerRadius = dpf(14)
+                        setColor(Color.parseColor("#101119"))
+                    }
+                }
+
+                val verdict = when (overallGrade) {
+                    "g" -> "ACEITAR"
+                    "a" -> "ANALISAR"
+                    else -> "RECUSAR"
+                }
+                outer.addView(TextView(context).apply {
+                    text = "MōB Flash · $verdict"
+                    textSize = 13f
+                    setTypeface(Typeface.DEFAULT_BOLD)
+                    setTextColor(colorOf(overallGrade))
+                    gravity = Gravity.CENTER
+                    setPadding(dp(4), dp(2), dp(4), dp(7))
+                }, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ))
+
+                val card = buildCard(
+                    platform, overallGrade, metrics, totalMin, totalKm,
+                    cardWidthPx, declineReason
+                )
+                outer.addView(card, LinearLayout.LayoutParams(
+                    cardWidthPx, LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { gravity = Gravity.CENTER_HORIZONTAL })
+
+                val cleanLines = detailLines.filter { it.isNotBlank() }.take(9)
+                if (cleanLines.isNotEmpty()) {
+                    outer.addView(android.view.View(context).apply {
+                        setBackgroundColor(Color.parseColor("#22FFFFFF"))
+                    }, LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, dp(1)
+                    ).apply { topMargin = dp(9); bottomMargin = dp(6) })
+                    cleanLines.forEach { line ->
+                        outer.addView(TextView(context).apply {
+                            text = line
+                            textSize = 11.5f
+                            setTextColor(Color.parseColor("#F8FAFC"))
+                            maxLines = 2
+                            setPadding(dp(4), dp(2), dp(4), dp(2))
+                        }, LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT
+                        ))
+                    }
+                }
+
+                val wSpec = android.view.View.MeasureSpec.makeMeasureSpec(
+                    imageWidthPx, android.view.View.MeasureSpec.EXACTLY
+                )
+                val hSpec = android.view.View.MeasureSpec.makeMeasureSpec(
+                    0, android.view.View.MeasureSpec.UNSPECIFIED
+                )
+                outer.measure(wSpec, hSpec)
+                val height = outer.measuredHeight.coerceAtLeast(dp(1))
+                outer.layout(0, 0, imageWidthPx, height)
+                Bitmap.createBitmap(imageWidthPx, height, Bitmap.Config.ARGB_8888).also { bmp ->
+                    outer.draw(Canvas(bmp))
+                }
+            } catch (_: Exception) { null }
+        }
+
+        if (Looper.myLooper() == Looper.getMainLooper()) return renderNow()
+        var result: Bitmap? = null
+        val latch = CountDownLatch(1)
+        handler.post {
+            try { result = renderNow() } finally { latch.countDown() }
+        }
+        return try {
+            if (latch.await(1200, TimeUnit.MILLISECONDS)) result else null
+        } catch (_: Exception) { null }
     }
 
     fun keepAlive(autoHideMs: Long = 20000L) {

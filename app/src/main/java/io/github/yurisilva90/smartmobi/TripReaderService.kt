@@ -1016,79 +1016,126 @@ class TripReaderService : AccessibilityService() {
             }
         }
 
-        // endereços: a linha logo depois de uma "perna" (tempo+distância)
-        // costuma ser o endereço por extenso — 1ª perna = origem, 2ª = destino.
-        // Pula linhas curtas/genéricas ("1 parada", "X Não afeta a TA" etc.)
-        // que às vezes aparecem entre a perna e o endereço de verdade —
-        // foi uma delas ("1 parada", às vezes lida "l parada") que virava
-        // origem por engano na notificação.
-        fun looksLikeAddress(s: String): Boolean {
-            val sl = s.lowercase(Locale.getDefault()).trim()
+        // Endereços da oferta. Na 99 o endereço pode ficar várias linhas
+        // abaixo da perna ou ser quebrado em duas linhas. A leitura fica
+        // limitada ao bloco da oferta para não capturar chat/navegação do fundo.
+        fun cleanAddress(raw: String): String = raw
+            .replace(Regex("""^[•·]\s*"""), "")
+            .trim()
+
+        fun looksLikeAddress(raw: String): Boolean {
+            val sl = cleanAddress(raw).lowercase(Locale.getDefault())
             if (sl.length < 6) return false
-            if (sl.contains("parada")) return false
             if (sl.contains("não afeta") || sl.contains("nao afeta")) return false
-            // BUG CONFIRMADO EM PRINT REAL (notificação "Para: 5,3 km"): o
-            // regex antigo só rejeitava km/min INTEIROS ("5 km"), não decimais
-            // ("5,3 km") — deixava passar distância solta como se fosse
-            // endereço. Adicionado ([.,]\d+)? pra cobrir a parte decimal.
-            if (Regex("""^\(?\d{1,3}([.,]\d+)?\s*(min|km|m)\b""").containsMatchIn(sl)) return false // outra perna/distância solta
-            if (Regex("""^[x%\d.,\s]+$""").containsMatchIn(sl)) return false // só símbolo/número solto
-            // BUG CONFIRMADO EM PRINTS REAIS (13/07/2026): a notificação saiu
-            // com "Origem: S R$1,45 Tarifa base dinâmica incl." e "Destino:
-            // Online" — texto de bônus/dinâmico e de status sendo lido como
-            // se fosse endereço. Endereço de verdade nunca tem "R$" nem essas
-            // palavras — rejeita explicitamente.
-            if (sl.contains("r$")) return false // endereço nunca tem valor em R$
-            if (sl.contains("tarifa") || sl.contains("incl.") || sl.contains("incluído") || sl.contains("incluido")) return false
-            if (sl.contains("taxa de espera") || sl.contains("espera longa")) return false
+            if (Regex("""^\(?\d{1,3}([.,]\d+)?\s*(min|km|m)\b""").containsMatchIn(sl)) return false
+            if (Regex("""^[x%\d.,\s]+$""").containsMatchIn(sl)) return false
+            if (sl.contains("r$") || sl.contains("tarifa") || sl.contains("taxa de espera")) return false
+            if (sl.contains("espera longa") || sl.contains("perfil essencial") || sl.contains("perfil premium") || sl.contains("perfil prata")) return false
             if (sl == "online" || sl == "buscando" || sl == "offline" || sl == "conectar") return false
-            if (sl.contains("perfil essencial") || sl.contains("perfil premium") || sl.contains("perfil prata")) return false
             if (sl.contains("pgto. no app") || sl == "dinheiro" || sl == "negocia" || sl == "qr code") return false
-            // CORRIGIDO (24/07/2026, confirmado em log real: virou endereço
-            // "t5,009 corridasCPF verif." de verdade): linha de avaliação/
-            // corridas do passageiro nunca é endereço — mesma assinatura já
-            // usada pra extrair nota/corridas ali em cima (nota 1-5 com 2
-            // casas + "corrid") ou selo de verificação.
             if (Regex("""[1-5][.,]\d{2}.{0,15}corrid""").containsMatchIn(sl)) return false
             if (sl.contains("verif.") || sl.contains("cpf e cart")) return false
-            // CORRIGIDO (16/08/2026, confirmado em corrida real: destino
-            // gravado como "mano paguei 40,70 no app" — mensagem de chat do
-            // passageiro que estava na tela virou "endereço" porque não
-            // batia em NENHUMA regra de bloqueio acima). Bloquear padrão
-            // conhecido nunca cobre tudo — frase solta de conversa não tem
-            // assinatura fixa. Em vez de só bloquear o que já vimos dar
-            // errado, agora exige uma evidência POSITIVA de que É endereço:
-            // palavra de logradouro (Rua/Av/Estrada/etc.) OU o padrão
-            // "Nome da via, Número" que todo endereço de oferta tem.
-            val hasStreetWord = Regex("""\b(rua|av\.?|avenida|estrada|travessa|alameda|rodovia|pra[çc]a|largo|ladeira|rod\.?|via\b)""", RegexOption.IGNORE_CASE).containsMatchIn(sl)
-            // CORRIGIDO (16/08/2026, confirmado em corrida real): "mano
-            // paguei 40,70 no app" passava aqui porque "40,70" batia no
-            // padrão "Nome, Número" — vírgula decimal de valor em R$ não é
-            // vírgula de endereço. Exige que o caractere ANTES da vírgula
-            // não seja dígito (endereço real nunca tem número colado antes
-            // da vírgula do jeito que um valor decimal tem).
-            val hasNumberPattern = Regex("""[^\d],\s*\d{1,5}\b""").containsMatchIn(sl)
-            if (!hasStreetWord && !hasNumberPattern) return false
-            return true
+            if (sl.contains("aceitar") || sl.contains("selecionar") || sl.contains("escolher")) return false
+            val street = Regex("""\b(rua|r\.?|av\.?|avenida|estrada|travessa|alameda|rodovia|pra[çc]a|largo|ladeira|rod\.?|via\b)""", RegexOption.IGNORE_CASE).containsMatchIn(sl)
+            val numbered = Regex("""[^\d],\s*\d{1,5}\b""").containsMatchIn(sl)
+            return street || numbered
         }
+
+        fun normAddress(raw: String): String = cleanAddress(raw)
+            .lowercase(Locale.getDefault())
+            .replace(Regex("""[\s,.;:–—-]+"""), " ")
+            .trim()
+
+        fun candidateAt(index: Int): String? {
+            if (index !in texts.indices) return null
+            val cur = cleanAddress(texts[index])
+            if (looksLikeAddress(cur)) return cur
+            // Alguns OCRs quebram "Rua X" e "120 - Bairro" em linhas distintas.
+            val hasStreet = Regex("""\b(rua|r\.?|av\.?|avenida|estrada|travessa|alameda|rodovia|pra[çc]a|largo|ladeira|rod\.?|via\b)""", RegexOption.IGNORE_CASE).containsMatchIn(cur)
+            if (hasStreet && index + 1 in texts.indices) {
+                val next = cleanAddress(texts[index + 1])
+                if (Regex("""^\d{1,5}\b""").containsMatchIn(next)) {
+                    val joinedAddress = "$cur, $next"
+                    if (looksLikeAddress(joinedAddress)) return joinedAddress
+                }
+            }
+            return null
+        }
+
         val legLineRe = Regex("""^\(?\s*\d{1,3}\s*min(?:utos)?""", RegexOption.IGNORE_CASE)
-        val addrCandidates = ArrayList<String>()
-        for (i in texts.indices) {
-            if (legLineRe.containsMatchIn(texts[i])) {
-                for (j in (i + 1)..minOf(i + 3, texts.size - 1)) {
-                    val cand = texts.getOrNull(j)?.trim() ?: break
-                    val nl = cand.lowercase(Locale.getDefault())
-                    if (legLineRe.containsMatchIn(cand)) break // já é a próxima perna, para de procurar
-                    if (nl.contains("aceitar") || nl.contains("selecionar") || nl.contains("escolher")) break
-                    if (looksLikeAddress(cand)) { addrCandidates.add(cand); break }
+        val legIndexes = texts.indices.filter { legLineRe.containsMatchIn(texts[it]) }
+        val blockStart = legIndexes.firstOrNull() ?: 0
+        val actionIndex = ((blockStart + 1) until texts.size).firstOrNull { i ->
+            val l = texts[i].lowercase(Locale.getDefault())
+            l.contains("aceitar") || l.contains("selecionar") || l.contains("escolher") || l.contains("recusar")
+        }
+        val blockEnd = minOf(actionIndex ?: (blockStart + 24), texts.size - 1)
+
+        val indexed = ArrayList<Pair<Int, String>>()
+        fun addCandidate(index: Int, value: String?) {
+            val v = value?.let(::cleanAddress)?.takeIf { looksLikeAddress(it) } ?: return
+            val n = normAddress(v)
+            if (indexed.none { normAddress(it.second) == n }) indexed.add(index to v)
+        }
+
+        // Procura depois de cada perna até a próxima perna/ação, com uma janela
+        // maior que a antiga (3 linhas), suficiente para layouts reais da 99.
+        legIndexes.forEachIndexed { pos, legIdx ->
+            val nextLeg = legIndexes.getOrNull(pos + 1)
+            val scanEnd = minOf(nextLeg?.minus(1) ?: blockEnd, legIdx + 8, blockEnd)
+            if (legIdx + 1 <= scanEnd) {
+                for (j in (legIdx + 1)..scanEnd) {
+                    val c = candidateAt(j)
+                    if (c != null) { addCandidate(j, c); break }
                 }
             }
         }
-        val origem = addrCandidates.firstOrNull()
-        val destino = if (addrCandidates.size >= 2) addrCandidates.lastOrNull() else null
-        val stopAddresses = if (paradas > 0 && addrCandidates.size > 2)
-            addrCandidates.subList(1, addrCandidates.size - 1).take(paradas)
-        else emptyList()
+
+        fun labeledTail(line: String, labels: List<String>): String? {
+            val lowLine = line.lowercase(Locale.getDefault())
+            for (label in labels) {
+                val idx = lowLine.indexOf(label)
+                if (idx >= 0) {
+                    val tail = cleanAddress(line.substring(idx + label.length).trimStart(':', '-', '–', '—', ' '))
+                    if (looksLikeAddress(tail)) return tail
+                }
+            }
+            return null
+        }
+
+        var labeledOrigin: String? = null
+        var labeledDest: String? = null
+        val labeledStops = ArrayList<String>()
+        if (blockStart <= blockEnd) {
+            for (i in blockStart..blockEnd) {
+                val line = texts[i]
+                if (labeledOrigin == null) labeledOrigin = labeledTail(line, listOf("origem", "embarque", "buscar em", "pickup"))
+                if (labeledDest == null) labeledDest = labeledTail(line, listOf("destino", "desembarque", "dropoff", "para"))
+                Regex("""(?i)(?:parada\s*\d+|\d+[ªa]?\s*parada)\s*[:\-–—]\s*(.+)$""")
+                    .find(line)?.groupValues?.getOrNull(1)?.let {
+                        if (looksLikeAddress(it)) labeledStops.add(cleanAddress(it))
+                    }
+                addCandidate(i, candidateAt(i))
+            }
+        }
+
+        val ordered = indexed.sortedBy { it.first }.map { it.second }.fold(ArrayList<String>()) { acc, v ->
+            val n = normAddress(v)
+            if (acc.none { normAddress(it) == n }) acc.add(v)
+            acc
+        }
+        val origem = labeledOrigin ?: ordered.firstOrNull()
+        val destino = labeledDest ?: ordered.lastOrNull()?.takeIf {
+            origem == null || normAddress(it) != normAddress(origem)
+        }
+        val stopAddresses = if (labeledStops.isNotEmpty()) {
+            labeledStops.distinctBy(::normAddress).take(maxOf(paradas, labeledStops.size))
+        } else if (paradas > 0) {
+            ordered.filter { a ->
+                (origem == null || normAddress(a) != normAddress(origem)) &&
+                (destino == null || normAddress(a) != normAddress(destino))
+            }.take(paradas)
+        } else emptyList()
 
         return Offer(valor, km, min, rkmDirect, nota, origem, destino, legs, kmPickup, kmTrip, minPickup, minTrip, dinamico, corridas, paradas, multiplicador, stopAddresses)
     }
@@ -1530,9 +1577,8 @@ class TripReaderService : AccessibilityService() {
         // que permite auditar as inconsistências (perna faltando, valor
         // dobrando etc.) depois, comparando o que a tela mostrava com o que
         // o app calculou naquele instante.
-        val notificationImage = try { bmp?.copy(Bitmap.Config.ARGB_8888, false) } catch (_: Exception) { null }
         saveSnapshot(plat, bmp, overallGrade, metrics, min ?: 0, km, offer, texts)
-        showRouteNotification(plat, offer, overallGrade, metrics, declineReason, notificationImage)
+        showRouteNotification(plat, offer, overallGrade, metrics, declineReason)
 
         main.post {
             flashCard.show(
@@ -2325,14 +2371,11 @@ class TripReaderService : AccessibilityService() {
         offer: Offer,
         overallGrade: String,
         metrics: List<FlashCard.Metric>,
-        declineReason: String?,
-        offerImage: Bitmap? = null
+        declineReason: String?
     ) {
         val origem = offer.origem
         val destino = offer.destino
         val stops = offer.stopAddresses
-        if (origem == null && destino == null && stops.isEmpty()) return
-
         val verdict = when (overallGrade) {
             "g" -> "ACEITAR"
             "a" -> "ANALISAR"
@@ -2340,7 +2383,10 @@ class TripReaderService : AccessibilityService() {
         }
         val key = listOf(
             plat, offer.valor?.toString() ?: "", origem ?: "", destino ?: "",
-            stops.joinToString("|"), overallGrade, declineReason ?: ""
+            stops.joinToString("|"), overallGrade, declineReason ?: "",
+            offer.minPickup?.toString() ?: "", offer.kmPickup?.toString() ?: "",
+            offer.minTrip?.toString() ?: "", offer.kmTrip?.toString() ?: "",
+            metrics.joinToString("|") { "${it.label}:${it.value}:${it.grade}" }
         ).joinToString("|")
         if (key == lastNotifKey) return
         lastNotifKey = key
@@ -2414,17 +2460,28 @@ class TripReaderService : AccessibilityService() {
         } else {
             @Suppress("DEPRECATION") Notification.Builder(this)
         }
+        val visualLines = lines.filterNot { it.startsWith("Flash:") || it.startsWith("Motivo:") }
+        val flashPicture = flashCard.renderNotificationBitmap(
+            plat, overallGrade, metrics, offer.min ?: routeMin ?: 0, offer.km ?: routeKm ?: 0.0, declineReason, visualLines
+        )
         builder.setContentTitle(titulo)
-            .setStyle(if (offerImage != null) Notification.BigPictureStyle().bigPicture(offerImage).setSummaryText(resumo) else Notification.BigTextStyle().bigText(resumo))
             .setContentText(lines.firstOrNull() ?: titulo)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setPriority(Notification.PRIORITY_LOW)
             .setOnlyAlertOnce(true)
             .setAutoCancel(false)
             .setOngoing(false)
+        if (flashPicture != null) {
+            builder.setStyle(Notification.BigPictureStyle()
+                .bigPicture(flashPicture)
+                .setBigContentTitle(titulo)
+                .setSummaryText(lines.take(2).joinToString(" · ")))
+        } else {
+            builder.setStyle(Notification.BigTextStyle().bigText(resumo))
+        }
         if (origem != null) builder.addAction(Notification.Action.Builder(null, "Origem", mapIntent(origem)).build())
         if (destino != null) builder.addAction(Notification.Action.Builder(null, "Destino", mapIntent(destino)).build())
-        try { nm.notify(4103, builder.build()) } catch (_: Exception) {} finally { try { offerImage?.recycle() } catch (_: Exception) {} }
+        try { nm.notify(4103, builder.build()) } catch (_: Exception) {}
     }
 
     private fun sendToCloud(

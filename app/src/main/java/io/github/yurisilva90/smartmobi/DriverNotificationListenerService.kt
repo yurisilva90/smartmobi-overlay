@@ -163,20 +163,36 @@ class DriverNotificationListenerService : NotificationListenerService() {
     )
 
     private fun extractRouteInfo(parts: List<String>, mins: List<Int>): RouteInfo {
-        val cleaned = parts.map { it.replace(Regex("\\s+"), " ").trim() }.filter { it.isNotBlank() }
+        val cleaned = parts.flatMap { it.split('\n') }
+            .map { it.replace(Regex("""\s+"""), " ").trim() }
+            .filter { it.isNotBlank() }
+
+        fun looksLikeAddress(raw: String): Boolean {
+            val line = raw.trim()
+            val low = line.lowercase(Locale("pt", "BR"))
+            if (line.length < 6 || low.contains("r$")) return false
+            if (Regex("""^\d{1,3}(?:[.,]\d+)?\s*(km|m|min)\b""", RegexOption.IGNORE_CASE).containsMatchIn(low)) return false
+            if (low.contains("aceitar") || low.contains("recusar") || low.contains("corrida disponível")) return false
+            val street = Regex("""\b(rua|r\.?|av\.?|avenida|estrada|travessa|alameda|rodovia|pra[çc]a|largo|ladeira|via)\b""", RegexOption.IGNORE_CASE).containsMatchIn(low)
+            val numbered = Regex("""[^\d],\s*\d{1,5}\b""").containsMatchIn(low)
+            return street || numbered
+        }
+        fun norm(raw: String) = raw.lowercase(Locale("pt", "BR"))
+            .replace(Regex("""[\s,.;:–—-]+"""), " ").trim()
         fun valueAfterLabel(line: String, labels: List<String>): String? {
             val low = line.lowercase(Locale("pt", "BR"))
             for (label in labels) {
                 val i = low.indexOf(label)
                 if (i >= 0) {
                     val tail = line.substring(i + label.length).trim().trimStart(':', '-', '–', '—').trim()
-                    if (tail.length >= 5 && !tail.contains("R$", true)) return tail
+                    if (looksLikeAddress(tail)) return tail
                 }
             }
             return null
         }
+
         val originLabels = listOf("origem", "embarque", "buscar em", "pickup")
-        val destLabels = listOf("destino", "desembarque", "dropoff")
+        val destLabels = listOf("destino", "desembarque", "dropoff", "para")
         var origin: String? = null
         var dest: String? = null
         val stops = ArrayList<String>()
@@ -187,20 +203,18 @@ class DriverNotificationListenerService : NotificationListenerService() {
             }
             if (origin == null) origin = valueAfterLabel(line, originLabels)
             if (dest == null) dest = valueAfterLabel(line, destLabels)
-            Regex("""(?i)(?:parada\s*\d+|\d+[ªa]?\s*parada)\s*[:\-–—]\s*(.+)$""").find(line)?.groupValues?.getOrNull(1)?.trim()?.let {
-                if (it.length >= 5 && !it.contains("R$", true)) stops.add(it)
-            }
+            Regex("""(?i)(?:parada\s*\d+|\d+[ªa]?\s*parada)\s*[:\-–—]\s*(.+)$""")
+                .find(line)?.groupValues?.getOrNull(1)?.trim()?.let {
+                    if (looksLikeAddress(it)) stops.add(it)
+                }
         }
-        val streetLike = cleaned.filter { line ->
-            val low = line.lowercase(Locale("pt", "BR"))
-            !low.contains("r$") && Regex("""\b(rua|r\.?|av\.?|avenida|estrada|travessa|alameda|rodovia|pra[çc]a|largo|ladeira|via)\b""", RegexOption.IGNORE_CASE).containsMatchIn(line)
-        }.distinct()
-        if (origin == null) origin = streetLike.firstOrNull()
-        if (dest == null && streetLike.size >= 2) dest = streetLike.lastOrNull()
-        if (stops.isEmpty() && declaredStops > 0 && streetLike.size > 2) {
-            stops.addAll(streetLike.subList(1, streetLike.size - 1).take(declaredStops))
+        val routeCandidates = cleaned.filter(::looksLikeAddress).distinctBy(::norm)
+        if (origin == null) origin = routeCandidates.firstOrNull()
+        if (dest == null && routeCandidates.size >= 2) dest = routeCandidates.lastOrNull()
+        if (stops.isEmpty() && declaredStops > 0 && routeCandidates.size > 2) {
+            stops.addAll(routeCandidates.subList(1, routeCandidates.size - 1).take(declaredStops))
         }
-        return RouteInfo(origin, dest, maxOf(declaredStops, stops.size), stops.distinct(), mins.lastOrNull()?.times(60))
+        return RouteInfo(origin, dest, maxOf(declaredStops, stops.size), stops.distinctBy(::norm), mins.lastOrNull()?.times(60))
     }
 
     private fun hash(s: String?): String? {
