@@ -19,3 +19,4 @@ jobs:
           git add app/src/main/java/io/github/yurisilva90/smartmobi/TripReaderService.kt app/build.gradle
           git commit -m "Capture full Uber accessibility diagnostics"
           git push
+# diagnostic-trigger-2
