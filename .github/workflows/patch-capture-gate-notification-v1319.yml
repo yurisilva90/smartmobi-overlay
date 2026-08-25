@@ -1,0 +1,21 @@
+name: Patch v1.3.19 capture gates and notification
+on:
+  push:
+    paths:
+      - 'scripts/patch_capture_gate_notification_v1319.py'
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply v1.3.19 patch
+        run: python3 scripts/patch_capture_gate_notification_v1319.py
+      - name: Commit patched Android sources
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/io/github/yurisilva90/smartmobi/TripReaderService.kt app/src/main/java/io/github/yurisilva90/smartmobi/FlashCard.kt app/build.gradle
+          git commit -m "Use Uber accessibility and gate 99 OCR; redesign route notification"
+          git push
