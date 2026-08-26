@@ -1,0 +1,25 @@
+name: Run status foreground guard 1.3.26
+on:
+  push:
+    paths:
+      - '.github/workflows/run-status-foreground-guard-1326.yml'
+jobs:
+  patch-and-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply patch
+        run: python3 .github/scripts/patch_status_foreground_guard_1326.py
+      - name: Build debug APK
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug
+      - name: Commit patch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add app/src/main/java/io/github/yurisilva90/smartmobi/TripReaderService.kt app/build.gradle
+          git commit -m 'Keep ride status when MōB is foreground'
+          git push
