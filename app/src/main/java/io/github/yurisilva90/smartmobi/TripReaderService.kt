@@ -405,6 +405,26 @@ class TripReaderService : AccessibilityService() {
         return bestPlat
     }
 
+    // v1.3.28 — autoridade estrita para Online/Buscar/Corrida.
+    // Oferta continua podendo ser lida em janela visível/sobreposta. Status
+    // operacional só muda quando Uber/99 possuem janela APPLICATION ativa
+    // ou focada. Abrir MōB, Waze, launcher ou outro app preserva o último
+    // estado válido da plataforma até ela voltar a ser realmente ativa.
+    private fun activeDriverPlatformForStatus(): String? {
+        var activePlat: String? = null
+        try {
+            for (w in windows) {
+                if (w.type != AccessibilityWindowInfo.TYPE_APPLICATION) continue
+                if (!w.isActive && !w.isFocused) continue
+                val wp = w.root?.packageName?.toString() ?: continue
+                val plat = platformOfPackage(wp) ?: continue
+                if (w.isFocused) return plat
+                activePlat = plat
+            }
+        } catch (_: Exception) {}
+        return activePlat
+    }
+
     // v1.3.19 — OCR policy:
     // • Uber: offer data comes from AccessibilityService; never run OCR.
     // • 99: AccessibilityService only arms OCR while an offer sheet is present.
@@ -547,7 +567,9 @@ class TripReaderService : AccessibilityService() {
         //    principal e é o que tava causando o FlashCard piscar. Status do
         //    botão flutuante nunca deve competir com o Flash pela UI thread.
         if (offerGuardActive()) return
-        when (fgPlat) {
+        // fgPlat é permissivo para OFERTA; status precisa de janela ativa/focada.
+        val statusPlat = activeDriverPlatformForStatus()
+        when (statusPlat) {
             "UBER" -> scanUberTripState()
             "99"   -> scanNN99TripState()
         }
@@ -719,10 +741,16 @@ class TripReaderService : AccessibilityService() {
         // setado pelo processRealOffer logo acima), o texto da tela pode vir
         // misturado com o card de oferta — não mexe no status nesse momento.
         if (!offerGuardActive()) {
-            if (realPlat == "UBER" && realTexts.isNotEmpty()) {
-                detectAndApplyTripSubState(realTexts)
-            } else if (realPlat == "99" && realTexts.isNotEmpty()) {
-                detectAndApply99TripSubState(realTexts)
+            val statusPlat = activeDriverPlatformForStatus()
+            val statusTexts = when (statusPlat) {
+                "UBER" -> textsByPkg.entries.firstOrNull { UBER_PKGS.contains(it.key) }?.value
+                "99"   -> textsByPkg.entries.firstOrNull { NN_PKGS.contains(it.key) }?.value
+                else   -> null
+            }
+            if (statusPlat == "UBER" && !statusTexts.isNullOrEmpty()) {
+                detectAndApplyTripSubState(statusTexts)
+            } else if (statusPlat == "99" && !statusTexts.isNullOrEmpty()) {
+                detectAndApply99TripSubState(statusTexts)
             }
         }
 
