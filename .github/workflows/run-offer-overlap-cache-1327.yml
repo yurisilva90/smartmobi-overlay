@@ -1,0 +1,29 @@
+name: Patch MoB 1.3.27 overlap offer cache
+on:
+  push:
+    paths:
+      - '.github/workflows/run-offer-overlap-cache-1327.yml'
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply patch
+        run: python3 .github/scripts/patch_offer_overlap_cache_1327.py
+      - name: Build debug APK
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleDebug
+      - name: Validate markers
+        run: |
+          grep -q "overlapCandidate" app/src/main/java/io/github/yurisilva90/smartmobi/AutoTripCapture.kt
+          grep -q 'versionName "1.3.27"' app/build.gradle
+      - name: Commit
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add app/src/main/java/io/github/yurisilva90/smartmobi/AutoTripCapture.kt app/build.gradle
+          git commit -m 'Keep accepted offer value for overlapping rides' || exit 0
+          git push
