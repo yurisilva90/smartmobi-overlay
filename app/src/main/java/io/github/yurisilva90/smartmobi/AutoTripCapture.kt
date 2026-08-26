@@ -206,7 +206,18 @@ object AutoTripCapture {
     // nova substituindo) também conta como recusada/expirada.
     fun flushStaleOffers(ctx: Context) {
         val now = System.currentTimeMillis()
-        val stale = lastOfferByPlat.filterValues { now - it.seenAt > OFFER_STALE_MS }
+        // Se já existe uma corrida em andamento nessa plataforma, qualquer
+        // nova oferta vista pode ser justamente a PRÓXIMA corrida (overlap).
+        // Não podemos apagá-la com o timeout normal de 45s: a 99 pode oferecer
+        // a próxima viagem vários minutos antes da atual terminar. Mantém a
+        // mesma janela de 10min usada por corrida->buscar. Fora de corrida,
+        // continua usando 45s para não grudar oferta velha em aceite normal.
+        val stale = lastOfferByPlat.filter { (plat, snap) ->
+            val current = buffersByPlat[plat]
+            val overlapCandidate = current != null && current.tripStartedAt > 0L && current.tripEndedAt == 0L
+            val maxAge = if (overlapCandidate) OFFER_MAX_AGE_OVERLAP_MS else OFFER_STALE_MS
+            now - snap.seenAt > maxAge
+        }
         stale.forEach { (plat, snap) ->
             logOfferSeen(ctx, plat, snap)
             lastOfferByPlat.remove(plat)
