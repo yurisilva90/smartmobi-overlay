@@ -176,7 +176,7 @@ class TripReaderService : AccessibilityService() {
     // esconder de verdade. A 600ms/leitura, grace=2 ainda esconde em
     // ~1.2s quando a oferta sai de verdade — não é perceptível como atraso.
     private var offerMissStreak = 0
-    private val OFFER_HIDE_GRACE = 2
+    private val OFFER_HIDE_GRACE = 5
     // INVESTIGAÇÃO (13/07/2026): achado um buraco de 36min sem nenhum card,
     // com ofertas reais e válidas confirmadas no OCR (texto limpo, formato
     // Uber padrão) durante esse tempo. Causa provável: essas duas variáveis
@@ -1421,7 +1421,17 @@ class TripReaderService : AccessibilityService() {
         val cfg = loadFlashConfig()
         if (!cfg.optBoolean("enabled", true)) { bmp?.recycle(); hideFlashIfActive(); return }
 
-        val joined = texts.joinToString("  ")
+        // O screenshot inclui o próprio overlay do MōB. Remove apenas as
+        // linhas inequívocas do nosso card antes do parser; números soltos não
+        // bastam para formar oferta e ficam inofensivos. Isso evita feedback
+        // MōB -> OCR -> MōB sem apagar a oferta real que está por baixo.
+        val offerTexts = texts.filterNot { raw ->
+            val l = raw.trim().lowercase(Locale.getDefault())
+            l == "r$/km" || l == "r$/hora" || l == "r$/min" ||
+                l == "% lucro" || l == "%lucro" || l == "lucro" ||
+                l == "origem" || l == "destino"
+        }
+        val joined = offerTexts.joinToString("  ")
         val low = joined.lowercase(Locale.getDefault())
 
         if (!isOfferScreen(low)) {
@@ -1439,11 +1449,22 @@ class TripReaderService : AccessibilityService() {
         offerMissStreak = 0
         lastRealState = "OFERTA"
 
-        val parsedOffer = parseOffer(texts)
+        val parsedOffer = parseOffer(offerTexts)
         val offer = enrichOfferWithOfficialRoute(plat, parsedOffer)
         val valor = offer.valor
         val km = offer.km
         val min = offer.min
+
+        if (km != null && min != null && km < 3.0 && min >= 45) {
+            bmp?.recycle()
+            main.post { flashCard.keepAlive(15000L) }
+            val nowBad = System.currentTimeMillis()
+            if (nowBad - (lastPartialRetryMsByPlat[plat] ?: 0L) > 650L) {
+                lastPartialRetryMsByPlat[plat] = nowBad
+                main.postDelayed({ requestPriorityOcr(plat) }, 260L)
+            }
+            return
+        }
 
         if (valor == null || valor < 5.0 || valor > 2000.0) {
             bmp?.recycle(); return
@@ -1521,8 +1542,10 @@ class TripReaderService : AccessibilityService() {
                 pendingNewOfferCount = 0
                 if (nowVisual - activeVisual.firstSeenMs <= OFFER_REFINE_WINDOW_MS &&
                     isClearlyBetterOffer(offer, activeVisual.offer)) {
+                    // Refina apenas o estado interno. AutoTripCapture já recebeu
+                    // essa leitura acima; o card visível não precisa piscar nem
+                    // gerar outro snapshot/notificação para a mesma oferta.
                     activeVisual.offer = offer
-                    visualChanged = true
                 }
             } else {
                 val pending = pendingNewOfferValue
@@ -1706,14 +1729,14 @@ class TripReaderService : AccessibilityService() {
 
         // Loga a oferta detectada (pra auditoria da precisão do parser)
         sendToCloud(plat, "offer-parser", "OFERTA_DETECTADA v=$valor km=$km min=$min rkm=$rkm nota=${offer.nota} corridas=${offer.corridas} paradas=${offer.paradas} kmPickup=${offer.kmPickup} motivo=$declineReason",
-            "OFERTA", extractMoney(joined), km.toString(), min?.toString(), texts)
+            "OFERTA", extractMoney(joined), km.toString(), min?.toString(), offerTexts)
 
         // Print da tela + dados do card — EXATAMENTE no momento em que o card
         // é lançado (não quando a oferta chega). É esse par (imagem + números)
         // que permite auditar as inconsistências (perna faltando, valor
         // dobrando etc.) depois, comparando o que a tela mostrava com o que
         // o app calculou naquele instante.
-        saveSnapshot(plat, bmp, overallGrade, metrics, min ?: 0, km, offer, texts)
+        saveSnapshot(plat, bmp, overallGrade, metrics, min ?: 0, km, offer, offerTexts)
         showRouteNotification(plat, offer, overallGrade, metrics, declineReason)
 
         main.post {
