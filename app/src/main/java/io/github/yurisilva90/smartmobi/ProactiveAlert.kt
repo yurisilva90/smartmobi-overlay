@@ -119,16 +119,11 @@ object ProactiveAlert {
                 put("p_lng", lng)
             })
 
-            // Confirmação de informação de outro motorista tem prioridade,
-            // pois já existe um motivo concreto para perguntar.
             val nearbyReport = findNearbyActiveReport(authToken, lat, lng)
-            if (nearbyReport != null) {
-                val allowed = canPromptReport(authToken, userId, nearbyReport.id)
-                if (allowed) {
-                    logPrompt(authToken, userId, null, nearbyReport.id, "confirmacao", state)
-                    handler.post { showConfirmacaoCard(nearbyReport, userId, authToken) }
-                    return
-                }
+            if (nearbyReport != null && canPromptReport(authToken, userId, nearbyReport.id)) {
+                logPrompt(authToken, userId, null, nearbyReport.id, "confirmacao", state)
+                handler.post { showConfirmacaoCard(nearbyReport, userId, authToken) }
+                return
             }
 
             val venue = findNearestVenue(authToken, lat, lng) ?: return
@@ -138,11 +133,8 @@ object ProactiveAlert {
             val promptType = if (venue.category in COMBO_CATEGORIES) "combo" else "lotacao"
             logPrompt(authToken, userId, venue.id, null, promptType, state)
             handler.post {
-                if (venue.category in COMBO_CATEGORIES) {
-                    showComboCard(venue, userId, authToken)
-                } else {
-                    showLotacaoCard(venue, userId, authToken)
-                }
+                if (venue.category in COMBO_CATEGORIES) showComboCard(venue, userId, authToken)
+                else showLotacaoCard(venue, userId, authToken)
             }
         } catch (_: Exception) {
         } finally {
@@ -204,11 +196,7 @@ object ProactiveAlert {
         return best
     }
 
-    /**
-     * Aeroporto/terminal: elegíveis por presença.
-     * Demais locais: só quando há informe/feed ativo a até 100 m.
-     * Isso evita perguntar lotação de hotel/shopping normal sem contexto.
-     */
+    /** Aeroporto/terminal são sempre elegíveis; demais exigem atividade real ativa. */
     private fun isVenueRelevantNow(authToken: String, venue: Venue): Boolean {
         if (venue.category in ALWAYS_ELIGIBLE) return true
         return hasActiveInformNear(authToken, venue.lat, venue.lng) || hasActiveFeedNear(authToken, venue.lat, venue.lng)
@@ -243,8 +231,7 @@ object ProactiveAlert {
         val arr = getJson(authToken, url) as? JSONArray ?: return null
         for (i in 0 until arr.length()) {
             val o = arr.getJSONObject(i)
-            val dist = haversine(lat, lng, o.getDouble("lat"), o.getDouble("lng"))
-            if (dist <= RADIUS_M) {
+            if (haversine(lat, lng, o.getDouble("lat"), o.getDouble("lng")) <= RADIUS_M) {
                 val minutesAgo = try {
                     val fmt = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
                     val then = fmt.parse(o.optString("created_at").take(19))?.time ?: 0L
@@ -263,42 +250,32 @@ object ProactiveAlert {
         return null
     }
 
-    private fun canPromptVenue(authToken: String, userId: String, venueId: String): Boolean {
-        return rpcCall(authToken, "can_prompt_venue", JSONObject().apply {
+    private fun canPromptVenue(authToken: String, userId: String, venueId: String): Boolean =
+        rpcCall(authToken, "can_prompt_venue", JSONObject().apply {
             put("p_user_id", userId)
             put("p_venue_id", venueId)
         }) == true
-    }
 
-    private fun canPromptReport(authToken: String, userId: String, reportId: String): Boolean {
-        return rpcCall(authToken, "can_prompt_report", JSONObject().apply {
+    private fun canPromptReport(authToken: String, userId: String, reportId: String): Boolean =
+        rpcCall(authToken, "can_prompt_report", JSONObject().apply {
             put("p_user_id", userId)
             put("p_report_id", reportId)
         }) == true
-    }
 
     private fun logPrompt(authToken: String, userId: String, venueId: String?, reportId: String?, type: String, state: String) {
         thread(isDaemon = true) {
-            try {
-                val body = JSONObject().apply {
-                    put("user_id", userId)
-                    put("venue_id", venueId ?: JSONObject.NULL)
-                    put("report_id", reportId ?: JSONObject.NULL)
-                    put("prompt_type", type)
-                    put("driver_state", state)
-                }
-                postJson(authToken, "${TripReaderService.SUPABASE_URL}/rest/v1/venue_prompt_log", body)
-            } catch (_: Exception) {}
+            val body = JSONObject().apply {
+                put("user_id", userId)
+                put("venue_id", venueId ?: JSONObject.NULL)
+                put("report_id", reportId ?: JSONObject.NULL)
+                put("prompt_type", type)
+                put("driver_state", state)
+            }
+            postJson(authToken, "${TripReaderService.SUPABASE_URL}/rest/v1/venue_prompt_log", body)
         }
     }
 
-    private fun markPromptOutcome(
-        authToken: String,
-        userId: String,
-        venueId: String? = null,
-        reportId: String? = null,
-        outcome: String
-    ) {
+    private fun markPromptOutcome(authToken: String, userId: String, venueId: String? = null, reportId: String? = null, outcome: String) {
         thread(isDaemon = true) {
             try {
                 val filter = when {
@@ -325,54 +302,46 @@ object ProactiveAlert {
         }
     }
 
-    private fun getJson(authToken: String, url: String): Any? {
-        return try {
-            val conn = URL(url).openConnection() as HttpURLConnection
-            conn.requestMethod = "GET"
-            conn.connectTimeout = 8000
-            conn.readTimeout = 8000
-            conn.setRequestProperty("apikey", TripReaderService.SUPABASE_ANON)
-            conn.setRequestProperty("Authorization", "Bearer $authToken")
-            val text = conn.inputStream.bufferedReader().readText()
-            if (text.trim().startsWith("[")) JSONArray(text) else JSONObject(text)
-        } catch (_: Exception) { null }
-    }
+    private fun getJson(authToken: String, url: String): Any? = try {
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.requestMethod = "GET"
+        conn.connectTimeout = 8000
+        conn.readTimeout = 8000
+        conn.setRequestProperty("apikey", TripReaderService.SUPABASE_ANON)
+        conn.setRequestProperty("Authorization", "Bearer $authToken")
+        val text = conn.inputStream.bufferedReader().readText()
+        if (text.trim().startsWith("[")) JSONArray(text) else JSONObject(text)
+    } catch (_: Exception) { null }
 
-    private fun postJson(authToken: String, url: String, body: JSONObject): String? {
-        return try {
-            val conn = URL(url).openConnection() as HttpURLConnection
-            conn.requestMethod = "POST"
-            conn.doOutput = true
-            conn.connectTimeout = 8000
-            conn.readTimeout = 8000
-            conn.setRequestProperty("Content-Type", "application/json")
-            conn.setRequestProperty("apikey", TripReaderService.SUPABASE_ANON)
-            conn.setRequestProperty("Authorization", "Bearer $authToken")
-            conn.outputStream.use { it.write(body.toString().toByteArray()) }
-            if (conn.responseCode in 200..299) "ok" else null
-        } catch (_: Exception) { null }
-    }
+    private fun postJson(authToken: String, url: String, body: JSONObject): String? = try {
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.doOutput = true
+        conn.connectTimeout = 8000
+        conn.readTimeout = 8000
+        conn.setRequestProperty("Content-Type", "application/json")
+        conn.setRequestProperty("apikey", TripReaderService.SUPABASE_ANON)
+        conn.setRequestProperty("Authorization", "Bearer $authToken")
+        conn.outputStream.use { it.write(body.toString().toByteArray()) }
+        if (conn.responseCode in 200..299) "ok" else null
+    } catch (_: Exception) { null }
 
-    private fun rpcCall(authToken: String, fn: String, args: JSONObject): Any? {
-        return try {
-            val conn = URL("${TripReaderService.SUPABASE_URL}/rest/v1/rpc/$fn").openConnection() as HttpURLConnection
-            conn.requestMethod = "POST"
-            conn.doOutput = true
-            conn.connectTimeout = 8000
-            conn.readTimeout = 8000
-            conn.setRequestProperty("Content-Type", "application/json")
-            conn.setRequestProperty("apikey", TripReaderService.SUPABASE_ANON)
-            conn.setRequestProperty("Authorization", "Bearer $authToken")
-            conn.outputStream.use { it.write(args.toString().toByteArray()) }
-            val text = conn.inputStream.bufferedReader().readText().trim()
-            when {
-                text == "true" -> true
-                text == "false" -> false
-                text.startsWith("\"") -> text.removeSurrounding("\"")
-                else -> text
-            }
-        } catch (_: Exception) { null }
-    }
+    private fun rpcCall(authToken: String, fn: String, args: JSONObject): Any? = try {
+        val conn = URL("${TripReaderService.SUPABASE_URL}/rest/v1/rpc/$fn").openConnection() as HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.doOutput = true
+        conn.connectTimeout = 8000
+        conn.readTimeout = 8000
+        conn.setRequestProperty("Content-Type", "application/json")
+        conn.setRequestProperty("apikey", TripReaderService.SUPABASE_ANON)
+        conn.setRequestProperty("Authorization", "Bearer $authToken")
+        conn.outputStream.use { it.write(args.toString().toByteArray()) }
+        when (val text = conn.inputStream.bufferedReader().readText().trim()) {
+            "true" -> true
+            "false" -> false
+            else -> if (text.startsWith("\"")) text.removeSurrounding("\"") else text
+        }
+    } catch (_: Exception) { null }
 
     private fun utcIso(ms: Long): String =
         java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US).apply {
@@ -443,7 +412,6 @@ object ProactiveAlert {
         handler.removeCallbacks(autoHideRunnable)
         countdownRunnable?.let { handler.removeCallbacks(it) }
         container?.let { try { w.removeView(it) } catch (_: Exception) {} }
-
         currentDismissCallback = onDismiss
 
         val card = LinearLayout(ctx).apply {
@@ -460,15 +428,13 @@ object ProactiveAlert {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        val ic = FrameLayout(ctx).apply {
+        top.addView(FrameLayout(ctx).apply {
             layoutParams = LinearLayout.LayoutParams(dp(38), dp(38)).apply { rightMargin = dp(10) }
             background = GradientDrawable().apply {
                 cornerRadius = dpf(12)
                 setColor(Color.parseColor(icColor))
             }
-        }
-        top.addView(ic)
-
+        })
         top.addView(TextView(ctx).apply {
             text = title
             textSize = 15f
@@ -476,7 +442,6 @@ object ProactiveAlert {
             setTextColor(Color.parseColor("#0F172A"))
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         })
-
         top.addView(TextView(ctx).apply {
             text = "×"
             textSize = 25f
@@ -492,9 +457,7 @@ object ProactiveAlert {
                 cornerRadius = dpf(2)
                 setColor(Color.parseColor("#E2E8F0"))
             }
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(3)).apply {
-                topMargin = dp(8)
-            }
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(3)).apply { topMargin = dp(8) }
         }
         val progress = View(ctx).apply {
             background = GradientDrawable().apply {
@@ -540,20 +503,15 @@ object ProactiveAlert {
         card.addView(content)
 
         container = FrameLayout(ctx).apply { addView(card) }
-        try {
-            w.addView(container, baseParams())
-        } catch (_: Exception) {
-            currentDismissCallback = null
-            return
-        }
+        try { w.addView(container, baseParams()) }
+        catch (_: Exception) { currentDismissCallback = null; return }
 
         val started = System.currentTimeMillis()
         val duration = seconds * 1000L
         val tick = object : Runnable {
             override fun run() {
                 val elapsed = System.currentTimeMillis() - started
-                val fraction = (1f - elapsed.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
-                progress.scaleX = fraction
+                progress.scaleX = (1f - elapsed.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
                 if (elapsed < duration) handler.postDelayed(this, 100L)
             }
         }
@@ -567,9 +525,7 @@ object ProactiveAlert {
         options.chunked(cols).forEach { rowItems ->
             val row = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
-                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                    topMargin = dp(7)
-                }
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(7) }
             }
             rowItems.forEach { (label, colorHex, onClick) ->
                 row.addView(TextView(ctx).apply {
@@ -598,11 +554,7 @@ object ProactiveAlert {
         return wrap
     }
 
-    private fun showFiscalizacaoCard(
-        venue: Venue,
-        userId: String,
-        authToken: String
-    ) {
+    private fun showFiscalizacaoCard(venue: Venue, userId: String, authToken: String) {
         val ctx = appCtx ?: return
         var orgao: String? = null
         var acao: String? = null
@@ -623,10 +575,10 @@ object ProactiveAlert {
             setTextColor(Color.parseColor("#94A3B8"))
         })
         content.addView(optionRow(ctx, listOf(
-            Triple("Polícia Militar", "") { orgao = "Polícia Militar"; tryPublish() },
-            Triple("Guarda Municipal", "") { orgao = "Guarda Municipal"; tryPublish() },
-            Triple("Lei Seca", "") { orgao = "Lei Seca"; tryPublish() },
-            Triple("Detro", "") { orgao = "Detro"; tryPublish() }
+            Triple("Polícia Militar", "", { orgao = "Polícia Militar"; tryPublish() }),
+            Triple("Guarda Municipal", "", { orgao = "Guarda Municipal"; tryPublish() }),
+            Triple("Lei Seca", "", { orgao = "Lei Seca"; tryPublish() }),
+            Triple("Detro", "", { orgao = "Detro"; tryPublish() })
         ), 2))
 
         content.addView(TextView(ctx).apply {
@@ -634,14 +586,12 @@ object ProactiveAlert {
             textSize = 9.5f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.parseColor("#94A3B8"))
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dp(10)
-            }
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) }
         })
         content.addView(optionRow(ctx, listOf(
-            Triple("Multando", "") { acao = "Multando"; tryPublish() },
-            Triple("Abordando", "") { acao = "Abordando"; tryPublish() },
-            Triple("Posicionado", "") { acao = "Posicionado"; tryPublish() }
+            Triple("Multando", "", { acao = "Multando"; tryPublish() }),
+            Triple("Abordando", "", { acao = "Abordando"; tryPublish() }),
+            Triple("Posicionado", "", { acao = "Posicionado"; tryPublish() })
         ), 3))
 
         mount(ctx, "Fiscalização por aqui?", "#2563EB", venue.name, CAT_LABEL[venue.category] ?: "", COMBO_SECONDS, content) {
@@ -660,11 +610,11 @@ object ProactiveAlert {
         )
         val content = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         content.addView(optionRow(ctx, opts.map { (lbl, color, value) ->
-            Triple(lbl, color) {
+            Triple(lbl, color, {
                 publish(authToken, userId, "lotacao", venue.lat, venue.lng, venue.name, value, null, null, 60, venue.city)
                 markPromptOutcome(authToken, userId, venueId = venue.id, outcome = "answered")
                 forceHide()
-            }
+            })
         }, 5))
         mount(ctx, "Como está ${venue.name}?", "#7C3AED", venue.name, CAT_LABEL[venue.category] ?: "", SIMPLE_SECONDS, content) {
             markPromptOutcome(authToken, userId, venueId = venue.id, outcome = it)
@@ -682,11 +632,11 @@ object ProactiveAlert {
         )
         val content = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         content.addView(optionRow(ctx, opts.map { (lbl, color, value) ->
-            Triple(lbl, color) {
+            Triple(lbl, color, {
                 publish(authToken, userId, "lotacao", venue.lat, venue.lng, venue.name, value, null, null, 60, venue.city)
                 markPromptOutcome(authToken, userId, venueId = venue.id, outcome = "answered")
                 showFiscalizacaoToggle(venue, userId, authToken)
-            }
+            })
         }, 5))
         mount(ctx, "Como está ${venue.name}?", "#7C3AED", venue.name, CAT_LABEL[venue.category] ?: "", COMBO_SECONDS, content) {
             markPromptOutcome(authToken, userId, venueId = venue.id, outcome = it)
@@ -697,12 +647,9 @@ object ProactiveAlert {
         val ctx = appCtx ?: return
         val content = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         content.addView(optionRow(ctx, listOf(
-            Triple("Sim, tem fiscalização", "#DC2626") {
-                showFiscalizacaoCard(venue, userId, authToken)
-            },
-            Triple("Não", "#16A34A") { forceHide() }
+            Triple("Sim, tem fiscalização", "#DC2626", { showFiscalizacaoCard(venue, userId, authToken) }),
+            Triple("Não", "#16A34A", { forceHide() })
         ), 2))
-        // O prompt original já foi respondido na etapa de lotação.
         mount(ctx, "Tem fiscalização aqui?", "#2563EB", venue.name, CAT_LABEL[venue.category] ?: "", COMBO_SECONDS, content)
     }
 
@@ -717,29 +664,17 @@ object ProactiveAlert {
         }
         val content = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
         content.addView(optionRow(ctx, listOf(
-            Triple("Sim, ainda", "#DC2626") {
-                publish(
-                    authToken, userId, report.type, GpsService.lastLat, GpsService.lastLng,
-                    report.address, report.paramValue, report.paramDetail, null,
-                    if (isAlert) 90 else 60
-                )
+            Triple("Sim, ainda", "#DC2626", {
+                publish(authToken, userId, report.type, GpsService.lastLat, GpsService.lastLng, report.address, report.paramValue, report.paramDetail, null, if (isAlert) 90 else 60)
                 markPromptOutcome(authToken, userId, reportId = report.id, outcome = "answered")
                 forceHide()
-            },
-            Triple(if (isAlert) "Já foi liberado" else "Já saiu", "#16A34A") {
+            }),
+            Triple(if (isAlert) "Já foi liberado" else "Já saiu", "#16A34A", {
                 markPromptOutcome(authToken, userId, reportId = report.id, outcome = "answered")
                 forceHide()
-            }
+            })
         ), 2))
-        mount(
-            ctx,
-            question,
-            color,
-            "Relatado há ${report.minutesAgo} min por outro motorista",
-            report.address ?: "",
-            SIMPLE_SECONDS,
-            content
-        ) {
+        mount(ctx, question, color, "Relatado há ${report.minutesAgo} min por outro motorista", report.address ?: "", SIMPLE_SECONDS, content) {
             markPromptOutcome(authToken, userId, reportId = report.id, outcome = it)
         }
     }
