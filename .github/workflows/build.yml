@@ -60,4 +60,4 @@ jobs:
           files: app/build/outputs/apk/debug/MoB-v${{ steps.version.outputs.version }}.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-# trigger 1.3.28 consolidated
+# trigger 1.3.29 final build
