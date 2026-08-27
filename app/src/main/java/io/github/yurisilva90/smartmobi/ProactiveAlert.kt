@@ -1,8 +1,11 @@
 package io.github.yurisilva90.smartmobi
 
 import android.content.Context
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.PixelFormat
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
@@ -36,6 +39,38 @@ import kotlin.math.*
  * - tempo é mostrado apenas por barra animada; X permite dispensar;
  * - resposta, fechamento manual e expiração são registrados separadamente.
  */
+// Anel de contagem regressiva — troca a barra linear (implementação
+// anterior) por um círculo que esvazia (sweep 360°→0°) ao redor do X,
+// mockup aprovado 27/08/2026. Vira vermelho nos últimos 3s.
+private class CountdownRing(ctx: Context) : View(ctx) {
+    var fraction = 1f
+    var ringColor: Int = Color.parseColor("#7C3AED")
+    private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Color.parseColor("#E2E8F0")
+    }
+    private val arcPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+    }
+    private val rect = RectF()
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        val strokeW = w * 0.09f
+        trackPaint.strokeWidth = strokeW
+        arcPaint.strokeWidth = strokeW
+        rect.set(strokeW / 2f, strokeW / 2f, w - strokeW / 2f, h - strokeW / 2f)
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        canvas.drawArc(rect, 0f, 360f, false, trackPaint)
+        arcPaint.color = ringColor
+        canvas.drawArc(rect, -90f, 360f * fraction, false, arcPaint)
+    }
+}
+
 object ProactiveAlert {
 
     private const val CHECK_INTERVAL_MS = 2 * 60 * 1000L
@@ -498,32 +533,24 @@ object ProactiveAlert {
             setTextColor(Color.parseColor("#0F172A"))
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         })
-        top.addView(TextView(ctx).apply {
+        val ringWrap = FrameLayout(ctx).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(34), dp(34))
+            setOnClickListener { hideWithOutcome("closed") }
+        }
+        val ring = CountdownRing(ctx).apply {
+            ringColor = Color.parseColor(icColor)
+            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        }
+        ringWrap.addView(ring)
+        ringWrap.addView(TextView(ctx).apply {
             text = "×"
-            textSize = 25f
+            textSize = 15f
             gravity = Gravity.CENTER
             setTextColor(Color.parseColor("#64748B"))
-            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
-            setOnClickListener { hideWithOutcome("closed") }
+            layoutParams = FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
         })
+        top.addView(ringWrap)
         card.addView(top)
-
-        val progressTrack = FrameLayout(ctx).apply {
-            background = GradientDrawable().apply {
-                cornerRadius = dpf(2)
-                setColor(Color.parseColor("#E2E8F0"))
-            }
-            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(3)).apply { topMargin = dp(8) }
-        }
-        val progress = View(ctx).apply {
-            background = GradientDrawable().apply {
-                cornerRadius = dpf(2)
-                setColor(Color.parseColor(icColor))
-            }
-            pivotX = 0f
-        }
-        progressTrack.addView(progress, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
-        card.addView(progressTrack)
 
         val locChip = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -567,7 +594,10 @@ object ProactiveAlert {
         val tick = object : Runnable {
             override fun run() {
                 val elapsed = System.currentTimeMillis() - started
-                progress.scaleX = (1f - elapsed.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+                ring.fraction = (1f - elapsed.toFloat() / duration.toFloat()).coerceIn(0f, 1f)
+                val msLeft = duration - elapsed
+                ring.ringColor = if (msLeft in 0..3000) Color.parseColor("#DC2626") else Color.parseColor(icColor)
+                ring.invalidate()
                 if (elapsed < duration) handler.postDelayed(this, 100L)
             }
         }
