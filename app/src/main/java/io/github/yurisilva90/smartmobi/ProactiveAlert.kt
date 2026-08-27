@@ -17,6 +17,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
+import java.util.Locale
 import kotlin.concurrent.thread
 import kotlin.math.*
 
@@ -128,6 +130,15 @@ object ProactiveAlert {
 
             val venue = findNearestVenue(authToken, lat, lng) ?: return
             if (!isVenueRelevantNow(authToken, venue)) return
+            // PEDIDO (27/08/2026, Yuri): Lotação/Combo só pergunta se o local
+            // é origem OU destino da corrida em andamento — "só passar em
+            // frente" não é sinal confiável de lotação. Consequência real:
+            // como só existe origem/destino de corrida DURANTE uma corrida,
+            // esse gate faz Lotação/Combo nunca disparar no estado "online"
+            // puro (sem corrida aceita) — só a Confirmação (relato de outro
+            // motorista) continua funcionando em online, porque não depende
+            // de trajeto.
+            if (!isTripEndpointAtVenue(venue)) return
             if (!canPromptVenue(authToken, userId, venue.id)) return
 
             val promptType = if (venue.category in COMBO_CATEGORIES) "combo" else "lotacao"
@@ -166,6 +177,51 @@ object ProactiveAlert {
         val dLon = Math.toRadians(lon2 - lon1)
         val a = sin(dLat / 2).pow(2) + cos(Math.toRadians(lat1)) * cos(Math.toRadians(lat2)) * sin(dLon / 2).pow(2)
         return r * 2 * atan2(sqrt(a), sqrt(1 - a))
+    }
+
+    // Gate de origem/destino pra Lotação (pedido 27/08/2026). Dois sinais,
+    // qualquer um basta: nome do local aparece no texto de origem/destino
+    // da oferta (ex.: "VillageMall" lido na tela da Uber/99); OU o texto é
+    // um endereço escrito em vez do nome do local — geocodifica esse texto
+    // (Nominatim forward, uma vez só, com cache) e compara com a
+    // coordenada do venue, margem de 20m.
+    private val geocodeCache = HashMap<String, Pair<Double, Double>?>()
+
+    private fun forwardGeocode(address: String): Pair<Double, Double>? {
+        if (geocodeCache.containsKey(address)) return geocodeCache[address]
+        val result = try {
+            val q = URLEncoder.encode("$address, Rio de Janeiro, Brasil", "UTF-8")
+            val url = URL("https://nominatim.openstreetmap.org/search?q=$q&format=json&limit=1&countrycodes=br")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.setRequestProperty("User-Agent", "MoB-App/1.0 (contato: yurisilva1990@gmail.com)")
+            conn.connectTimeout = 5000; conn.readTimeout = 5000
+            val body = conn.inputStream.bufferedReader().readText()
+            conn.disconnect()
+            val arr = JSONArray(body)
+            if (arr.length() > 0) {
+                val o = arr.getJSONObject(0)
+                o.getString("lat").toDouble() to o.getString("lon").toDouble()
+            } else null
+        } catch (_: Exception) { null }
+        geocodeCache[address] = result
+        // Respeita rate limit 1 req/s do Nominatim (mesmo padrão usado no
+        // reverseGeocodeFull do GpsService) — só chama de verdade quando não
+        // tinha cache, então não penaliza checagens repetidas do mesmo texto.
+        try { Thread.sleep(1100) } catch (_: Exception) {}
+        return result
+    }
+
+    private fun isTripEndpointAtVenue(venue: Venue): Boolean {
+        val endpoints = AutoTripCapture.currentTripEndpointTexts()
+        if (endpoints.isEmpty()) return false
+        val venueName = venue.name.lowercase(Locale.getDefault())
+        for (addr in endpoints) {
+            val a = addr.lowercase(Locale.getDefault())
+            if (a.contains(venueName) || venueName.contains(a)) return true
+            val geo = forwardGeocode(addr) ?: continue
+            if (haversine(venue.lat, venue.lng, geo.first, geo.second) <= 20.0) return true
+        }
+        return false
     }
 
     private fun findNearestVenue(authToken: String, lat: Double, lng: Double): Venue? {

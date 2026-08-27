@@ -613,4 +613,14 @@ object AutoTripCapture {
             }
         }
     }
+
+    // PEDIDO (27/08/2026, Yuri): Lotação só deve perguntar quando o local é
+    // origem OU destino da corrida em andamento — "só passar em frente não
+    // dá pra dizer se o local tá cheio". Accessor público pra ProactiveAlert
+    // ler o texto de origem/destino de toda corrida ativa agora (cobre
+    // overlap — pode ter mais de uma plataforma com buffer aberto).
+    // Só origem/destino, propositalmente NÃO inclui stopAddresses (paradas
+    // intermediárias) — Yuri pediu especificamente início ou fim.
+    fun currentTripEndpointTexts(): List<String> =
+        buffersByPlat.values.flatMap { listOfNotNull(it.originAddress, it.destAddress) }
 }
