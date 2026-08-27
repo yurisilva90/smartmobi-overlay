@@ -102,6 +102,12 @@ object AutoTripCapture {
     // ponto de partida do registro assim que a corrida é aceita (online→buscar).
     private val lastOfferByPlat = HashMap<String, OfferSnapshot>()
 
+    // Marca ofertas que foram vistas enquanto outra corrida da mesma plataforma
+    // ainda estava em andamento. Essa marca precisa sobreviver ao fim da corrida
+    // anterior: a 99 pode exibir a próxima oferta antes do desembarque e o aceite
+    // efetivo só acontecer mais de 45s depois.
+    private val overlapOfferByPlat = HashSet<String>()
+
     // v1.3.21 — captura automática 100% separada por plataforma.
     // Uber e 99 podem ficar ativos ao mesmo tempo; uma transição da Uber nunca
     // pode apagar ou substituir a corrida em andamento da 99 (e vice-versa).
@@ -214,13 +220,15 @@ object AutoTripCapture {
         // continua usando 45s para não grudar oferta velha em aceite normal.
         val stale = lastOfferByPlat.filter { (plat, snap) ->
             val current = buffersByPlat[plat]
-            val overlapCandidate = current != null && current.tripStartedAt > 0L && current.tripEndedAt == 0L
+            val activeRide = current != null && current.tripStartedAt > 0L && current.tripEndedAt == 0L
+            val overlapCandidate = activeRide || overlapOfferByPlat.contains(plat)
             val maxAge = if (overlapCandidate) OFFER_MAX_AGE_OVERLAP_MS else OFFER_STALE_MS
             now - snap.seenAt > maxAge
         }
         stale.forEach { (plat, snap) ->
             logOfferSeen(ctx, plat, snap)
             lastOfferByPlat.remove(plat)
+            overlapOfferByPlat.remove(plat)
         }
     }
 
@@ -229,6 +237,9 @@ object AutoTripCapture {
     // critério acima; troca de valor = oferta nova, substitui tudo.
     fun onOfferSeen(ctx: Context, plat: String, snap: OfferSnapshot) {
         val existing = lastOfferByPlat[plat]
+        val current = buffersByPlat[plat]
+        val seenDuringActiveRide = current != null && current.tripStartedAt > 0L && current.tripEndedAt == 0L
+        if (seenDuringActiveRide) overlapOfferByPlat.add(plat)
         // CORRIGIDO (16/08/2026, confirmado em log real — 35 corridas do 99
         // com valor errado): antes, QUALQUER diferença de valor entre duas
         // leituras já bastava pra tratar como "oferta nova", descartando
@@ -252,6 +263,9 @@ object AutoTripCapture {
             // aceita (aceite já teria removido do cache antes disso) —
             // a anterior era mesmo recusada/expirada.
             logOfferSeen(ctx, plat, existing!!)
+            // Se a substituta apareceu fora de uma corrida ativa, ela volta a
+            // ser uma oferta normal e não herda a janela longa da anterior.
+            if (!seenDuringActiveRide) overlapOfferByPlat.remove(plat)
         }
         lastOfferByPlat[plat] = if (existing == null || isReallyDifferentOffer) {
             snap
@@ -340,11 +354,13 @@ object AutoTripCapture {
             // gruda em corrida nenhuma; fica sem dado de oferta (igual a
             // hoje quando nenhuma oferta foi vista), nunca com dado errado.
             val cached = lastOfferByPlat[plat]
-            val offer = cached?.takeIf { System.currentTimeMillis() - it.seenAt <= maxAgeMs }
-            // Consome (limpa) o cache nesse ponto, usada ou não — uma vez
-            // que um "buscar" nasceu, essa oferta já cumpriu seu papel (ou
-            // expirou); nunca deve poder grudar numa corrida futura.
+            // Uma oferta vista durante a corrida anterior continua sendo uma
+            // candidata de overlap mesmo depois que a anterior terminou.
+            val effectiveMaxAgeMs = if (overlapOfferByPlat.contains(plat)) OFFER_MAX_AGE_OVERLAP_MS else maxAgeMs
+            val offer = cached?.takeIf { System.currentTimeMillis() - it.seenAt <= effectiveMaxAgeMs }
+            // Consome (limpa) o cache e a marca de overlap juntos.
             lastOfferByPlat.remove(plat)
+            overlapOfferByPlat.remove(plat)
             buffersByPlat[plat] = Buffer(
                 platform = plat,
                 offerValue = offer?.value,
