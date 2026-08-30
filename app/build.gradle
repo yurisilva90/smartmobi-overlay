@@ -11,8 +11,8 @@ android {
         applicationId "io.github.yurisilva90.smartmobi"
         minSdk 24
         targetSdk 34
-        versionCode 242
-        versionName "1.3.30"
+        versionCode 243
+        versionName "1.3.31"
     }
     buildFeatures { buildConfig true }
     buildTypes {
