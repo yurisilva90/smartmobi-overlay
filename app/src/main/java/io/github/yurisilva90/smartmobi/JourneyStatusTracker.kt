@@ -155,7 +155,24 @@ object JourneyStatusTracker {
     fun checkpoint(ctx: Context) {
         restore(ctx)
         if (sessionId.isNullOrBlank() || paused) return
-        val current = segments.lastOrNull { it.endMs == null } ?: return
+        var current = segments.lastOrNull { it.endMs == null }
+        if (current == null) {
+            // Autocorreção (30/08/2026, achado investigando buraco de 77min
+            // relatado pelo Yuri: overlay mostrando status certo, mas
+            // journey_status_segments com um trecho aberto abandonado e
+            // nada registrado por mais de uma hora). Durante jornada ativa
+            // sempre deveria existir um trecho aberto — não conseguimos
+            // confirmar com certeza a causa exata sem log ao vivo do
+            // aparelho no momento em que aconteceu, mas em vez de ficar em
+            // silêncio esperando a próxima transição real (que pode demorar
+            // muito, como aconteceu), reabre um trecho Online na hora. Pior
+            // caso a partir de agora: alguns segundos sem registro, nunca
+            // mais um buraco de 77 minutos.
+            android.util.Log.w("JourneyStatusTracker", "checkpoint sem trecho aberto (sessionId=$sessionId) — reabrindo Online")
+            current = startSegment("online", null, System.currentTimeMillis(), GpsService.totalKm, GpsService.lastLat, GpsService.lastLng)
+            persistLocal(ctx)
+            syncSegment(ctx, current)
+        }
         val now = System.currentTimeMillis()
         if (now - lastLocalCheckpoint < LOCAL_CHECKPOINT_MS) return
         val lat = GpsService.lastLat.takeIf { it != 0.0 }
