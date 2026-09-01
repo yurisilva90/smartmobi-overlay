@@ -44,9 +44,21 @@ object AutoTripCapture {
     )
 
     // Janela curta — aceite normal: oferta→aceite→buscar é questão de
-    // segundos. 30s já dá folga generosa pra qualquer atraso de leitura
-    // sem deixar uma oferta de minutos atrás grudar por engano.
-    private const val OFFER_MAX_AGE_NORMAL_MS = 30 * 1000L
+    // segundos.
+    // CORRIGIDO (01/09/2026, dado real confirmado: 11 corridas Uber
+    // automáticas dos últimos 10 dias sem offer_value, cruzadas com
+    // trip_reader_log — a última OFERTA_DETECTADA bem-sucedida antes do
+    // aceite variava de 72s a 547s de distância em 6 dos 11 casos, todos
+    // fora da janela antiga de 30s). Como o cache é sempre SUBSTITUÍDO pela
+    // oferta mais recente vista (nunca acumula oferta antiga junto de uma
+    // nova), alargar essa janela não tem o risco óbvio de grudar valor
+    // errado — só de tempo total que uma oferta lida continua "válida" até
+    // o aceite acontecer. Resolve boa parte dos casos observados; parte
+    // ainda fica sem valor porque a oferta simplesmente nunca é lida com
+    // sucesso em momento nenhum perto do aceite — isso é um problema de
+    // DETECÇÃO da tela de oferta da Uber, não de janela de cache, e
+    // precisa de investigação própria (fora do escopo desta correção).
+    private const val OFFER_MAX_AGE_NORMAL_MS = 3 * 60 * 1000L
 
     // Janela longa — só pro caso de sobreposição (aceitar a próxima corrida
     // ainda dentro da atual): aqui o intervalo real entre ver a oferta nova
@@ -101,6 +113,21 @@ object AutoTripCapture {
     // Última oferta válida vista por plataforma, ANTES do aceite — vira o
     // ponto de partida do registro assim que a corrida é aceita (online→buscar).
     private val lastOfferByPlat = HashMap<String, OfferSnapshot>()
+
+    // CORRIGIDO (01/09/2026, dado real confirmado no trip_reader_log da
+    // Uber, 30/08/2026): o MESMO card de oferta (km/nota/corridas idênticos,
+    // endereço idêntico) pode ser lido com valores DIFERENTES em leituras
+    // consecutivas de menos de 1s (ex: R$17,25 depois R$19,75; ou R$27,53
+    // duas vezes seguidas e depois R$19,75) — o valor R$19,75 se repetiu
+    // colado em 3 ofertas totalmente diferentes ao longo de 1 minuto,
+    // sinal forte de que é algum elemento fixo da tela (ganhos do dia?)
+    // vazando pro parser em algumas passagens. Como onOfferSeen tratava
+    // "mesmo endereço = mesma oferta, releitura" e simplesmente aceitava
+    // o valor mais recente sempre que não-nulo, um valor ruim isolado
+    // sobrescrevia um valor bom sem nenhuma confirmação. pendingOfferValueByPlat
+    // guarda (valor candidato, quantas vezes seguidas apareceu) — só promove
+    // pra lastOfferByPlat quando o MESMO valor novo aparece 2x seguidas.
+    private val pendingOfferValueByPlat = HashMap<String, Double>()
 
     // Marca ofertas que foram vistas enquanto outra corrida da mesma plataforma
     // ainda estava em andamento. Essa marca precisa sobreviver ao fim da corrida
@@ -159,7 +186,13 @@ object AutoTripCapture {
     // Janela de "esperar mais um pouco" antes de considerar uma oferta
     // parada há tempo como recusada/expirada — evita logar cedo demais uma
     // oferta que ainda está sendo decidida.
-    private const val OFFER_STALE_MS = 45 * 1000L
+    // CORRIGIDO (01/09/2026): precisa ser IGUAL ou maior que
+    // OFFER_MAX_AGE_NORMAL_MS — esse flush roda periodicamente e APAGA a
+    // oferta do cache; se ficasse menor (era 45s vs os 3min novos de
+    // OFFER_MAX_AGE_NORMAL_MS), o cache seria limpo bem antes do aceite
+    // conseguir usar a janela mais longa, anulando aquela correção na
+    // prática.
+    private const val OFFER_STALE_MS = OFFER_MAX_AGE_NORMAL_MS
 
     // Grava UMA oferta recusada/expirada (pedido do Yuri, 24/07/2026) — só
     // chamada quando temos certeza de que ela NÃO virou corrida: ou foi
@@ -229,6 +262,7 @@ object AutoTripCapture {
             logOfferSeen(ctx, plat, snap)
             lastOfferByPlat.remove(plat)
             overlapOfferByPlat.remove(plat)
+            pendingOfferValueByPlat.remove(plat)
         }
     }
 
@@ -266,12 +300,32 @@ object AutoTripCapture {
             // Se a substituta apareceu fora de uma corrida ativa, ela volta a
             // ser uma oferta normal e não herda a janela longa da anterior.
             if (!seenDuringActiveRide) overlapOfferByPlat.remove(plat)
+            pendingOfferValueByPlat.remove(plat)
         }
         lastOfferByPlat[plat] = if (existing == null || isReallyDifferentOffer) {
+            pendingOfferValueByPlat.remove(plat)
             snap
         } else {
+            // CORRIGIDO (01/09/2026, dado real confirmado — ver comentário
+            // em pendingOfferValueByPlat acima): valor da MESMA oferta
+            // (endereço igual) só troca depois de aparecer 2 vezes SEGUIDAS
+            // com o valor novo — uma leitura isolada divergente não basta.
+            // Continua usando o valor antigo (bom) enquanto aguarda essa
+            // confirmação, em vez de trocar às cegas pro valor mais recente.
+            val mergedValue: Double? = when {
+                snap.value == null -> existing.value
+                snap.value == existing.value -> { pendingOfferValueByPlat.remove(plat); snap.value }
+                pendingOfferValueByPlat[plat] == snap.value -> {
+                    pendingOfferValueByPlat.remove(plat)
+                    snap.value
+                }
+                else -> {
+                    pendingOfferValueByPlat[plat] = snap.value
+                    existing.value
+                }
+            }
             OfferSnapshot(
-                value = snap.value ?: existing.value,
+                value = mergedValue,
                 dinamico = if (snap.dinamico > 0) snap.dinamico else existing.dinamico,
                 multiplicador = snap.multiplicador ?: existing.multiplicador,
                 kmPickup = snap.kmPickup ?: existing.kmPickup,
@@ -308,16 +362,19 @@ object AutoTripCapture {
         // deixa a rua da origem ficar igual à rua do destino já registrado
         // (e vice-versa) — corrida de verdade nunca embarca e desembarca
         // na mesma rua.
-        val destStreet = normalizedStreet(b.destAddress)
-        val originStreet = normalizedStreet(b.originAddress)
+        // CORRIGIDO (01/09/2026): comparação trocada de "igualdade exata
+        // dos 12 primeiros caracteres" pra streetsLikelySame (Levenshtein) —
+        // ver comentário completo na função. Endereço "antes" continua
+        // calculado uma única vez no início da chamada, mesmo comportamento
+        // de antes.
+        val destBefore = b.destAddress
+        val originBefore = b.originAddress
         if (origin != null) {
-            val newStreet = normalizedStreet(origin)
-            val matchesDest = newStreet != null && destStreet != null && newStreet == destStreet
+            val matchesDest = streetsLikelySame(origin, destBefore)
             if (!matchesDest) b.originAddress = betterAddress(b.originAddress, origin)
         }
         if (dest != null) {
-            val newStreet = normalizedStreet(dest)
-            val matchesOrigin = newStreet != null && originStreet != null && newStreet == originStreet
+            val matchesOrigin = streetsLikelySame(dest, originBefore)
             if (!matchesOrigin) b.destAddress = betterAddress(b.destAddress, dest)
         }
     }
@@ -361,6 +418,7 @@ object AutoTripCapture {
             // Consome (limpa) o cache e a marca de overlap juntos.
             lastOfferByPlat.remove(plat)
             overlapOfferByPlat.remove(plat)
+            pendingOfferValueByPlat.remove(plat)
             buffersByPlat[plat] = Buffer(
                 platform = plat,
                 offerValue = offer?.value,
@@ -464,6 +522,52 @@ object AutoTripCapture {
         // Menos de 4 caracteres não é confiável pra comparar (ruído de OCR
         // vira falso match) — nesse caso, resultado é "não deu pra comparar".
         return stripped.take(12).takeIf { it.length >= 4 }
+    }
+
+    // CORRIGIDO (01/09/2026, dado real confirmado: "Rua Profa. Carmem
+    // Gomes, 610" registrada como origem E "Rua Profa. Carmnem Gomes, 61"
+    // como destino da MESMA corrida — o "n" extra que o OCR meteu em
+    // "Carmnem" desloca todos os caracteres seguintes, então até os 12
+    // primeiros caracteres que normalizedStreet compara já divergem, e a
+    // trava original (igualdade exata de prefixo) não detecta que é a
+    // mesma rua). normalizedStreetFull não trunca tão cedo (até 40 chars),
+    // e streetsLikelySame usa distância de Levenshtein normalizada — mede
+    // similaridade em vez de igualdade exata, tolerando esse tipo de ruído
+    // pontual sem abrir mão de pegar rua realmente diferente (limiar 80%).
+    // Usada só na trava origem≠destino (updateAddresses) — não mexe em
+    // normalizedStreet, usado em onOfferSeen/addressesLikelyMatch.
+    private fun normalizedStreetFull(addr: String?): String? {
+        if (addr.isNullOrBlank()) return null
+        val firstSegment = addr.split(",", " - ").firstOrNull()?.trim() ?: return null
+        val noAccent = java.text.Normalizer.normalize(firstSegment, java.text.Normalizer.Form.NFD)
+            .replace(Regex("\\p{M}"), "")
+        val stripped = noAccent.replace(streetPrefixRe, "").trim().lowercase(Locale.getDefault())
+        return stripped.take(40).takeIf { it.length >= 4 }
+    }
+
+    private fun levenshtein(a: String, b: String): Int {
+        if (a == b) return 0
+        if (a.isEmpty()) return b.length
+        if (b.isEmpty()) return a.length
+        val dp = Array(a.length + 1) { IntArray(b.length + 1) }
+        for (i in 0..a.length) dp[i][0] = i
+        for (j in 0..b.length) dp[0][j] = j
+        for (i in 1..a.length) {
+            for (j in 1..b.length) {
+                val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+                dp[i][j] = minOf(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost)
+            }
+        }
+        return dp[a.length][b.length]
+    }
+
+    private fun streetsLikelySame(a: String?, b: String?): Boolean {
+        val sa = normalizedStreetFull(a) ?: return false
+        val sb = normalizedStreetFull(b) ?: return false
+        val maxLen = maxOf(sa.length, sb.length)
+        if (maxLen == 0) return false
+        val similarity = 1.0 - levenshtein(sa, sb).toDouble() / maxLen
+        return similarity >= 0.80
     }
 
     // Retorna null quando não dá pra comparar (endereço faltando de um dos

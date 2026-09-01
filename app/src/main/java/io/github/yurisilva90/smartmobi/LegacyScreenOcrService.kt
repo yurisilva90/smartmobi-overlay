@@ -49,6 +49,14 @@ class LegacyScreenOcrService : Service() {
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
     @Volatile private var busy = false
     @Volatile private var busySinceMs = 0L
+    // CORRIGIDO (01/09/2026, dado real: em 5 dias de log, 545 OCR_ERRO:
+    // ocupado + 134 OCR_ERRO: sem frame disponivel — quase metade das
+    // tentativas de leitura de oferta da 99 falhando por concorrência
+    // nesse pipeline). Porta pra cá o MESMO mecanismo de fila que já existe
+    // e funciona em ScreenOcrService (caminho Android 11+/takeScreenshot):
+    // no máximo 1 retry pendente por vez, tenta de novo em 180ms em vez de
+    // descartar a leitura na hora.
+    @Volatile private var retryQueued = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -150,7 +158,13 @@ class LegacyScreenOcrService : Service() {
             if (System.currentTimeMillis() - busySinceMs > 1500) {
                 busy = false
             } else {
-                onError?.invoke("ocupado")
+                if (!retryQueued) {
+                    retryQueued = true
+                    main.postDelayed({
+                        retryQueued = false
+                        captureAndRecognize(onResult, onError)
+                    }, 180L)
+                }
                 return
             }
         }
@@ -168,7 +182,15 @@ class LegacyScreenOcrService : Service() {
                 val img = reader.acquireLatestImage()
                 if (img == null) {
                     busy = false
-                    onError?.invoke("sem frame disponivel")
+                    if (!retryQueued) {
+                        retryQueued = true
+                        main.postDelayed({
+                            retryQueued = false
+                            captureAndRecognize(onResult, onError)
+                        }, 180L)
+                    } else {
+                        onError?.invoke("sem frame disponivel")
+                    }
                     return@post
                 }
                 val plane = img.planes[0]

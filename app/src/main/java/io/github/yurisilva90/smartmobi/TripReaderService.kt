@@ -1165,6 +1165,13 @@ class TripReaderService : AccessibilityService() {
         // limitada ao bloco da oferta para não capturar chat/navegação do fundo.
         fun cleanAddress(raw: String): String = raw
             .replace(Regex("""^[•·]\s*"""), "")
+            // CORRIGIDO (01/09/2026, dado real confirmado: "Perto de Lagoinha
+            // Teresópolis", "Perto de R. Dr. Jose Mendonc" gravados como
+            // origin_address) — a Uber prefixa o nome do local/rua com
+            // "Perto de " quando não tem o endereço exato; isso entrava cru
+            // no banco e quebrava qualquer comparação com o endereço do GPS
+            // ou geocodificação posterior.
+            .replace(Regex("""(?i)^perto de\s+"""), "")
             .trim()
 
         fun looksLikeAddress(raw: String): Boolean {
