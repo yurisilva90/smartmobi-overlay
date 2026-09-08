@@ -880,6 +880,10 @@ class TripReaderService : AccessibilityService() {
         val now = System.currentTimeMillis()
         if (now - lastOcrMs < 600) return
         lastOcrMs = now
+        // Autoridade de status capturada AQUI, na thread principal: o callback
+        // do ML Kit nao tem garantia de thread e ler `windows` fora da main
+        // pode falhar silenciosamente. Ver checkNn99OcrStatusBridge.
+        val statusAuthority = activeDriverPlatformForStatus()
         ScreenOcrService.captureAndRecognize({ lines, bmp ->
             if (lines.isEmpty()) {
                 bmp?.recycle()
@@ -914,7 +918,7 @@ class TripReaderService : AccessibilityService() {
             // Ponte OCR -> status (só 99): ver checkNn99OcrStatusBridge() pra
             // explicação completa. Roda em toda passada, independente de ser
             // tela de oferta ou não.
-            checkNn99OcrStatusBridge(plat, joined)
+            checkNn99OcrStatusBridge(plat, joined, statusAuthority)
             // Modo diagnóstico: loga TODA passada de OCR, achando oferta ou
             // não — é a única forma de descobrir o padrão real da tela sem
             // continuar chutando. Throttle 1.5s pra não inundar o Supabase.
@@ -1988,7 +1992,25 @@ class TripReaderService : AccessibilityService() {
     private val nn99AvaliacaoOcrRe = Regex(
         """Como foi sua corrida|Avaliar como anônimo""", RegexOption.IGNORE_CASE
     )
-    private val nn99BuscandoOcrRe = Regex("""Buscando""", RegexOption.IGNORE_CASE)
+    // AJUSTE (08/09/2026): limite de palavra. Este e o unico gatilho que
+    // REBAIXA corrida -> online, e estava casando "Buscando" como substring
+    // em qualquer lugar da tela. O limite nao inventa frase nenhuma (nao ha
+    // texto real da tela online da 99 no trip_reader_log pra validar uma
+    // frase maior — as linhas de OCR nao sao persistidas), so elimina casamento
+    // dentro de palavra maior. A frase completa fica pra quando o log abaixo
+    // capturar o texto real.
+    private val nn99BuscandoOcrRe = Regex("""\bBuscando\b""", RegexOption.IGNORE_CASE)
+    // Assinaturas de tela do PROPRIO MoB (08/09/2026). O OCR e baseado em
+    // pixel: com o app aberto na frente, ele le a nossa tela e nao tem como
+    // saber que nao e a 99. looksLikeOwnWidgetLeak() so cobre o vazamento do
+    // widget flutuante (ate 4 linhas) — nao serve pra uma tela inteira.
+    // Frases escolhidas por serem exclusivas do MoB e ausentes da 99. Note
+    // que "BUSCANDO PASSAGEIRO" (rotulo da barra de status da Jornada)
+    // contem "Buscando" e por isso derrubava corrida->online sozinho.
+    private val mobOwnScreenRe = Regex(
+        """Total do dia|Km ativo|Corridas desta jornada|Jornada atual|BUSCANDO PASSAGEIRO|N[AÃ]O RASTREADO|aguardando confirma[cç][aã]o""",
+        RegexOption.IGNORE_CASE
+    )
     // CONFIRMADO EM LOG REAL (25/07/2026, relatado pelo Yuri): quando o
     // motorista desconecta da 99 logo depois de terminar uma corrida, a
     // tela nunca volta pro "Buscando" (só aparece pra quem tá online
@@ -2046,8 +2068,41 @@ class TripReaderService : AccessibilityService() {
     // acerto por puro ruído de OCR.
     private val nn99ChegueAntesOcrRe = Regex("""Che[gq]ue\s*antes\s*de\s*\d{1,2}:\d{2}""", RegexOption.IGNORE_CASE)
 
-    private fun checkNn99OcrStatusBridge(plat: String, joinedOcrText: String) {
+    private fun checkNn99OcrStatusBridge(plat: String, joinedOcrText: String, statusAuthority: String?) {
         if (plat != "99") return
+
+        // BUG CONFIRMADO EM DADO REAL (08/09/2026 — corrida 99 de R$ 17,70,
+        // 08:07:31 -> 08:15:32): o motorista abriu a tela da Jornada do MoB no
+        // meio da corrida. O caminho de ACESSIBILIDADE congelou certo (guarda
+        // v1.3.28, activeDriverPlatformForStatus() = null com o MoB na frente),
+        // mas esta ponte de OCR nao tinha guarda nenhuma e continuou votando
+        // como se fosse a 99, lendo a NOSSA propria tela. No trip_reader_log,
+        // entre 08:10:44 (FGPLAT_NULO) e 08:11:53 as leituras traziam
+        // R$ 47,46 -> R$ 47,04 caindo junto de R$ 2,36 -> R$ 2,33 e km=24:
+        // Total do dia e R$/km do card da Jornada, nao a 99. As 08:11:18 o
+        // estado caiu corrida -> online e o AutoTripCapture encerrou a corrida
+        // com 1,46 km dos 3,3 km ofertados; as 08:11:57 voltou pra corrida
+        // sozinho quando a 99 voltou pra frente, deixando 3m35s de corrida sem
+        // nenhuma corrida associada.
+        //
+        // Duas travas, nessa ordem:
+        // 1) MESMA AUTORIDADE do caminho de acessibilidade: status da 99 so
+        //    muda com a 99 dona de janela APPLICATION ativa ou focada. Abrir
+        //    MoB, Waze, launcher ou qualquer outro app agora PRESERVA o ultimo
+        //    estado confirmado, em vez de derrubar pra online.
+        // 2) REDE DE SEGURANCA independente de API de janela: qualquer quadro
+        //    com assinatura de tela nossa e descartado pro status. Cobre o caso
+        //    de a autoridade vir errada/nula por qualquer motivo.
+        //
+        // Deteccao de OFERTA nao passa por aqui — processRealOffer() continua
+        // rodando em todo quadro, porque o card da 99 flutua sobre qualquer app
+        // e precisa ser lido mesmo com outro app na frente.
+        //
+        // O contador de navegacao e zerado nos dois casos: nunca acumula
+        // atraves de um buraco de leitura (mesmo principio ja adotado na regra
+        // nav_sem_chegue mais abaixo).
+        if (statusAuthority != "99") { nn99NavSemChegueCount = 0; return }
+        if (mobOwnScreenRe.containsMatchIn(joinedOcrText)) { nn99NavSemChegueCount = 0; return }
 
         // AJUSTE (16/07/2026, a pedido): enquanto o status confirmado for
         // "buscar", fica de olho no "Buscando" o tempo todo, sem precisar de
@@ -2064,6 +2119,17 @@ class TripReaderService : AccessibilityService() {
         // buscar E corrida pra Online — protegido pelo mesmo debounce de
         // maioria de 5 contra leitura solta errada.
         if (tripStateFor("99") != "online" && nn99BuscandoOcrRe.containsMatchIn(joinedOcrText)) {
+            // Rebaixar corrida -> online e a transicao mais cara que existe
+            // (encerra a corrida no AutoTripCapture). Grava o trecho exato que
+            // disparou, pra finalmente validar a frase real da tela online da
+            // 99 contra dado, em vez de chutar um padrao maior.
+            if (tripStateFor("99") == "corrida") {
+                val m = nn99BuscandoOcrRe.find(joinedOcrText)
+                val ini = (m?.range?.first ?: 0).minus(60).coerceAtLeast(0)
+                val fim = (m?.range?.last ?: 0).plus(60).coerceAtMost(joinedOcrText.length)
+                sendToCloud("99", "ocr", "OCR_REBAIXAMENTO", "CORRIDA_PARA_ONLINE_BUSCANDO",
+                    emptyList(), null, null, listOf(joinedOcrText.substring(ini, fim)))
+            }
             nn99ReachedPickup = false
             nn99ReachedPickupReason = "ocr:buscando"
             nn99KnownDestAddr = null
