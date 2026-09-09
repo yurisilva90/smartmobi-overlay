@@ -2525,7 +2525,8 @@ class TripReaderService : AccessibilityService() {
     private var lastUberTreeDiagMs = 0L
     private fun sendUberFullAccessibilityDiagnostics(texts: List<String>) {
         val now = System.currentTimeMillis()
-        if (now - lastUberTreeDiagMs < 1800L) return
+        // era 1800L — reduzido 09/09/2026, ver comentário em sendToCloud()
+        if (now - lastUberTreeDiagMs < 60000L) return
         lastUberTreeDiagMs = now
         val trees = JSONArray(); val windowsJson = JSONArray()
         try {
@@ -2569,7 +2570,8 @@ class TripReaderService : AccessibilityService() {
     private var last99TreeDiagMs = 0L
     private fun send99FullAccessibilityDiagnostics(texts: List<String>) {
         val now = System.currentTimeMillis()
-        if (now - last99TreeDiagMs < 1800L) return
+        // era 1800L — reduzido 09/09/2026, ver comentário em sendToCloud()
+        if (now - last99TreeDiagMs < 60000L) return
         last99TreeDiagMs = now
         val trees = JSONArray(); val windowsJson = JSONArray()
         try {
@@ -2818,11 +2820,24 @@ class TripReaderService : AccessibilityService() {
         try { nm.notify(4103, builder.build()) } catch (_: Exception) {}
     }
 
+    // TRAVA DE EMERGÊNCIA (09/09/2026): banco quase estourou os 500MB do
+    // free tier em UM DIA (414MB gravados só em trip_reader_log entre 09:00
+    // e 20:35, 39.240 tentativas de escrita, ~1/seg sustentado durante as
+    // jornadas). Sem esta trava, qualquer chamada nova a sendToCloud() no
+    // futuro volta a inundar o banco. É diagnóstico puro — a detecção de
+    // corrida roda inteira no dispositivo e não depende disso (ver
+    // trip_reader_log é diagnóstico only nos aprendizados do projeto) — então
+    // dropar linhas aqui não afeta a jornada, só reduz o quanto sobra pra
+    // investigar depois. 1 a cada 3s é generoso pra diagnóstico.
+    private var lastCloudLogMs = 0L
     private fun sendToCloud(
         plat: String, pkg: String, screenClass: String,
         state: String, money: List<String>, km: String?, min: String?,
         texts: List<String>
     ) {
+        val nowGuard = System.currentTimeMillis()
+        if (nowGuard - lastCloudLogMs < 3000L) return
+        lastCloudLogMs = nowGuard
         thread(isDaemon = true) {
             try {
                 val prefs = getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
