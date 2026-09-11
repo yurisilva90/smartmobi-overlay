@@ -143,6 +143,18 @@ class DriverNotificationListenerService : NotificationListenerService() {
             TripReaderService.onOfficialNotification(platform, parts, true)
         }
 
+        // CORRIGIDO (11/09/2026, pedido do Yuri): antes gravava TODA notificação
+        // oficial em driver_notification_events, inclusive ruído puro sem
+        // nenhum sinal extraído — ex.: "conectado"/"desconectado"/"conectando"
+        // da 99, que sozinhos eram ~80% do volume da 99 em 17 dias de log real.
+        // Tabela é só diagnóstico (não alimenta nenhuma feature — os dois
+        // TripReaderService.onOfficial* acima já rodaram antes deste ponto),
+        // então só vale gravar quando sobra algo pra investigar depois.
+        val hasSignal = offerHint || money.isNotEmpty() || kms.isNotEmpty() || mins.isNotEmpty() ||
+            keywords.isNotEmpty() || actionLabels.isNotEmpty() ||
+            routeInfo.origin != null || routeInfo.dest != null || routeInfo.stops.isNotEmpty()
+        if (!hasSignal) return
+
         persistStructured(
             sbn, n, platform, eventType,
             title.isNotBlank(), text.isNotBlank(), big.isNotBlank(), joined.length,
