@@ -75,10 +75,14 @@ class FloatingWidget(private val context: Context) {
         lastTripSubStatus = subStatus
         handler.post {
             if (!GpsService.isRunning || GpsService.isPaused) return@post
+            // CORRIGIDO (11/09/2026, pedido do Yuri): azul do Corrida tinha
+            // pouco contraste no overlay. Verde (que era do Online) passou
+            // pro Corrida; Online virou amarelo — mesmo trio que Buscar já
+            // usava (laranja), só reorganizado.
             val (label, colorHex) = when (subStatus) {
                 "buscar"  -> "Buscar" to "#F97316"
-                "corrida" -> "Corrida" to "#3B82F6"
-                else      -> "Online" to "#22C55E"
+                "corrida" -> "Corrida" to "#22C55E"
+                else      -> "Online" to "#FACC15"
             }
             val c = Color.parseColor(colorHex)
             container?.findViewWithTag<TextView>("status_tv")?.apply { text = label; setTextColor(c) }
@@ -104,18 +108,14 @@ class FloatingWidget(private val context: Context) {
         if (status == "running" && (lastTripSubStatus == "buscar" || lastTripSubStatus == "corrida")) return
         if (status == "stopped") lastTripSubStatus = null
         handler.post {
-            val color = when(status) {
-                "running" -> "#22C55E"
-                "paused"  -> "#94A3B8"
-                "stopped" -> "#EF4444"
-                else      -> "#22C55E"
-            }
-            val label = when(status) {
-                "running" -> "Online"
-                "paused"  -> "Pausado"
-                "stopped" -> "Offline"
-                else      -> "Online"
-            }
+            // CORRIGIDO (11/09/2026, pedido do Yuri): "Pausado" (cinza) e
+            // "Offline" (vermelho) nunca apareciam na prática — pausar foi
+            // removido da UI (gpsPause() é no-op no JS) e encerrar sempre
+            // chama hide() antes de qualquer status renderizar (stopFloating
+            // no MainActivity). Só sobra "running" (Online); qualquer outro
+            // valor cai no mesmo tratamento — menos estado morto pra manter.
+            val color = "#FACC15"
+            val label = "Online"
             val c = Color.parseColor(color)
             container?.findViewWithTag<TextView>("status_tv")?.apply { text = label; setTextColor(c) }
             container?.findViewWithTag<FrameLayout>("status_dot")?.apply {
@@ -177,7 +177,7 @@ class FloatingWidget(private val context: Context) {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = dp(20).toFloat()
                 setColor(Color.parseColor("#0F172A"))
-                setStroke(dp(2), Color.parseColor("#22C55E"))
+                setStroke(dp(2), Color.parseColor("#FACC15"))
             }
             setPadding(dp(12), dp(10), dp(12), dp(10))
             elevation = dp(8).toFloat()
@@ -188,13 +188,13 @@ class FloatingWidget(private val context: Context) {
         }
         val statusDot = FrameLayout(context).apply {
             layoutParams = LinearLayout.LayoutParams(dp(7), dp(7)).apply { rightMargin = dp(5) }
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.parseColor("#22C55E")) }
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.parseColor("#FACC15")) }
             tag = "status_dot"
         }
         header.addView(statusDot)
         val statusTv = TextView(context).apply {
             text = "Online"; textSize = 10f
-            setTextColor(Color.parseColor("#22C55E"))
+            setTextColor(Color.parseColor("#FACC15"))
             setTypeface(null, Typeface.BOLD); tag = "status_tv"
         }
         header.addView(statusTv)
@@ -208,7 +208,7 @@ class FloatingWidget(private val context: Context) {
 
         tvKm = TextView(context).apply {
             text = "0.0 km"; textSize = 13f
-            setTextColor(Color.parseColor("#22C55E")); setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#FACC15")); setTypeface(null, Typeface.BOLD)
         }
         card.addView(tvKm)
 
