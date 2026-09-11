@@ -1390,6 +1390,20 @@ class TripReaderService : AccessibilityService() {
         else -> 2
     }
 
+    // CORRIGIDO (11/09/2026, pedido do Yuri): a 99 não expõe dinâmico em R$
+    // nominal como a Uber — ela mostra multiplicador (1,5x, 2,5x etc). Usar
+    // dinamicoTier(offer.dinamico) pra 99 fazia o gatilho quase nunca disparar
+    // de verdade (é por isso que a 99 parou de postar desde 28/08 — o valor
+    // em R$ que o regex de dinâmico procura raramente aparece na tela da 99).
+    // Faixas arbitradas por mim, sem confirmação do Yuri ainda — ajustar se
+    // não bater com o que ele espera: abaixo de 1,2x não alerta (chão comum
+    // demais pra virar notícia), 1,2x–1,7x moderado, 1,8x+ alto.
+    private fun multiplicadorTier(v: Double): Int = when {
+        v < 1.2 -> 0
+        v < 1.8 -> 1
+        else -> 2
+    }
+
     // Label do post — mesma notação exibida nos botões de reporte manual
     // (GpsService.escolherCenario), não a palavra da faixa ("moderado" etc).
     private fun dinamicoRangeLabel(tier: Int): String = when (tier) {
@@ -1417,18 +1431,24 @@ class TripReaderService : AccessibilityService() {
                 val lng = GpsService.lastLng
                 val address = if (lat != 0.0 || lng != 0.0) GpsService.reverseGeocodeFull(lat, lng) else null
 
-                val rangeLabel = dinamicoRangeLabel(dinamicoTier(dinamico))
                 val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
                     .apply { timeZone = TimeZone.getTimeZone("UTC") }
 
-                // PEDIDO (19/08/2026, Yuri): card do painel Agora do Informes
-                // precisa identificar Uber x 99 separadamente. Reaproveita
-                // param_value (plataforma: "uber"/"99") e param_detail
-                // (multiplicador da 99, ex "1,3x" — Uber não expõe esse
-                // número, só o valor em R$) em vez de criar coluna nova.
+                // CORRIGIDO (11/09/2026, pedido do Yuri): "quando for Uber,
+                // informa valor nominal; quando for 99, informa sempre o
+                // multiplicador" — são métricas diferentes por plataforma,
+                // não dá pra usar dinamicoTier(dinamico) pra ambas (99 quase
+                // não expõe R$ nominal, só o Xx).
                 val platLower = plat.lowercase(Locale.US)
-                val multLabel = if (platLower == "99" && multiplicador != null && multiplicador > 0)
+                val isNoventaNove = platLower == "99"
+                val multLabel = if (isNoventaNove && multiplicador != null && multiplicador > 0)
                     String.format(Locale.US, "%.1fx", multiplicador).replace('.', ',') else null
+                // Uber: mesmo range de sempre (+R$5 / +R$10+), agora também
+                // salvo em param_detail (antes ficava null — é o que o badge
+                // do Informes precisa pra mostrar a Uber, não só a 99).
+                val rangeLabel = if (isNoventaNove) (multLabel ?: "ativo")
+                    else dinamicoRangeLabel(dinamicoTier(dinamico))
+                val detailValue = if (isNoventaNove) multLabel else rangeLabel
 
                 val body = JSONObject().apply {
                     put("user_id", userId)
@@ -1436,7 +1456,7 @@ class TripReaderService : AccessibilityService() {
                     put("body", "Dinâmico " + rangeLabel)
                     put("source", "system")
                     put("param_value", platLower)
-                    put("param_detail", multLabel ?: JSONObject.NULL)
+                    put("param_detail", detailValue ?: JSONObject.NULL)
                     if (lat != 0.0 || lng != 0.0) { put("lat", lat); put("lng", lng) }
                     put("address", address ?: JSONObject.NULL)
                     put("expires_at", sdf.format(Date(System.currentTimeMillis() + 30 * 60000L)))
@@ -1630,7 +1650,8 @@ class TripReaderService : AccessibilityService() {
         // e voltando entre R$4 e R$6 (mesma faixa "moderado") não dispara
         // post repetido, mas ir de R$5 pra R$12 (mudou de faixa) dispara, e
         // se ele já saiu da região, o mesmo valor de novo ainda é notícia.
-        val tier = dinamicoTier(offer.dinamico)
+        val tier = if (plat.lowercase(Locale.US) == "99") multiplicadorTier(offer.multiplicador ?: 0.0)
+            else dinamicoTier(offer.dinamico)
         if (tier > 0) {
             val lastTier = lastDinamicoTierByPlat[plat]
             val lastPos = lastDinamicoAlertLatLngByPlat[plat]
