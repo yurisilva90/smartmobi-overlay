@@ -2839,7 +2839,13 @@ class TripReaderService : AccessibilityService() {
             .setAutoCancel(false)
             .setOngoing(false)
 
-        val expandedText = listOfNotNull(linha2.takeIf { it.isNotBlank() }, origemLinha, destinoLinha).joinToString("\n")
+        val expandedText = listOfNotNull(linha2.takeIf { it.isNotBlank() }, origemLinha, destinoLinha)
+            // CORRIGIDO (11/09/2026, pedido do Yuri): "\n" comum some na área
+            // de legenda do BigPictureStyle — o Android achata tudo numa
+            // linha só ali, mesmo com quebra no meio da string. "\u2028"
+            // (separador de linha Unicode) é respeitado por esse campo
+            // específico, diferente do "\n" normal.
+            .joinToString("\u2028")
         if (flashPicture != null) {
             builder.setStyle(Notification.BigPictureStyle()
                 .bigPicture(flashPicture)
