@@ -714,7 +714,19 @@ class TripReaderService : AccessibilityService() {
             else -> realTexts
         }
         if (eventOfferPlat != null && eventOfferTexts.isNotEmpty()) {
-            if (eventOfferPlat == "99") send99FullAccessibilityDiagnostics(eventOfferTexts)
+            if (eventOfferPlat == "99") {
+                // CORRIGIDO (11/09/2026, pedido do Yuri): antes disparava em
+                // QUALQUER tela da 99 (menu, navegação com mapa, etc.), não só
+                // oferta — eventOfferPlat cai pra realPlat (qualquer janela
+                // ativa) quando não há tela de oferta reconhecida. O ramo UBER
+                // logo abaixo já filtra certo com isOfferScreen(); aplica o
+                // mesmo filtro aqui. Reduz o volume de trip_reader_log (tabela
+                // só de diagnóstico — já quase estourou o limite do banco em
+                // 09/09/2026) sem tirar nada de dado de produto.
+                val nnRawJoined = eventOfferTexts.joinToString("  ")
+                val nnRawLow = nnRawJoined.lowercase(Locale.getDefault())
+                if (isOfferScreen(nnRawLow)) send99FullAccessibilityDiagnostics(eventOfferTexts)
+            }
             if (eventOfferPlat == "UBER") {
                 val uberRawJoined = eventOfferTexts.joinToString("  ")
                 val uberRawLow = uberRawJoined.lowercase(Locale.getDefault())
