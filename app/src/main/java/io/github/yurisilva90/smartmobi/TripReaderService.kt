@@ -673,24 +673,30 @@ class TripReaderService : AccessibilityService() {
     }
 
     // 99: OCR é mais ruidoso e a ordem de leitura não segue um bloco fixo
-    // por corrida — âncora em cada linha "data hora" (só isso é confiável)
-    // e busca o valor/pagamento/veículo mais próximos dela na lista.
+    // por corrida. CORRIGIDO (11/09/2026, pedido do Yuri): a janela de ±6
+    // linhas ao redor de cada data/hora deixava o valor de uma corrida
+    // vazar pra outra vizinha na lista (confirmado com dado real — duas
+    // datas/horas diferentes pegando o mesmo valor). Agora cada corrida só
+    // pode usar dado entre a PRÓPRIA data/hora e a próxima (bloco fechado),
+    // nunca atravessando pra outra corrida.
     private fun parseNN99Historico(texts: List<String>): List<JSONObject> {
         val out = ArrayList<JSONObject>()
         val dataHoraRe = Regex("""(\d{2}/\d{2}/\d{4})\s+(\d{2}:\d{2})""")
         val valorRe = Regex("""R\$\s?([\d.,]+)\s*>""")
-        for ((idx, line) in texts.withIndex()) {
-            val m = dataHoraRe.find(line) ?: continue
-            val janela = (maxOf(0, idx - 6)..minOf(texts.size - 1, idx + 6))
+        val anchors = texts.indices.filter { dataHoraRe.find(texts[it]) != null }
+        for ((n, idx) in anchors.withIndex()) {
+            val m = dataHoraRe.find(texts[idx])!!
+            val fim = if (n + 1 < anchors.size) anchors[n + 1] - 1 else texts.size - 1
+            val bloco = idx..fim
             var valor: Double? = null
-            for (k in janela) {
+            for (k in bloco) {
                 val vm = valorRe.find(texts[k])
                 if (vm != null) { valor = vm.groupValues[1].replace(".", "").replace(",", ".").toDoubleOrNull(); break }
             }
-            if (valor == null) continue // sem valor não dá pra reconciliar com segurança
+            if (valor == null) continue // sem valor no próprio bloco não dá pra reconciliar com segurança
             var dinheiro = false
-            for (k in janela) if (texts[k].contains("pagos em dinheiro", true)) { dinheiro = true; break }
-            val finalizado = janela.any { texts[it].contains("Pedido finalizado", true) }
+            for (k in bloco) if (texts[k].contains("pagos em dinheiro", true)) { dinheiro = true; break }
+            val finalizado = bloco.any { texts[it].contains("Pedido finalizado", true) }
             val obj = JSONObject().apply {
                 put("platform", "99")
                 put("value", valor)
@@ -698,7 +704,7 @@ class TripReaderService : AccessibilityService() {
                 put("trip_time", m.groupValues[2])
                 put("dinheiro", dinheiro)
                 put("outcome", if (finalizado) "finalizado" else "desconhecido")
-                put("raw_line", line)
+                put("raw_line", texts[idx])
             }
             out.add(obj)
         }
