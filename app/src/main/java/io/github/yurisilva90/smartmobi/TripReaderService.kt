@@ -586,10 +586,7 @@ class TripReaderService : AccessibilityService() {
                 collectTexts(r, texts)
             }
         } catch (_: Exception) {}
-        if (texts.isNotEmpty()) {
-            detectAndApply99TripSubState(texts)
-            sendTempActivityDump("99", texts) // TEMPORÁRIO — remover depois do teste
-        }
+        if (texts.isNotEmpty()) detectAndApply99TripSubState(texts)
     }
 
     // Varre só as janelas da Uber (independente de evento) e roda a mesma
@@ -608,23 +605,142 @@ class TripReaderService : AccessibilityService() {
         } catch (_: Exception) {}
         if (texts.isNotEmpty()) {
             detectAndApplyTripSubState(texts)
-            sendTempActivityDump("UBER", texts) // TEMPORÁRIO — remover depois do teste
+            // PEDIDO (11/09/2026, Yuri): captura passiva do Histórico de
+            // ganhos — confirmado por acessibilidade real com o Yuri em
+            // 11/09/2026, tela limpa, sem precisar de OCR. Roda no mesmo
+            // scan de status que já existia, sem custo adicional de leitura.
+            if (texts.any { it == "Histórico de ganhos" }) {
+                sendTripSightings("UBER", parseUberHistorico(texts))
+            }
         }
     }
 
-    // TEMPORÁRIO (11/09/2026) — só pra validar com o Yuri se a tela de
-    // histórico/atividade da Uber e da 99 expõe corrida por corrida via
-    // acessibilidade (sem OCR), pro projeto de captura passiva enquanto o
-    // motorista consulta ganhos. Reaproveita a MESMA leitura de texto que
-    // scanUberTripState/scanNN99TripState já fazem — não adiciona nenhum
-    // custo de OCR/ML Kit, só manda o que a árvore de acessibilidade já
-    // devolve. REMOVER depois de confirmado — não é feature, é só teste.
-    private var lastTempActivityMs = 0L
-    private fun sendTempActivityDump(plat: String, texts: List<String>) {
-        val nowGuard = System.currentTimeMillis()
-        if (nowGuard - lastTempActivityMs < 1200L) return
-        lastTempActivityMs = nowGuard
-        postToCloud(plat, "temp-historico-diag", "TEMP_HISTORICO_DIAG", "", emptyList(), null, null, texts)
+    // PEDIDO (11/09/2026, Yuri): captura passiva do que a Uber/99 mostram
+    // como corrida já reconhecida oficialmente (Histórico de ganhos /
+    // Histórico de corridas / Seus ganhos), reconciliando contra o que o
+    // MōB já capturou ao vivo — o motorista só olha ganhos quando já ia
+    // olhar mesmo, sem precisar gravar vídeo. Uber lê por acessibilidade
+    // (confirmado 11/09, texto limpo); 99 precisa de OCR (Flutter não
+    // expõe texto útil ali, mesma limitação da tela de oferta).
+    private fun parseUberHistorico(texts: List<String>): List<JSONObject> {
+        val out = ArrayList<JSONObject>()
+        val valorRe = Regex("""^R\$\s?([\d.,]+)$""")
+        val horaRe = Regex("""^\d{1,2}:\d{2}$""")
+        fun clean(s: String) = s.replace("\u2066", "").replace("\u2069", "").trim()
+        var i = 0
+        while (i < texts.size) {
+            val m = valorRe.find(texts[i].trim())
+            if (m == null) { i++; continue }
+            val valor = m.groupValues[1].replace(".", "").replace(",", ".").toDoubleOrNull()
+            if (valor == null) { i++; continue }
+            val tipoLinha = texts.getOrNull(i + 1)?.let { clean(it) } ?: ""
+            if (!tipoLinha.contains("·")) { i++; continue } // não é bloco de corrida de verdade
+            val partes = tipoLinha.split("·").map { it.trim() }
+            val cancelado = partes.size >= 2 && partes[1].contains("Cancelado", true)
+            var km: Double? = null; var durMin: Int? = null
+            if (!cancelado && partes.size >= 3) {
+                durMin = Regex("""(\d+)\s*min""").find(partes[1])?.groupValues?.get(1)?.toIntOrNull()
+                km = Regex("""([\d.]+)\s*km""").find(partes[2])?.groupValues?.get(1)?.toDoubleOrNull()
+            }
+            var j = i + 2
+            val hora = texts.getOrNull(j)?.trim()?.takeIf { horaRe.matches(it) }
+            if (hora != null) j++
+            var dinheiro = false
+            while (j < texts.size) {
+                val l = clean(texts[j])
+                if (l.contains("Dinheiro recebido")) { dinheiro = true; j++ }
+                else if (l.contains("Preço dinâmico")) { j++ }
+                else break
+            }
+            val origem = texts.getOrNull(j)?.let { clean(it) }
+            val destino = if (!cancelado) texts.getOrNull(j + 1)?.let { clean(it) } else null
+            val obj = JSONObject().apply {
+                put("platform", "UBER")
+                put("value", valor)
+                put("trip_time", hora ?: JSONObject.NULL)
+                put("km", km ?: JSONObject.NULL)
+                put("duration_min", durMin ?: JSONObject.NULL)
+                put("dinheiro", dinheiro)
+                put("origin_address", origem ?: JSONObject.NULL)
+                put("dest_address", destino ?: JSONObject.NULL)
+                put("outcome", if (cancelado) "cancelado" else "finalizado")
+                put("raw_line", tipoLinha)
+            }
+            out.add(obj)
+            i = j
+        }
+        return out
+    }
+
+    // 99: OCR é mais ruidoso e a ordem de leitura não segue um bloco fixo
+    // por corrida — âncora em cada linha "data hora" (só isso é confiável)
+    // e busca o valor/pagamento/veículo mais próximos dela na lista.
+    private fun parseNN99Historico(texts: List<String>): List<JSONObject> {
+        val out = ArrayList<JSONObject>()
+        val dataHoraRe = Regex("""(\d{2}/\d{2}/\d{4})\s+(\d{2}:\d{2})""")
+        val valorRe = Regex("""R\$\s?([\d.,]+)\s*>""")
+        for ((idx, line) in texts.withIndex()) {
+            val m = dataHoraRe.find(line) ?: continue
+            val janela = (maxOf(0, idx - 6)..minOf(texts.size - 1, idx + 6))
+            var valor: Double? = null
+            for (k in janela) {
+                val vm = valorRe.find(texts[k])
+                if (vm != null) { valor = vm.groupValues[1].replace(".", "").replace(",", ".").toDoubleOrNull(); break }
+            }
+            if (valor == null) continue // sem valor não dá pra reconciliar com segurança
+            var dinheiro = false
+            for (k in janela) if (texts[k].contains("pagos em dinheiro", true)) { dinheiro = true; break }
+            val finalizado = janela.any { texts[it].contains("Pedido finalizado", true) }
+            val obj = JSONObject().apply {
+                put("platform", "99")
+                put("value", valor)
+                put("trip_date", m.groupValues[1].split("/").reversed().joinToString("-"))
+                put("trip_time", m.groupValues[2])
+                put("dinheiro", dinheiro)
+                put("outcome", if (finalizado) "finalizado" else "desconhecido")
+                put("raw_line", line)
+            }
+            out.add(obj)
+        }
+        return out
+    }
+
+    // Dedup em memória — a mesma corrida aparece em VÁRIAS leituras enquanto
+    // a tela fica parada/rolando devagar (tick de 600ms). Só manda pro
+    // Supabase o que ainda não foi visto nesta sessão do app.
+    private val sightingsSeen = HashSet<String>()
+    private fun sendTripSightings(plat: String, sightings: List<JSONObject>) {
+        if (sightings.isEmpty()) return
+        val prefs = getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
+        val userId = prefs.getString(GpsService.KEY_USER_ID, null) ?: return
+        val novos = sightings.filter { s ->
+            val key = "$plat|${s.optDouble("value")}|${s.optString("trip_time")}|${s.optString("trip_date")}"
+            sightingsSeen.add(key)
+        }
+        if (novos.isEmpty()) return
+        thread(isDaemon = true) {
+            try {
+                val authToken = prefs.getString(GpsService.KEY_ACCESS_TOKEN, null) ?: SUPABASE_ANON
+                for (s in novos) {
+                    s.put("user_id", userId)
+                    if (!s.has("trip_date") || s.isNull("trip_date")) {
+                        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+                        s.put("trip_date", sdf.format(Date()))
+                    }
+                    val conn = URL("$SUPABASE_URL/rest/v1/platform_trip_sightings").openConnection() as HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.connectTimeout = 8000; conn.readTimeout = 8000
+                    conn.doOutput = true
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.setRequestProperty("apikey", SUPABASE_ANON)
+                    conn.setRequestProperty("Authorization", "Bearer $authToken")
+                    conn.setRequestProperty("Prefer", "return=minimal")
+                    conn.outputStream.use { it.write(s.toString().toByteArray()) }
+                    conn.responseCode
+                    conn.disconnect()
+                }
+            } catch (_: Exception) {}
+        }
     }
 
 
@@ -947,6 +1063,14 @@ class TripReaderService : AccessibilityService() {
                 val offerish = isOffer || low.contains("aceitar por") ||
                     low.contains("escolher") || low.contains("corrida") && moneySeen
                 if (offerish) arm99OcrBurst()
+                // PEDIDO (11/09/2026, Yuri): captura passiva no Histórico de
+                // corridas / Seus ganhos — 99 exige OCR aqui (Flutter não
+                // expõe texto útil por acessibilidade, confirmado 11/09/2026
+                // com captura real). Restrito a essas duas telas pra não
+                // rodar o parser (e desperdiçar ciclo de CPU) em toda tela.
+                if (low.contains("histórico de corridas") || low.contains("seus ganhos")) {
+                    sendTripSightings("99", parseNN99Historico(lines))
+                }
             }
             // Ponte OCR -> status (só 99): ver checkNn99OcrStatusBridge() pra
             // explicação completa. Roda em toda passada, independente de ser
@@ -2911,11 +3035,10 @@ class TripReaderService : AccessibilityService() {
         postToCloud(plat, pkg, screenClass, state, money, km, min, texts)
     }
 
-    // TEMPORÁRIO (11/09/2026) — throttle PRÓPRIO, separado do lastCloudLogMs
-    // compartilhado. Com a captura de histórico (TEMP_HISTORICO_DIAG) rodando
-    // a cada 600ms disputando a mesma trava de 3s, o log da nota quase nunca
-    // ganharia a vez bem na hora que precisa. 800ms é folgado pro que isso
-    // dispara (só quando um card de oferta é processado, não um loop apertado).
+    // Throttle PRÓPRIO, separado do lastCloudLogMs compartilhado — o log da
+    // nota não pode competir pela trava de 3s com o OCR normal (que já roda
+    // a cada poucos segundos). 800ms é folgado pro que isso dispara (só
+    // quando um card de oferta é processado, não um loop apertado).
     private var lastNotaDebugMs = 0L
     private fun sendNotaDebugToCloud(
         plat: String, screenClass: String, texts: List<String>
@@ -2950,14 +3073,11 @@ class TripReaderService : AccessibilityService() {
                         put("money", JSONArray(money))
                         put("km", km ?: JSONObject.NULL)
                         put("min", min ?: JSONObject.NULL)
-                        // TEMPORÁRIO (11/09/2026): pkg "nota-debug" e
-                        // "temp-historico-diag" precisam do texto bruto pra
-                        // servir de diagnóstico — sem isso os dois testes
-                        // atuais mandariam "raw" sempre vazio.
+                        // pkg "nota-debug" precisa do texto bruto pra
+                        // servir de diagnóstico da checagem de nota baixa.
                         val sendRaw = DEBUG_SEND_RAW_TEXT ||
                             (plat == "UBER" && pkg == "accessibility-raw" && state == "OFERTA_RAW") ||
-                            pkg == "nota-debug" || pkg == "temp-historico-diag" ||
-                            pkg == "ocr" // TEMPORÁRIO — ver o que o OCR lê na tela de Ganhos da 99
+                            pkg == "nota-debug"
                         put("raw", if (sendRaw) JSONArray(texts) else JSONArray())
                     })
                 }
