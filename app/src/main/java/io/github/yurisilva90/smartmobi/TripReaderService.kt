@@ -697,6 +697,15 @@ class TripReaderService : AccessibilityService() {
             var dinheiro = false
             for (k in bloco) if (texts[k].contains("pagos em dinheiro", true)) { dinheiro = true; break }
             val finalizado = bloco.any { texts[it].contains("Pedido finalizado", true) }
+            // Endereços: linhas com o ícone de pin (lido pelo OCR como "O "
+            // no início). PEDIDO (11/09/2026, Yuri): endereço + horário do
+            // aceite são o que realmente importa pra bater a corrida — o
+            // valor final a 99 pode ajustar (desvio, espera, trecho mais
+            // curto), então nunca é gatilho único de confiança.
+            val enderecos = bloco.mapNotNull { k ->
+                val t = texts[k].trim()
+                if (t.startsWith("O ") && t.length > 8) t.removePrefix("O ").trim() else null
+            }
             val obj = JSONObject().apply {
                 put("platform", "99")
                 put("value", valor)
@@ -705,6 +714,8 @@ class TripReaderService : AccessibilityService() {
                 put("dinheiro", dinheiro)
                 put("outcome", if (finalizado) "finalizado" else "desconhecido")
                 put("raw_line", texts[idx])
+                put("origin_address", enderecos.getOrNull(0) ?: JSONObject.NULL)
+                put("dest_address", enderecos.getOrNull(1) ?: JSONObject.NULL)
             }
             out.add(obj)
         }
