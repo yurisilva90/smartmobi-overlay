@@ -1,6 +1,7 @@
 package io.github.yurisilva90.smartmobi
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -877,9 +878,74 @@ object ProactiveAlert {
             row.addView(statBox(ctx, "R$ %.2f/km".format(Locale("pt","BR"), bucketRpkm), "KM", "good"))
             row.addView(statBox(ctx, "R$ %.2f/h".format(Locale("pt","BR"), bucketRphr), "HORA", "good"))
             content.addView(row)
+        } else if (insight.type == "ponto_sugerido") {
+            val venues = insight.payload?.optJSONArray("venues")
+            if (venues != null) {
+                for (i in 0 until venues.length()) {
+                    val v = venues.optJSONObject(i) ?: continue
+                    content.addView(venueRow(ctx, v, authToken, insight.id))
+                }
+            }
         }
         mount(ctx, insight.title, color, "Copiloto", "", SIMPLE_SECONDS, content) {
             dismissMobInsight(authToken, insight.id)
         }
+    }
+
+    private val VENUE_CAT_COLOR = mapOf(
+        "shopping" to "#B45309",
+        "terminal_rodoviario" to "#6366F1",
+        "aeroporto" to "#0A2F6B"
+    )
+
+    private fun venueRow(ctx: Context, v: JSONObject, authToken: String, insightId: String): LinearLayout {
+        val name = v.optString("name", "")
+        val category = v.optString("category", "shopping")
+        val km = v.optDouble("km", 0.0)
+        val hot = v.optBoolean("hot", false)
+        val color = VENUE_CAT_COLOR[category] ?: "#B45309"
+        val kmTxt = if (km < 1) "${(km*1000).toInt()} m" else "%.1f km".format(Locale("pt","BR"), km)
+
+        val row = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = GradientDrawable().apply { cornerRadius = dpf(11); setColor(Color.parseColor("#F8FAFC")) }
+            setPadding(dp(9), dp(8), dp(9), dp(8))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) }
+            isClickable = true
+        }
+        row.addView(FrameLayout(ctx).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(26), dp(26)).apply { rightMargin = dp(9) }
+            background = GradientDrawable().apply { cornerRadius = dpf(8); setColor(Color.parseColor(color)) }
+        })
+        val txt = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        txt.addView(TextView(ctx).apply { text = name; textSize = 11.5f; setTypeface(null, Typeface.BOLD); setTextColor(Color.parseColor("#0F172A")) })
+        txt.addView(TextView(ctx).apply { text = kmTxt; textSize = 9.5f; setTextColor(Color.parseColor("#94A3B8")) })
+        row.addView(txt)
+        if (hot) {
+            row.addView(TextView(ctx).apply {
+                text = "DEMANDA ALTA"
+                textSize = 7.5f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.parseColor("#B45309"))
+                background = GradientDrawable().apply { cornerRadius = dpf(99); setColor(Color.parseColor("#FEF3C7")) }
+                setPadding(dp(6), dp(3), dp(6), dp(3))
+            })
+        }
+        row.setOnClickListener {
+            dismissMobInsight(authToken, insightId)
+            forceHide()
+            val ctx2 = appCtx ?: return@setOnClickListener
+            val intent = Intent(ctx2, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                putExtra("open_venue_name", name)
+                putExtra("open_venue_category", category)
+            }
+            ctx2.startActivity(intent)
+        }
+        return row
     }
 }
