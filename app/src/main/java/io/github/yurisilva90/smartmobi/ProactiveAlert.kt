@@ -228,7 +228,8 @@ object ProactiveAlert {
         val id: String,
         val type: String,
         val title: String,
-        val message: String
+        val message: String,
+        val payload: JSONObject?
     )
 
     private val INSIGHT_COLOR = mapOf(
@@ -245,11 +246,11 @@ object ProactiveAlert {
         val now = utcIso(System.currentTimeMillis())
         val url = "${TripReaderService.SUPABASE_URL}/rest/v1/driver_insights?" +
             "user_id=eq.$userId&dismissed_at=is.null&expires_at=gt.$now&" +
-            "select=id,type,title,message&order=created_at.desc&limit=1"
+            "select=id,type,title,message,payload&order=created_at.desc&limit=1"
         val arr = getJson(authToken, url) as? JSONArray ?: return null
         if (arr.length() == 0) return null
         val o = arr.getJSONObject(0)
-        return MobInsight(o.getString("id"), o.getString("type"), o.getString("title"), o.getString("message"))
+        return MobInsight(o.getString("id"), o.getString("type"), o.getString("title"), o.getString("message"), o.optJSONObject("payload"))
     }
 
     private fun dismissMobInsight(authToken: String, id: String) {
@@ -828,6 +829,20 @@ object ProactiveAlert {
         }
     }
 
+    private fun statBox(ctx: Context, value: String, label: String): LinearLayout =
+        LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                cornerRadius = dpf(10)
+                setColor(Color.parseColor("#F1F5F9"))
+            }
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(4) }
+            addView(TextView(ctx).apply { text = value; textSize = 13f; setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER; setTextColor(Color.parseColor("#0F172A")) })
+            addView(TextView(ctx).apply { text = label; textSize = 8.5f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#64748B")) })
+        }
+
     private fun showMobInsightCard(insight: MobInsight, authToken: String) {
         val ctx = appCtx ?: return
         val color = INSIGHT_COLOR[insight.type] ?: "#0D3A7D"
@@ -838,7 +853,18 @@ object ProactiveAlert {
             setTextColor(Color.parseColor("#334155"))
             layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         })
-        mount(ctx, insight.title, color, "MōB Insight", "", SIMPLE_SECONDS, content) {
+        val todayRpkm = insight.payload?.optDouble("today_rpkm", Double.NaN) ?: Double.NaN
+        val baseRpkm = insight.payload?.optDouble("base_rpkm", Double.NaN) ?: Double.NaN
+        if (insight.type == "baixa_media" && !todayRpkm.isNaN() && !baseRpkm.isNaN()) {
+            val row = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(9) }
+            }
+            row.addView(statBox(ctx, "R$ %.2f/km".format(Locale("pt","BR"), todayRpkm), "HOJE"))
+            row.addView(statBox(ctx, "R$ %.2f/km".format(Locale("pt","BR"), baseRpkm), "SEU COSTUME"))
+            content.addView(row)
+        }
+        mount(ctx, insight.title, color, "Copiloto", "", SIMPLE_SECONDS, content) {
             dismissMobInsight(authToken, insight.id)
         }
     }
