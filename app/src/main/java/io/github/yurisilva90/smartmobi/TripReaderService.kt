@@ -2956,7 +2956,8 @@ class TripReaderService : AccessibilityService() {
                         // atuais mandariam "raw" sempre vazio.
                         val sendRaw = DEBUG_SEND_RAW_TEXT ||
                             (plat == "UBER" && pkg == "accessibility-raw" && state == "OFERTA_RAW") ||
-                            pkg == "nota-debug" || pkg == "temp-historico-diag"
+                            pkg == "nota-debug" || pkg == "temp-historico-diag" ||
+                            pkg == "ocr" // TEMPORÁRIO — ver o que o OCR lê na tela de Ganhos da 99
                         put("raw", if (sendRaw) JSONArray(texts) else JSONArray())
                     })
                 }
