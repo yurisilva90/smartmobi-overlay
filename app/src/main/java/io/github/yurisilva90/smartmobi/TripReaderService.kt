@@ -705,7 +705,53 @@ class TripReaderService : AccessibilityService() {
         return out
     }
 
-    // Dedup em memória — a mesma corrida aparece em VÁRIAS leituras enquanto
+    // Total "Diários" da tela "Seus ganhos" — confere-cruzada contra a soma
+    // das corridas confirmadas do dia (pedido do Yuri, 11/09/2026): se não
+    // bater, é sinal de que o OCR perdeu ou embaralhou alguma corrida.
+    private fun parseNN99DailyTotal(texts: List<String>): Double? {
+        val idx = texts.indexOfFirst { it.trim() == "Diários" }
+        if (idx == -1) return null
+        for (k in idx until minOf(texts.size, idx + 3)) {
+            val m = Regex("""R\$\s?([\d.,]+)""").find(texts[k])
+            if (m != null) return m.groupValues[1].replace(".", "").replace(",", ".").toDoubleOrNull()
+        }
+        return null
+    }
+
+    private var lastDailySummaryKey = ""
+    private fun sendDailySummary(plat: String, total: Double) {
+        val prefs = getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
+        val userId = prefs.getString(GpsService.KEY_USER_ID, null) ?: return
+        val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        val hoje = sdf.format(Date())
+        val key = "$plat|$hoje|$total"
+        if (key == lastDailySummaryKey) return
+        lastDailySummaryKey = key
+        thread(isDaemon = true) {
+            try {
+                val authToken = prefs.getString(GpsService.KEY_ACCESS_TOKEN, null) ?: SUPABASE_ANON
+                val body = JSONObject().apply {
+                    put("user_id", userId)
+                    put("platform", plat)
+                    put("trip_date", hoje)
+                    put("total_value", total)
+                }
+                val conn = URL("$SUPABASE_URL/rest/v1/platform_daily_summary").openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.connectTimeout = 8000; conn.readTimeout = 8000
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("apikey", SUPABASE_ANON)
+                conn.setRequestProperty("Authorization", "Bearer $authToken")
+                conn.setRequestProperty("Prefer", "return=minimal")
+                conn.outputStream.use { it.write(body.toString().toByteArray()) }
+                conn.responseCode
+                conn.disconnect()
+            } catch (_: Exception) {}
+        }
+    }
+
+
     // a tela fica parada/rolando devagar (tick de 600ms). Só manda pro
     // Supabase o que ainda não foi visto nesta sessão do app.
     private val sightingsSeen = HashSet<String>()
@@ -1070,6 +1116,13 @@ class TripReaderService : AccessibilityService() {
                 // rodar o parser (e desperdiçar ciclo de CPU) em toda tela.
                 if (low.contains("histórico de corridas") || low.contains("seus ganhos")) {
                     sendTripSightings("99", parseNN99Historico(lines))
+                }
+                // PEDIDO (11/09/2026, Yuri): confere se o OCR embaralhou
+                // algo — captura o total "Diários" da tela "Seus ganhos" e
+                // manda pra comparar contra a soma das corridas confirmadas
+                // do dia (comparação roda no app, ver reconcilePlatformSightings).
+                if (low.contains("seus ganhos")) {
+                    parseNN99DailyTotal(lines)?.let { sendDailySummary("99", it) }
                 }
             }
             // Ponte OCR -> status (só 99): ver checkNn99OcrStatusBridge() pra
