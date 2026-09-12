@@ -829,19 +829,23 @@ object ProactiveAlert {
         }
     }
 
-    private fun statBox(ctx: Context, value: String, label: String): LinearLayout =
-        LinearLayout(ctx).apply {
+    private fun statBox(ctx: Context, value: String, label: String, variant: String): LinearLayout {
+        val bg = when (variant) { "bad" -> "#FEF2F2"; "good" -> "#F0FDF4"; else -> "#F1F5F9" }
+        val fg = when (variant) { "bad" -> "#DC2626"; "good" -> "#16A34A"; else -> "#0F172A" }
+        val fgLabel = when (variant) { "bad" -> "#F87171"; "good" -> "#4ADE80"; else -> "#64748B" }
+        return LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             background = GradientDrawable().apply {
                 cornerRadius = dpf(10)
-                setColor(Color.parseColor("#F1F5F9"))
+                setColor(Color.parseColor(bg))
             }
             setPadding(dp(8), dp(8), dp(8), dp(8))
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(4) }
-            addView(TextView(ctx).apply { text = value; textSize = 13f; setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER; setTextColor(Color.parseColor("#0F172A")) })
-            addView(TextView(ctx).apply { text = label; textSize = 8.5f; gravity = Gravity.CENTER; setTextColor(Color.parseColor("#64748B")) })
+            addView(TextView(ctx).apply { text = value; textSize = 13f; setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER; setTextColor(Color.parseColor(fg)) })
+            addView(TextView(ctx).apply { text = label; textSize = 8.5f; gravity = Gravity.CENTER; setTextColor(Color.parseColor(fgLabel)) })
         }
+    }
 
     private fun showMobInsightCard(insight: MobInsight, authToken: String) {
         val ctx = appCtx ?: return
@@ -855,13 +859,23 @@ object ProactiveAlert {
         })
         val todayRpkm = insight.payload?.optDouble("today_rpkm", Double.NaN) ?: Double.NaN
         val baseRpkm = insight.payload?.optDouble("base_rpkm", Double.NaN) ?: Double.NaN
+        val bucketRpkm = insight.payload?.optDouble("bucket_rpkm", Double.NaN) ?: Double.NaN
+        val bucketRphr = insight.payload?.optDouble("bucket_rphr", Double.NaN) ?: Double.NaN
         if (insight.type == "baixa_media" && !todayRpkm.isNaN() && !baseRpkm.isNaN()) {
             val row = LinearLayout(ctx).apply {
                 orientation = LinearLayout.HORIZONTAL
                 layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(9) }
             }
-            row.addView(statBox(ctx, "R$ %.2f/km".format(Locale("pt","BR"), todayRpkm), "HOJE"))
-            row.addView(statBox(ctx, "R$ %.2f/km".format(Locale("pt","BR"), baseRpkm), "SEU COSTUME"))
+            row.addView(statBox(ctx, "R$ %.2f/km".format(Locale("pt","BR"), todayRpkm), "HOJE", "bad"))
+            row.addView(statBox(ctx, "R$ %.2f/km".format(Locale("pt","BR"), baseRpkm), "MÉDIA", "good"))
+            content.addView(row)
+        } else if (insight.type == "pico_espera" && !bucketRpkm.isNaN() && !bucketRphr.isNaN()) {
+            val row = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(9) }
+            }
+            row.addView(statBox(ctx, "R$ %.2f/km".format(Locale("pt","BR"), bucketRpkm), "KM", "good"))
+            row.addView(statBox(ctx, "R$ %.2f/h".format(Locale("pt","BR"), bucketRphr), "HORA", "good"))
             content.addView(row)
         }
         mount(ctx, insight.title, color, "Copiloto", "", SIMPLE_SECONDS, content) {
