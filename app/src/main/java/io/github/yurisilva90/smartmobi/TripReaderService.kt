@@ -627,8 +627,40 @@ class TripReaderService : AccessibilityService() {
         val valorRe = Regex("""^R\$\s?([\d.,]+)$""")
         val horaRe = Regex("""^\d{1,2}:\d{2}$""")
         fun clean(s: String) = s.replace("\u2066", "").replace("\u2069", "").trim()
+        // PEDIDO (11/09/2026, Yuri): "aparece no cabeçalho em cima da
+        // corrida" — a Uber marca a data em linhas de cabeçalho ("Hoje",
+        // "Ontem", "11 de set") ANTES do grupo de corridas daquele dia,
+        // não em cada corrida. Sem isso eu assumia sempre hoje, e rolar
+        // pra trás no histórico gravava corrida de ontem com data errada.
+        val meses = mapOf("jan" to 1, "fev" to 2, "mar" to 3, "abr" to 4, "mai" to 5, "jun" to 6,
+            "jul" to 7, "ago" to 8, "set" to 9, "out" to 10, "nov" to 11, "dez" to 12)
+        val dataCabecalhoRe = Regex("""(\d{1,2})\s+de\s+(jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)""", RegexOption.IGNORE_CASE)
+        val sdfOut = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        var dataAtual = sdfOut.format(Date())
+        fun marcarDataSeCabecalho(linha: String): Boolean {
+            val l = clean(linha)
+            when {
+                l.equals("Hoje", true) -> { dataAtual = sdfOut.format(Date()); return true }
+                l.equals("Ontem", true) -> {
+                    val cal = Calendar.getInstance(); cal.add(Calendar.DAY_OF_YEAR, -1)
+                    dataAtual = sdfOut.format(cal.time); return true
+                }
+                else -> {
+                    val m = dataCabecalhoRe.find(l) ?: return false
+                    val dia = m.groupValues[1].toIntOrNull() ?: return false
+                    val mes = meses[m.groupValues[2].lowercase(Locale.US)] ?: return false
+                    val cal = Calendar.getInstance()
+                    val anoAtual = cal.get(Calendar.YEAR)
+                    cal.set(anoAtual, mes - 1, dia, 12, 0, 0)
+                    if (cal.timeInMillis > System.currentTimeMillis() + 86_400_000L) cal.add(Calendar.YEAR, -1)
+                    dataAtual = sdfOut.format(cal.time)
+                    return true
+                }
+            }
+        }
         var i = 0
         while (i < texts.size) {
+            if (marcarDataSeCabecalho(texts[i])) { i++; continue }
             val m = valorRe.find(texts[i].trim())
             if (m == null) { i++; continue }
             val valor = m.groupValues[1].replace(".", "").replace(",", ".").toDoubleOrNull()
@@ -657,6 +689,7 @@ class TripReaderService : AccessibilityService() {
             val obj = JSONObject().apply {
                 put("platform", "UBER")
                 put("value", valor)
+                put("trip_date", dataAtual)
                 put("trip_time", hora ?: JSONObject.NULL)
                 put("km", km ?: JSONObject.NULL)
                 put("duration_min", durMin ?: JSONObject.NULL)
