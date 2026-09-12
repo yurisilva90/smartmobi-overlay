@@ -586,7 +586,10 @@ class TripReaderService : AccessibilityService() {
                 collectTexts(r, texts)
             }
         } catch (_: Exception) {}
-        if (texts.isNotEmpty()) detectAndApply99TripSubState(texts)
+        if (texts.isNotEmpty()) {
+            detectAndApply99TripSubState(texts)
+            sendTempActivityDump("99", texts) // TEMPORÁRIO — remover depois do teste
+        }
     }
 
     // Varre só as janelas da Uber (independente de evento) e roda a mesma
@@ -603,7 +606,21 @@ class TripReaderService : AccessibilityService() {
                 collectTexts(r, texts)
             }
         } catch (_: Exception) {}
-        if (texts.isNotEmpty()) detectAndApplyTripSubState(texts)
+        if (texts.isNotEmpty()) {
+            detectAndApplyTripSubState(texts)
+            sendTempActivityDump("UBER", texts) // TEMPORÁRIO — remover depois do teste
+        }
+    }
+
+    // TEMPORÁRIO (11/09/2026) — só pra validar com o Yuri se a tela de
+    // histórico/atividade da Uber e da 99 expõe corrida por corrida via
+    // acessibilidade (sem OCR), pro projeto de captura passiva enquanto o
+    // motorista consulta ganhos. Reaproveita a MESMA leitura de texto que
+    // scanUberTripState/scanNN99TripState já fazem — não adiciona nenhum
+    // custo de OCR/ML Kit, só manda o que a árvore de acessibilidade já
+    // devolve. REMOVER depois de confirmado — não é feature, é só teste.
+    private fun sendTempActivityDump(plat: String, texts: List<String>) {
+        sendToCloud(plat, "temp-historico-diag", "TEMP_HISTORICO_DIAG", "", emptyList(), null, null, texts)
     }
 
 
