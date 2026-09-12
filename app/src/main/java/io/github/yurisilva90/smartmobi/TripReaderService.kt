@@ -619,8 +619,12 @@ class TripReaderService : AccessibilityService() {
     // scanUberTripState/scanNN99TripState já fazem — não adiciona nenhum
     // custo de OCR/ML Kit, só manda o que a árvore de acessibilidade já
     // devolve. REMOVER depois de confirmado — não é feature, é só teste.
+    private var lastTempActivityMs = 0L
     private fun sendTempActivityDump(plat: String, texts: List<String>) {
-        sendToCloud(plat, "temp-historico-diag", "TEMP_HISTORICO_DIAG", "", emptyList(), null, null, texts)
+        val nowGuard = System.currentTimeMillis()
+        if (nowGuard - lastTempActivityMs < 1200L) return
+        lastTempActivityMs = nowGuard
+        postToCloud(plat, "temp-historico-diag", "TEMP_HISTORICO_DIAG", "", emptyList(), null, null, texts)
     }
 
 
@@ -1745,6 +1749,16 @@ class TripReaderService : AccessibilityService() {
 
         val motivos = ArrayList<String>()
         if (recusarComParada && offer.paradas > 0) motivos.add("Tem parada")
+        // TEMPORÁRIO (11/09/2026) — log dedicado bem no ponto da decisão de
+        // nota baixa, pra pegar o valor exato + texto bruto da tela no
+        // instante exato em que isso dispara. O log OFERTA_DETECTADA normal
+        // só captura a leitura FINAL/assentada da oferta (rate-limitado a
+        // 1x/3s) — se o áudio "nota abaixo" vier de uma leitura intermediária
+        // que nunca chega a ser a última, esse log geral nunca pega. Este
+        // aqui roda plantado direto no check, sem essa limitação.
+        if (rNota != null && rNota.optBoolean("enabled", false) && offer.nota != null) {
+            sendNotaDebugToCloud(plat, "NOTA_BAIXA_CHECK nota=${offer.nota} limite=${rNota.optDouble("value", 4.5)} disparou=${offer.nota < rNota.optDouble("value", 4.5)}", texts)
+        }
         if (rNota != null && rNota.optBoolean("enabled", false) && offer.nota != null
             && offer.nota < rNota.optDouble("value", 4.5)) motivos.add("Nota baixa")
         if (rPassageiroNovo != null && rPassageiroNovo.optBoolean("enabled", false) && offer.corridas != null
@@ -2894,6 +2908,29 @@ class TripReaderService : AccessibilityService() {
         val nowGuard = System.currentTimeMillis()
         if (nowGuard - lastCloudLogMs < 3000L) return
         lastCloudLogMs = nowGuard
+        postToCloud(plat, pkg, screenClass, state, money, km, min, texts)
+    }
+
+    // TEMPORÁRIO (11/09/2026) — throttle PRÓPRIO, separado do lastCloudLogMs
+    // compartilhado. Com a captura de histórico (TEMP_HISTORICO_DIAG) rodando
+    // a cada 600ms disputando a mesma trava de 3s, o log da nota quase nunca
+    // ganharia a vez bem na hora que precisa. 800ms é folgado pro que isso
+    // dispara (só quando um card de oferta é processado, não um loop apertado).
+    private var lastNotaDebugMs = 0L
+    private fun sendNotaDebugToCloud(
+        plat: String, screenClass: String, texts: List<String>
+    ) {
+        val nowGuard = System.currentTimeMillis()
+        if (nowGuard - lastNotaDebugMs < 800L) return
+        lastNotaDebugMs = nowGuard
+        postToCloud(plat, "nota-debug", screenClass, "", emptyList(), null, null, texts)
+    }
+
+    private fun postToCloud(
+        plat: String, pkg: String, screenClass: String,
+        state: String, money: List<String>, km: String?, min: String?,
+        texts: List<String>
+    ) {
         thread(isDaemon = true) {
             try {
                 val prefs = getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
@@ -2913,8 +2950,13 @@ class TripReaderService : AccessibilityService() {
                         put("money", JSONArray(money))
                         put("km", km ?: JSONObject.NULL)
                         put("min", min ?: JSONObject.NULL)
+                        // TEMPORÁRIO (11/09/2026): pkg "nota-debug" e
+                        // "temp-historico-diag" precisam do texto bruto pra
+                        // servir de diagnóstico — sem isso os dois testes
+                        // atuais mandariam "raw" sempre vazio.
                         val sendRaw = DEBUG_SEND_RAW_TEXT ||
-                            (plat == "UBER" && pkg == "accessibility-raw" && state == "OFERTA_RAW")
+                            (plat == "UBER" && pkg == "accessibility-raw" && state == "OFERTA_RAW") ||
+                            pkg == "nota-debug" || pkg == "temp-historico-diag"
                         put("raw", if (sendRaw) JSONArray(texts) else JSONArray())
                     })
                 }
