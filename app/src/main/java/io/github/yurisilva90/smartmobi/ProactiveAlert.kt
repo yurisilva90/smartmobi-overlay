@@ -91,7 +91,13 @@ object ProactiveAlert {
     private val checkRunnable = object : Runnable {
         override fun run() {
             val state = TripReaderService.confirmedTripSubState
-            if (GpsService.isRunning && !GpsService.isPaused && (state == "online" || state == "corrida") && !busy) {
+            // PEDIDO (12/09/2026, Yuri): MōB Insight ("parado esperando
+            // corrida", "horário de pico") também dispara durante "buscar" —
+            // por isso o estado não trava mais a entrada em runCheck aqui.
+            // Os cards colaborativos (fiscalização/lotação/confirmação)
+            // continuam restritos a online/corrida, verificado DENTRO de
+            // runCheck, já que insight tem prioridade e retorna antes deles.
+            if (GpsService.isRunning && !GpsService.isPaused && !busy) {
                 thread(isDaemon = true) { runCheck(state) }
             }
             handler.postDelayed(this, CHECK_INTERVAL_MS)
@@ -153,6 +159,11 @@ object ProactiveAlert {
                 handler.post { showMobInsightCard(insight, authToken) }
                 return
             }
+
+            // Cards colaborativos (fiscalização/lotação/confirmação) seguem
+            // nunca aparecendo durante "buscar" — só o MōB Insight acima
+            // ganhou essa liberação.
+            if (state != "online" && state != "corrida") return
 
             val lat = GpsService.lastLat
             val lng = GpsService.lastLng
