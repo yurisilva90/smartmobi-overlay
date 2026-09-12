@@ -147,6 +147,13 @@ object ProactiveAlert {
             val prefs = appCtx?.getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE) ?: return
             val userId = prefs.getString(GpsService.KEY_USER_ID, null) ?: return
             val authToken = prefs.getString(GpsService.KEY_ACCESS_TOKEN, null) ?: TripReaderService.SUPABASE_ANON
+
+            val insight = findMobInsight(authToken, userId)
+            if (insight != null) {
+                handler.post { showMobInsightCard(insight, authToken) }
+                return
+            }
+
             val lat = GpsService.lastLat
             val lng = GpsService.lastLng
             if (lat == 0.0 && lng == 0.0) return
@@ -205,6 +212,51 @@ object ProactiveAlert {
         val address: String?,
         val minutesAgo: Int
     )
+
+    private data class MobInsight(
+        val id: String,
+        val type: String,
+        val title: String,
+        val message: String
+    )
+
+    private val INSIGHT_COLOR = mapOf(
+        "baixa_media" to "#DC2626",
+        "ponto_sugerido" to "#0D3A7D",
+        "pico_espera" to "#16A34A"
+    )
+
+    // Só busca insight aqui (não fica esperando resposta em thread de rede
+    // isolada como os outros checks) porque essa consulta é simples e não
+    // depende de raio/localização — roda sempre que o loop chama runCheck,
+    // MESMO sem GPS ainda fixado, e tem prioridade sobre os cards colaborativos.
+    private fun findMobInsight(authToken: String, userId: String): MobInsight? {
+        val now = utcIso(System.currentTimeMillis())
+        val url = "${TripReaderService.SUPABASE_URL}/rest/v1/driver_insights?" +
+            "user_id=eq.$userId&dismissed_at=is.null&expires_at=gt.$now&" +
+            "select=id,type,title,message&order=created_at.desc&limit=1"
+        val arr = getJson(authToken, url) as? JSONArray ?: return null
+        if (arr.length() == 0) return null
+        val o = arr.getJSONObject(0)
+        return MobInsight(o.getString("id"), o.getString("type"), o.getString("title"), o.getString("message"))
+    }
+
+    private fun dismissMobInsight(authToken: String, id: String) {
+        thread(isDaemon = true) {
+            try {
+                val url = "${TripReaderService.SUPABASE_URL}/rest/v1/driver_insights?id=eq.$id"
+                val conn = URL(url).openConnection() as HttpURLConnection
+                conn.requestMethod = "PATCH"
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("apikey", TripReaderService.SUPABASE_ANON)
+                conn.setRequestProperty("Authorization", "Bearer $authToken")
+                val body = JSONObject().apply { put("dismissed_at", utcIso(System.currentTimeMillis())) }
+                conn.outputStream.use { it.write(body.toString().toByteArray()) }
+                conn.responseCode
+            } catch (_: Exception) {}
+        }
+    }
 
     private fun haversine(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
         val r = 6371000.0
@@ -762,6 +814,21 @@ object ProactiveAlert {
         ), 2))
         mount(ctx, question, color, "Relatado há ${report.minutesAgo} min por outro motorista", report.address ?: "", SIMPLE_SECONDS, content) {
             markPromptOutcome(authToken, userId, reportId = report.id, outcome = it)
+        }
+    }
+
+    private fun showMobInsightCard(insight: MobInsight, authToken: String) {
+        val ctx = appCtx ?: return
+        val color = INSIGHT_COLOR[insight.type] ?: "#0D3A7D"
+        val content = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        content.addView(TextView(ctx).apply {
+            text = insight.message
+            textSize = 12.5f
+            setTextColor(Color.parseColor("#334155"))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        })
+        mount(ctx, insight.title, color, "MōB Insight", "", SIMPLE_SECONDS, content) {
+            dismissMobInsight(authToken, insight.id)
         }
     }
 }
