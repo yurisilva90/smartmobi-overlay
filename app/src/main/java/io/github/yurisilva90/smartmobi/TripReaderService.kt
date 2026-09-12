@@ -1363,21 +1363,34 @@ class TripReaderService : AccessibilityService() {
         // nota (99: "4,80 630 corridas" — número solto antes da palavra;
         // Uber: "4,90 (1985)" — número dentro dos parênteses). Lê os dois
         // juntos, já que sempre aparecem colados na mesma linha.
+        //
+        // BUG CONFIRMADO COM DADO REAL (11/09/2026, Yuri): linha de taxa
+        // extra tipo "R$2,66 a mais por corrida" também contém a palavra
+        // "corrida" e um número 1-5 com 2 casas (o valor da taxa, não a
+        // nota) — o regex antigo pegava essa linha por engano (é a PRIMEIRA
+        // que bate "contains corrid" na lista) e confundia R$2,66 de taxa
+        // com nota 2,66, disparando "Nota baixa" numa corrida com nota real
+        // 4,94. Corrigido: exige um número de CONTAGEM colado antes de
+        // "corrid" (é o padrão real: "nota contagem corridas") — a linha de
+        // taxa nunca tem esse formato ("a mais por corrida", sem número
+        // entre o valor e a palavra).
         var nota: Double? = null
         var corridas: Int? = null
+        val notaComContagemRe = Regex("""([1-5][.,]\d{2})\s+(\d+)\s*corrid""")
         for (line in texts) {
-            val l = line.lowercase(Locale.getDefault())
-            if (l.contains("corrid") || l.contains("corda") || Regex("""[1-5][.,]\d{2}\s*\(\d+\)""").containsMatchIn(l)) {
-                Regex("""([1-5][.,]\d{2})""").find(line)?.let {
-                    nota = it.groupValues[1].replace(",", ".").toDoubleOrNull()
-                }
-                if (nota != null) {
-                    Regex("""(\d+)\s*corrid""").find(l)?.let { corridas = it.groupValues[1].toIntOrNull() }
-                    if (corridas == null) Regex("""\(\s*(\d+)\s*\)""").find(line)?.let {
-                        corridas = it.groupValues[1].toIntOrNull()
-                    }
-                    break
-                }
+            val m = notaComContagemRe.find(line) ?: continue
+            nota = m.groupValues[1].replace(",", ".").toDoubleOrNull()
+            corridas = m.groupValues[2].toIntOrNull()
+            break
+        }
+        if (nota == null) {
+            // Uber: "4,90 (1985)" — número + parênteses com contagem, sem a
+            // palavra "corrida" na mesma linha.
+            for (line in texts) {
+                val m = Regex("""([1-5][.,]\d{2})\s*\((\d+)\)""").find(line) ?: continue
+                nota = m.groupValues[1].replace(",", ".").toDoubleOrNull()
+                corridas = m.groupValues[2].toIntOrNull()
+                break
             }
         }
 
