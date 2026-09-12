@@ -342,6 +342,7 @@ class TripReaderService : AccessibilityService() {
         override fun run() {
             try { pollForeground() } catch (_: Exception) {}
             try { JourneyStatusTracker.checkpoint(this@TripReaderService) } catch (_: Exception) {}
+            try { reconcileSightingsThrottled() } catch (_: Exception) {}
             main.postDelayed(this, 600)
         }
     }
@@ -801,6 +802,208 @@ class TripReaderService : AccessibilityService() {
         }
     }
 
+    // PEDIDO (11/09/2026, Yuri): reconciliação passiva rodando NO NATIVO,
+    // não no web — "contraintuitivo" ter que deixar o MōB aberto em
+    // primeiro plano depois de já ter rolado a tela da Uber/99. O
+    // AccessibilityService já roda o tempo todo em segundo plano; a
+    // reconciliação (bater sighting contra auto_trips, confirmar ou criar
+    // 'conferencia') mora aqui agora, throttle de 60s dentro do tick de
+    // 600ms que já existia.
+    private var lastReconcileMs = 0L
+    private fun reconcileSightingsThrottled() {
+        val now = System.currentTimeMillis()
+        if (now - lastReconcileMs < 60_000L) return
+        lastReconcileMs = now
+        thread(isDaemon = true) { try { reconcileSightingsNative() } catch (_: Exception) {} }
+    }
+
+    private fun httpGetArray(authToken: String, url: String): JSONArray {
+        return try {
+            val conn = URL(url).openConnection() as HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.connectTimeout = 8000; conn.readTimeout = 8000
+            conn.setRequestProperty("apikey", SUPABASE_ANON)
+            conn.setRequestProperty("Authorization", "Bearer $authToken")
+            val text = conn.inputStream.bufferedReader().readText()
+            conn.disconnect()
+            if (text.trim().startsWith("[")) JSONArray(text) else JSONArray()
+        } catch (_: Exception) { JSONArray() }
+    }
+
+    private fun httpPatch(authToken: String, url: String, body: JSONObject): Boolean {
+        return try {
+            val conn = URL(url).openConnection() as HttpURLConnection
+            conn.requestMethod = "PATCH"
+            conn.doOutput = true
+            conn.connectTimeout = 8000; conn.readTimeout = 8000
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.setRequestProperty("apikey", SUPABASE_ANON)
+            conn.setRequestProperty("Authorization", "Bearer $authToken")
+            conn.setRequestProperty("Prefer", "return=minimal")
+            conn.outputStream.use { it.write(body.toString().toByteArray()) }
+            val code = conn.responseCode
+            conn.disconnect()
+            code in 200..299
+        } catch (_: Exception) { false }
+    }
+
+    private fun httpPost(authToken: String, url: String, body: JSONObject): Boolean {
+        return try {
+            val conn = URL(url).openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.connectTimeout = 8000; conn.readTimeout = 8000
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.setRequestProperty("apikey", SUPABASE_ANON)
+            conn.setRequestProperty("Authorization", "Bearer $authToken")
+            conn.setRequestProperty("Prefer", "return=minimal")
+            conn.outputStream.use { it.write(body.toString().toByteArray()) }
+            val code = conn.responseCode
+            conn.disconnect()
+            code in 200..299
+        } catch (_: Exception) { false }
+    }
+
+    // Converte um timestamp ISO (UTC, do jeito que o Supabase devolve) pro
+    // minuto-do-dia NO FUSO LOCAL do aparelho — mesma lógica do JS
+    // (new Date(iso).getHours()), só que refeita em Kotlin puro.
+    private fun isoUtcToLocalMinOfDay(iso: String): Int? {
+        return try {
+            val cleaned = iso.substringBefore(".").substringBefore("+").removeSuffix("Z")
+            val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+            sdf.timeZone = TimeZone.getTimeZone("UTC")
+            val d = sdf.parse(cleaned) ?: return null
+            val cal = Calendar.getInstance()
+            cal.time = d
+            cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+        } catch (_: Exception) { null }
+    }
+
+    private fun addDaysIso(dateIso: String, days: Int): String {
+        return try {
+            val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+            val cal = Calendar.getInstance()
+            cal.time = sdf.parse(dateIso) ?: return dateIso
+            cal.add(Calendar.DAY_OF_YEAR, days)
+            sdf.format(cal.time)
+        } catch (_: Exception) { dateIso }
+    }
+
+    private fun reconcileSightingsNative() {
+        val prefs = getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
+        val userId = prefs.getString(GpsService.KEY_USER_ID, null) ?: return
+        val authToken = prefs.getString(GpsService.KEY_ACCESS_TOKEN, null) ?: return
+
+        val sightings = httpGetArray(authToken,
+            "$SUPABASE_URL/rest/v1/platform_trip_sightings?user_id=eq.$userId&processed_at=is.null&limit=200&select=*")
+        if (sightings.length() == 0) return
+
+        val sdfDate = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        val hoje = sdfDate.format(Date())
+        val dates = (0 until sightings.length()).mapNotNull {
+            sightings.optJSONObject(it)?.optString("trip_date")?.takeIf { d -> d.isNotBlank() }
+        }.distinct().sorted()
+        val dtFrom = if (dates.isNotEmpty()) addDaysIso(dates.first(), -1) else hoje
+        val dtTo = if (dates.isNotEmpty()) addDaysIso(dates.last(), 1) else hoje
+
+        val trips = httpGetArray(authToken,
+            "$SUPABASE_URL/rest/v1/auto_trips?user_id=eq.$userId&status=neq.confirmada" +
+            "&trip_started_at=gte.${dtFrom}T00:00:00&trip_started_at=lte.${dtTo}T23:59:59&select=*")
+
+        val usedIds = HashSet<String>()
+        val processedIds = ArrayList<String>()
+
+        for (i in 0 until sightings.length()) {
+            val s = sightings.optJSONObject(i) ?: continue
+            val sid = s.optString("id")
+            if (sid.isBlank()) continue
+            processedIds.add(sid)
+
+            val plat = if (s.optString("platform") == "99") "99" else "uber"
+            val sValue = s.optDouble("value", Double.NaN)
+            val timeParts = s.optString("trip_time", "").split(":")
+            val sMinOfDay = if (timeParts.size == 2) {
+                val h = timeParts[0].toIntOrNull(); val m = timeParts[1].toIntOrNull()
+                if (h != null && m != null) h * 60 + m else null
+            } else null
+
+            var bestId: String? = null
+            var bestDiff = Long.MAX_VALUE
+            for (j in 0 until trips.length()) {
+                val t = trips.optJSONObject(j) ?: continue
+                val tid = t.optString("id")
+                if (tid.isBlank() || usedIds.contains(tid)) continue
+                if ((t.optString("platform").lowercase(Locale.US)) != plat) continue
+                val tValue = if (t.isNull("offer_value")) Double.NaN else t.optDouble("offer_value", Double.NaN)
+                if (tValue.isNaN() || sValue.isNaN() || Math.abs(tValue - sValue) >= 20.0) continue
+                val tStarted = t.optString("trip_started_at")
+                if (tStarted.isBlank() || sMinOfDay == null) continue
+                val tMinOfDay = isoUtcToLocalMinOfDay(tStarted) ?: continue
+                var diffMin = Math.abs(tMinOfDay - sMinOfDay)
+                if (diffMin > 720) diffMin = 1440 - diffMin // vira-noite
+                if (diffMin <= 3 && diffMin.toLong() < bestDiff) { bestId = tid; bestDiff = diffMin.toLong() }
+            }
+
+            if (bestId != null) {
+                usedIds.add(bestId)
+                val ok = httpPatch(authToken, "$SUPABASE_URL/rest/v1/auto_trips?id=eq.$bestId", JSONObject().apply {
+                    put("status", "confirmada")
+                    put("value_needs_review", false)
+                    put("data_quality_flag", JSONObject.NULL)
+                    put("platform_history_at", s.optString("seen_at"))
+                    put("observation", "Confirmada automaticamente pela leitura do Histórico/Ganhos do app (sem vídeo).")
+                })
+                if (ok) httpPatch(authToken, "$SUPABASE_URL/rest/v1/platform_trip_sightings?id=eq.$sid",
+                    JSONObject().apply { put("matched_auto_trip_id", bestId) })
+            } else if (s.optString("outcome") == "finalizado" && s.optString("trip_date").isNotBlank() &&
+                s.optString("trip_time").isNotBlank() && sValue > 3.0 && sValue < 300.0) {
+                // Nunca vista ao vivo (nem oferta, nem GPS) — vem só do
+                // Histórico/Ganhos que o motorista consultou naturalmente.
+                // Cria já 'confirmada', capture_source 'conferencia' pra
+                // aparecer com tag diferente na listagem.
+                try {
+                    val sdfFull = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+                    val startDate = sdfFull.parse("${s.optString("trip_date")}T${s.optString("trip_time")}:00")
+                    if (startDate != null) {
+                        val startIso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+                            .apply { timeZone = TimeZone.getTimeZone("UTC") }
+                        // trip_time é hora LOCAL do aparelho — startDate acima já
+                        // foi parseado em fuso local (Calendar padrão), então dá
+                        // pra formatar direto pra UTC sem conversão manual extra.
+                        val startMs = startDate.time
+                        val durMin = if (s.isNull("duration_min")) null else s.optDouble("duration_min", Double.NaN).takeIf { !it.isNaN() }
+                        val endMs = if (durMin != null) startMs + (durMin * 60000).toLong() else null
+                        val body = JSONObject().apply {
+                            put("user_id", userId)
+                            put("platform", plat)
+                            put("accepted_at", startIso.format(Date(startMs)))
+                            put("trip_started_at", startIso.format(Date(startMs)))
+                            put("trip_ended_at", if (endMs != null) startIso.format(Date(endMs)) else JSONObject.NULL)
+                            put("offer_value", sValue)
+                            put("real_km_trip", if (s.isNull("km")) JSONObject.NULL else s.opt("km"))
+                            put("origin_address", if (s.isNull("origin_address")) JSONObject.NULL else s.optString("origin_address"))
+                            put("dest_address", if (s.isNull("dest_address")) JSONObject.NULL else s.optString("dest_address"))
+                            put("dinheiro", s.optBoolean("dinheiro", false))
+                            put("status", "confirmada")
+                            put("capture_source", "conferencia")
+                            put("value_needs_review", false)
+                            put("platform_history_at", s.optString("seen_at"))
+                            put("observation", "Criada pela conferência do Histórico/Ganhos — nunca capturada ao vivo pelo card de oferta.")
+                        }
+                        httpPost(authToken, "$SUPABASE_URL/rest/v1/auto_trips", body)
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+
+        if (processedIds.isNotEmpty()) {
+            val idList = processedIds.joinToString(",")
+            val nowIso = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+                .apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date())
+            httpPatch(authToken, "$SUPABASE_URL/rest/v1/platform_trip_sightings?id=in.($idList)",
+                JSONObject().apply { put("processed_at", nowIso) })
+        }
+    }
 
     // a tela fica parada/rolando devagar (tick de 600ms). Só manda pro
     // Supabase o que ainda não foi visto nesta sessão do app.
