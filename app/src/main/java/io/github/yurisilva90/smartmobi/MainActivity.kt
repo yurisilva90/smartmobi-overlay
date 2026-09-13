@@ -534,6 +534,15 @@ class MainActivity : AppCompatActivity() {
                     .apply()
             }
 
+            // Salva a configuração da bolinha flutuante (lida pelo FloatingWidget
+            // na próxima vez que ela aparecer). configJson vem pronto do JS:
+            // {"sizeScale":..,"showStatus":..,"showTime":..,"showKm":..}
+            @JavascriptInterface fun saveWidgetConfig(configJson: String) {
+                getSharedPreferences(GpsService.PREFS_NAME, android.content.Context.MODE_PRIVATE).edit()
+                    .putString(FloatingWidget.KEY_WIDGET_CONFIG_JSON, configJson)
+                    .apply()
+            }
+
             // Captura de tela pro OCR do MōB Flash (a oferta da 99 é imagem)
             @JavascriptInterface fun requestScreenCapture() {
                 runOnUiThread { launchScreenCaptureRequest() }

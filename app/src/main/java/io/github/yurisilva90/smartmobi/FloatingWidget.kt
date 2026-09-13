@@ -17,6 +17,33 @@ import android.widget.TextView
 
 class FloatingWidget(private val context: Context) {
 
+    companion object {
+        const val KEY_WIDGET_CONFIG_JSON = "widget_config_json"
+    }
+
+    // ── Aparência configurável (13/09/2026, pedido do Yuri): tamanho da
+    // bolinha e quais das 3 informações (status/tempo/km) ela mostra.
+    // Configurado em "Mais > Bolinha flutuante" (index.html) e sincronizado
+    // via KEY_WIDGET_CONFIG_JSON. Lido de novo a cada show() — uma mudança
+    // de config vale a partir da próxima vez que a bolinha aparecer.
+    private var sizeScale: Int = 100
+    private var showStatus: Boolean = true
+    private var showTime: Boolean = true
+    private var showKm: Boolean = true
+    private fun scaleF() = sizeScale.coerceIn(80, 130) / 100f
+
+    private fun loadConfig() {
+        try {
+            val prefs = context.getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
+            val raw = prefs.getString(KEY_WIDGET_CONFIG_JSON, null) ?: return
+            val cfg = org.json.JSONObject(raw)
+            sizeScale = cfg.optInt("sizeScale", 100)
+            showStatus = cfg.optBoolean("showStatus", true)
+            showTime = cfg.optBoolean("showTime", true)
+            showKm = cfg.optBoolean("showKm", true)
+        } catch (_: Exception) {}
+    }
+
     // CORRIGIDO (24/07/2026, confirmado pelo Yuri): abrir o app MōB (a PWA)
     // chama updateFloatingStatus("running") pelo bridge JS, que cai em
     // updateStatus() aqui embaixo — e esse método escreve nos MESMOS
@@ -57,6 +84,7 @@ class FloatingWidget(private val context: Context) {
         if (startTimestamp > 0) GpsService.startTimeMs = startTimestamp
         km = currentKm
         if (container != null) { updateDisplay(); return }
+        loadConfig()
         handler.post {
             container = buildWidget()
             try { wm.addView(container, params) } catch (e: Exception) { e.printStackTrace() }
@@ -90,12 +118,20 @@ class FloatingWidget(private val context: Context) {
                 background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(c) }
             }
             tvKm?.setTextColor(c)
-            container?.background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = (20 * context.resources.displayMetrics.density)
-                setColor(Color.parseColor("#0F172A"))
-                setStroke((2 * context.resources.displayMetrics.density).toInt(), c)
-            }
+            container?.background = borderDrawable(c)
+        }
+    }
+
+    // Fundo + borda arredondada do card, na cor do status atual — usado no
+    // build inicial e nas duas trocas de veredito (updateTripState/updateStatus).
+    // Escala com sizeScale pra acompanhar o tamanho do resto da bolinha.
+    private fun borderDrawable(c: Int): GradientDrawable {
+        val density = context.resources.displayMetrics.density * scaleF()
+        return GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 20 * density
+            setColor(Color.parseColor("#0F172A"))
+            setStroke((2 * density).toInt(), c)
         }
     }
 
@@ -122,12 +158,7 @@ class FloatingWidget(private val context: Context) {
                 background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(c) }
             }
             tvKm?.setTextColor(c)
-            container?.background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = (20 * context.resources.displayMetrics.density)
-                setColor(Color.parseColor("#0F172A"))
-                setStroke((2 * context.resources.displayMetrics.density).toInt(), c)
-            }
+            container?.background = borderDrawable(c)
             updateDisplay()
         }
     }
@@ -169,48 +200,49 @@ class FloatingWidget(private val context: Context) {
     }
 
     private fun buildWidget(): LinearLayout {
-        val dp = { v: Int -> (v * context.resources.displayMetrics.density).toInt() }
+        val s = scaleF()
+        val dp = { v: Int -> (v * context.resources.displayMetrics.density * s).toInt() }
+        val tx = { v: Float -> v * s }
 
         val card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(20).toFloat()
-                setColor(Color.parseColor("#0F172A"))
-                setStroke(dp(2), Color.parseColor("#FACC15"))
-            }
+            background = borderDrawable(Color.parseColor("#FACC15"))
             setPadding(dp(12), dp(10), dp(12), dp(10))
             elevation = dp(8).toFloat()
         }
 
-        val header = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+        // Cada uma das 3 informações (status/tempo/km) só entra na bolinha se
+        // estiver ligada na config — igual "Indicadores" já funciona no Flash.
+        if (showStatus) {
+            val header = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+            }
+            val statusDot = FrameLayout(context).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(7), dp(7)).apply { rightMargin = dp(5) }
+                background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.parseColor("#FACC15")) }
+                tag = "status_dot"
+            }
+            header.addView(statusDot)
+            val statusTv = TextView(context).apply {
+                text = "Online"; textSize = tx(10f)
+                setTextColor(Color.parseColor("#FACC15"))
+                setTypeface(null, Typeface.BOLD); tag = "status_tv"
+            }
+            header.addView(statusTv)
+            card.addView(header)
         }
-        val statusDot = FrameLayout(context).apply {
-            layoutParams = LinearLayout.LayoutParams(dp(7), dp(7)).apply { rightMargin = dp(5) }
-            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.parseColor("#FACC15")) }
-            tag = "status_dot"
-        }
-        header.addView(statusDot)
-        val statusTv = TextView(context).apply {
-            text = "Online"; textSize = 10f
-            setTextColor(Color.parseColor("#FACC15"))
-            setTypeface(null, Typeface.BOLD); tag = "status_tv"
-        }
-        header.addView(statusTv)
-        card.addView(header)
 
         tvTime = TextView(context).apply {
-            text = "00:00"; textSize = 20f
+            text = "00:00"; textSize = tx(20f)
             setTextColor(Color.WHITE); setTypeface(null, Typeface.BOLD)
         }
-        card.addView(tvTime)
+        if (showTime) card.addView(tvTime)
 
         tvKm = TextView(context).apply {
-            text = "0.0 km"; textSize = 13f
+            text = "0.0 km"; textSize = tx(13f)
             setTextColor(Color.parseColor("#FACC15")); setTypeface(null, Typeface.BOLD)
         }
-        card.addView(tvKm)
+        if (showKm) card.addView(tvKm)
 
         // Touch: arrastar + tap para abrir app
         var dX = 0f; var dY = 0f; var moved = false
