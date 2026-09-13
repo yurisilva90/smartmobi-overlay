@@ -889,6 +889,37 @@ class TripReaderService : AccessibilityService() {
         } catch (_: Exception) { dateIso }
     }
 
+    // Manda uma linha de diagnóstico pro mesmo trip_reader_log de sempre —
+    // PEDIDO (13/09/2026, Yuri): "esses dados não podem dar erro ou
+    // diferença... é importante que a pessoa confie no app". Sem log
+    // nenhum, uma falha de permissão/insert fica invisível pra sempre (foi
+    // exatamente o que aconteceu: 0 corridas "Conferida" criadas em
+    // produção porque o banco rejeitava o capture_source='conferencia' e
+    // ninguém nunca soube — corrigido agora, mas só o log evita que o
+    // PRÓXIMO bug desse tipo passe batido de novo).
+    private fun logReconcile(userId: String, authToken: String, tag: String, detail: String) {
+        try {
+            val body = JSONObject().apply {
+                put("user_id", userId)
+                put("platform", "RECONCILE")
+                put("package", "reconcile")
+                put("screen_class", tag)
+                put("texts", JSONObject().apply {
+                    put("state", detail); put("money", JSONArray()); put("km", JSONObject.NULL)
+                    put("min", JSONObject.NULL); put("raw", JSONArray())
+                })
+            }
+            httpPost(authToken, "$SUPABASE_URL/rest/v1/trip_reader_log", body)
+        } catch (_: Exception) {}
+    }
+
+    // Segunda confirmação da corrida: o que a Uber/99 mostram como oficial
+    // no Histórico/Ganhos (sightings) contra o que o MōB já capturou ao
+    // vivo (auto_trips). PEDIDO (13/09/2026, Yuri): a confirmação não pode
+    // só validar o status — se o valor oficial vier diferente do que foi
+    // capturado (ajuste de pedágio, desconto, gorjeta etc.), o valor
+    // GRAVADO precisa virar o oficial, com o antes/depois registrado, nunca
+    // só uma bandeirinha "confirmada" escondendo um valor desatualizado.
     private fun reconcileSightingsNative() {
         val prefs = getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
         val userId = prefs.getString(GpsService.KEY_USER_ID, null) ?: return
@@ -906,12 +937,21 @@ class TripReaderService : AccessibilityService() {
         val dtFrom = if (dates.isNotEmpty()) addDaysIso(dates.first(), -1) else hoje
         val dtTo = if (dates.isNotEmpty()) addDaysIso(dates.last(), 1) else hoje
 
+        // CORRIGIDO (13/09/2026, pedido do Yuri): antes só buscava corridas
+        // status!=confirmada — uma corrida JÁ confirmada nunca entrava na
+        // lista, então um sighting repetido (histórico visto de novo,
+        // serviço reiniciado) caía sempre no "nunca vista" e criava uma
+        // corrida "Conferida" DUPLICADA da mesma corrida real. Agora busca
+        // TODAS as corridas do intervalo — se já achar uma confirmada
+        // batendo, só concilia valor (ou sinaliza divergência), nunca cria
+        // de novo.
         val trips = httpGetArray(authToken,
-            "$SUPABASE_URL/rest/v1/auto_trips?user_id=eq.$userId&status=neq.confirmada" +
+            "$SUPABASE_URL/rest/v1/auto_trips?user_id=eq.$userId" +
             "&trip_started_at=gte.${dtFrom}T00:00:00&trip_started_at=lte.${dtTo}T23:59:59&select=*")
 
         val usedIds = HashSet<String>()
         val processedIds = ArrayList<String>()
+        var nConfirmed = 0; var nCorrected = 0; var nCreated = 0; var nDisagree = 0; var nFailed = 0
 
         for (i in 0 until sightings.length()) {
             val s = sightings.optJSONObject(i) ?: continue
@@ -928,6 +968,7 @@ class TripReaderService : AccessibilityService() {
             } else null
 
             var bestId: String? = null
+            var bestTrip: JSONObject? = null
             var bestDiff = Long.MAX_VALUE
             for (j in 0 until trips.length()) {
                 val t = trips.optJSONObject(j) ?: continue
@@ -941,19 +982,53 @@ class TripReaderService : AccessibilityService() {
                 val tMinOfDay = isoUtcToLocalMinOfDay(tStarted) ?: continue
                 var diffMin = Math.abs(tMinOfDay - sMinOfDay)
                 if (diffMin > 720) diffMin = 1440 - diffMin // vira-noite
-                if (diffMin <= 3 && diffMin.toLong() < bestDiff) { bestId = tid; bestDiff = diffMin.toLong() }
+                if (diffMin <= 3 && diffMin.toLong() < bestDiff) { bestId = tid; bestTrip = t; bestDiff = diffMin.toLong() }
             }
 
-            if (bestId != null) {
+            if (bestId != null && bestTrip != null) {
                 usedIds.add(bestId)
-                val ok = httpPatch(authToken, "$SUPABASE_URL/rest/v1/auto_trips?id=eq.$bestId", JSONObject().apply {
-                    put("status", "confirmada")
-                    put("value_needs_review", false)
-                    put("data_quality_flag", JSONObject.NULL)
-                    put("platform_history_at", s.optString("seen_at"))
-                    put("observation", "Confirmada automaticamente pela leitura do Histórico/Ganhos do app (sem vídeo).")
-                })
-                if (ok) httpPatch(authToken, "$SUPABASE_URL/rest/v1/platform_trip_sightings?id=eq.$sid",
+                val tValue = bestTrip.optDouble("offer_value", Double.NaN)
+                val alreadyConfirmed = bestTrip.optString("status") == "confirmada"
+                val valueMatches = !tValue.isNaN() && Math.abs(tValue - sValue) < 0.01
+
+                val patchBody: JSONObject? = when {
+                    alreadyConfirmed && valueMatches -> null // já certo, nada a fazer
+                    alreadyConfirmed && !valueMatches -> {
+                        // Já tinha sido confirmada (por outra leitura) e essa
+                        // NOVA leitura discorda do valor — não sobrescreve
+                        // silenciosamente uma corrida já confirmada; sinaliza
+                        // pra revisão manual em vez de arriscar trocar pelo
+                        // valor errado.
+                        nDisagree++
+                        JSONObject().apply {
+                            put("value_needs_review", true)
+                            put("data_quality_flag", "valor_divergente_2a_leitura")
+                            put("observation", "Confirmada antes com R$ ${fmtBr(tValue)}, mas uma nova leitura do Histórico mostra R$ ${fmtBr(sValue)} — confira manualmente.")
+                        }
+                    }
+                    else -> {
+                        val corrected = !tValue.isNaN() && !valueMatches
+                        if (corrected) nCorrected++ else nConfirmed++
+                        JSONObject().apply {
+                            put("status", "confirmada")
+                            put("value_needs_review", false)
+                            put("data_quality_flag", JSONObject.NULL)
+                            put("platform_history_at", s.optString("seen_at"))
+                            if (corrected) {
+                                put("offer_value", sValue)
+                                put("observation", "Confirmada pela leitura do Histórico/Ganhos — valor ajustado de R$ ${fmtBr(tValue)} para R$ ${fmtBr(sValue)} (oficial da plataforma).")
+                            } else {
+                                put("observation", "Confirmada automaticamente pela leitura do Histórico/Ganhos do app (sem vídeo).")
+                            }
+                        }
+                    }
+                }
+
+                if (patchBody != null) {
+                    val ok = httpPatch(authToken, "$SUPABASE_URL/rest/v1/auto_trips?id=eq.$bestId", patchBody)
+                    if (!ok) { nFailed++; logReconcile(userId, authToken, "RECONCILE_FAIL", "PATCH auto_trips id=$bestId sighting=$sid falhou") }
+                }
+                httpPatch(authToken, "$SUPABASE_URL/rest/v1/platform_trip_sightings?id=eq.$sid",
                     JSONObject().apply { put("matched_auto_trip_id", bestId) })
             } else if (s.optString("outcome") == "finalizado" && s.optString("trip_date").isNotBlank() &&
                 s.optString("trip_time").isNotBlank() && sValue > 3.0 && sValue < 300.0) {
@@ -990,9 +1065,14 @@ class TripReaderService : AccessibilityService() {
                             put("platform_history_at", s.optString("seen_at"))
                             put("observation", "Criada pela conferência do Histórico/Ganhos — nunca capturada ao vivo pelo card de oferta.")
                         }
-                        httpPost(authToken, "$SUPABASE_URL/rest/v1/auto_trips", body)
+                        val ok = httpPost(authToken, "$SUPABASE_URL/rest/v1/auto_trips", body)
+                        if (ok) nCreated++
+                        else { nFailed++; logReconcile(userId, authToken, "RECONCILE_FAIL", "POST auto_trips (conferencia) sighting=$sid falhou, value=$sValue plat=$plat") }
                     }
-                } catch (_: Exception) {}
+                } catch (e: Exception) {
+                    nFailed++
+                    logReconcile(userId, authToken, "RECONCILE_FAIL", "Exceção criando conferencia sighting=$sid: ${e.message}")
+                }
             }
         }
 
@@ -1002,6 +1082,11 @@ class TripReaderService : AccessibilityService() {
                 .apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date())
             httpPatch(authToken, "$SUPABASE_URL/rest/v1/platform_trip_sightings?id=in.($idList)",
                 JSONObject().apply { put("processed_at", nowIso) })
+            // Um log por ciclo (não por sighting) — dá visibilidade total sem
+            // gerar spam: qualquer semana com nCreated/nCorrected zerados de
+            // novo é sinal de que algo quebrou de novo, sem precisar garimpar.
+            logReconcile(userId, authToken, "RECONCILE_SUMMARY",
+                "processados=${processedIds.size} confirmados=$nConfirmed corrigidos=$nCorrected criados=$nCreated divergentes=$nDisagree falhas=$nFailed")
         }
     }
 
