@@ -1955,6 +1955,11 @@ class TripReaderService : AccessibilityService() {
         if (!GpsService.isRunning) { bmp?.recycle(); hideFlashIfActive(); return }
         val cfg = loadFlashConfig()
         if (!cfg.optBoolean("enabled", true)) { bmp?.recycle(); hideFlashIfActive(); return }
+        flashCard.applyAppearance(
+            position = cfg.optString("position", "left"),
+            borderStyle = cfg.optString("borderStyle", "sides"),
+            sizeScale = cfg.optInt("sizeScale", 100)
+        )
 
         // O screenshot inclui o próprio overlay do MōB. Remove apenas as
         // linhas inequívocas do nosso card antes do parser; números soltos não
@@ -2332,6 +2337,13 @@ class TripReaderService : AccessibilityService() {
                 put("distancia", JSONObject().apply { put("enabled", false); put("value", 3.0) })
                 put("endereco", JSONObject().apply { put("enabled", true); put("list", org.json.JSONArray()) })
             })
+            // Aparência (13/09/2026, pedido do Yuri): posição, estilo da
+            // borda e tamanho do card, configuráveis em "Mais > MōB Flash >
+            // Aparência". Padrão validado nas simulações: esquerda, borda
+            // lateral (visual já existente), tamanho normal.
+            put("position", "left")
+            put("borderStyle", "sides")
+            put("sizeScale", 100)
         }
     }
 

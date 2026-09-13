@@ -211,7 +211,32 @@ class FlashCard(private val context: Context) {
     // É assim que o card fica mais estreito com 2 KPIs e mais largo com 4.
     private val baseWidthPx = dp(46)
     private val tileWidthPx = dp(74)
-    private fun widthFor(n: Int) = baseWidthPx + tileWidthPx * n.coerceIn(1, 4)
+
+    // ── Aparência configurável (13/09/2026, pedido do Yuri): posição,
+    // estilo da borda e tamanho, escolhidos na tela "Mais > MōB Flash >
+    // Aparência" e sincronizados do JS via KEY_FLASH_CONFIG_JSON. Aplica
+    // antes de cada show()/renderNotificationBitmap() — ver applyAppearance().
+    private var position: String = "left"
+    private var borderStyle: String = "sides"
+    private var sizeScale: Int = 100
+    private fun scaleF() = (sizeScale.coerceIn(80, 130)) / 100f
+    private fun sdp(v: Int) = (dp(v) * scaleF()).toInt()
+    private fun sdpf(v: Int) = dpf(v) * scaleF()
+    private fun stx(v: Float) = v * scaleF()
+
+    private fun widthFor(n: Int) = ((baseWidthPx + tileWidthPx * n.coerceIn(1, 4)) * scaleF()).toInt()
+
+    fun applyAppearance(position: String, borderStyle: String, sizeScale: Int) {
+        this.position = position
+        this.borderStyle = borderStyle
+        this.sizeScale = sizeScale
+        params.gravity = when (position) {
+            "right" -> Gravity.TOP or Gravity.END
+            "center" -> Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            else -> Gravity.TOP or Gravity.START
+        }
+        params.x = if (position == "center") 0 else dp(12)
+    }
 
     private val params = WindowManager.LayoutParams(
         widthFor(4),
@@ -222,7 +247,7 @@ class FlashCard(private val context: Context) {
         // de teclado do app por baixo.
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
         PixelFormat.TRANSLUCENT
-    ).apply { gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL; y = dp(58) }
+    ).apply { gravity = Gravity.TOP or Gravity.START; x = dp(12); y = dp(58) }
 
     // platform: "99" ou "UBER". overallGrade: pior nota entre as métricas ativas.
     // metrics: até 4, sempre numa linha só. autoHideMs é só rede de segurança —
@@ -380,15 +405,30 @@ class FlashCard(private val context: Context) {
         return "${min}m"
     }
 
+    // Métrica com dígito máximo maior (R$/HORA costuma passar de 100) ganha
+    // uma fatia maior; % LUCRO (no máximo 2 dígitos + "%") pode ser mais
+    // enxuta. Os outros (R$/KM, R$/MIN, R$ LUCRO) ficam no peso padrão.
+    // Mesma proporção validada no mockup de largura por indicador.
+    private fun weightFor(label: String) = when (label) {
+        "R$/HORA" -> 1.35f
+        "% LUCRO" -> 0.75f
+        else -> 1f
+    }
+
     private fun buildCard(platform: String, overallGrade: String, metrics: List<Metric>, totalMin: Int, totalKm: Double, cardWidthPx: Int, declineReason: String? = null): FrameLayout {
         val gradeColor = colorOf(overallGrade)
+        val bs = borderStyle
 
         val root = FrameLayout(context).apply {
             layoutParams = FrameLayout.LayoutParams(cardWidthPx, FrameLayout.LayoutParams.WRAP_CONTENT)
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = dpf(16)
+                cornerRadius = sdpf(16)
                 setColor(Color.parseColor("#E60E0E17"))
+                // Estilo "borda toda" (config de Aparência): sem barras
+                // laterais/horizontais, o contorno inteiro fica na cor do
+                // veredito (verde/amarelo/vermelho).
+                if (bs == "full") setStroke(sdp(3).coerceAtLeast(dp(2)), gradeColor)
             }
             elevation = dpf(10)
             isClickable = true
@@ -396,21 +436,30 @@ class FlashCard(private val context: Context) {
             setOnClickListener { hide() }
         }
 
+        // "outer" empilha as barras horizontais (topo/base) por fora da linha
+        // de conteúdo — só usado no estilo "top_bottom" da config de Aparência.
+        val outer = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = FrameLayout.LayoutParams(cardWidthPx, FrameLayout.LayoutParams.WRAP_CONTENT)
+        }
+        if (bs == "top_bottom") outer.addView(hBar(sdp(6), gradeColor, roundTop = true))
+
         val row = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             // Largura EXPLÍCITA (não MATCH_PARENT) — root já tem largura fixa
             // definida acima, então isso é só espelhar o mesmo valor. Uma
             // janela WRAP_CONTENT com filho MATCH_PARENT colapsa o conteúdo.
-            layoutParams = FrameLayout.LayoutParams(cardWidthPx, FrameLayout.LayoutParams.WRAP_CONTENT)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
         }
 
-        // Borda lateral mais grossa (8dp) pra ficar bem visível de relance.
-        row.addView(sideBar(dp(8), FrameLayout.LayoutParams.MATCH_PARENT, gradeColor, roundLeft = true))
+        // Borda lateral mais grossa (8dp) pra ficar bem visível de relance —
+        // só no estilo "sides" (padrão) da config de Aparência.
+        if (bs == "sides") row.addView(sideBar(sdp(8), FrameLayout.LayoutParams.MATCH_PARENT, gradeColor, roundLeft = true))
 
         val content = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            setPadding(dp(11), dp(10), dp(11), dp(9))
+            setPadding(sdp(11), sdp(10), sdp(11), sdp(9))
         }
 
         // Métricas numa linha só — números grandes (tamanho Gigu). Quando não
@@ -424,10 +473,10 @@ class FlashCard(private val context: Context) {
                 val tile = LinearLayout(context).apply {
                     orientation = LinearLayout.VERTICAL
                     gravity = Gravity.CENTER_HORIZONTAL
-                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, weightFor(m.label))
                 }
                 val n = TextView(context).apply {
-                    text = m.value; textSize = 31f
+                    text = m.value; textSize = stx(31f)
                     setTextColor(colorOf(m.grade)); setTypeface(Typeface.DEFAULT_BOLD)
                     gravity = Gravity.CENTER
                     maxLines = 1
@@ -440,13 +489,13 @@ class FlashCard(private val context: Context) {
                     // até caber, sem cortar nada — 31sp continua sendo o tamanho
                     // normal quando já cabe.
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        setAutoSizeTextTypeUniformWithConfiguration(18, 31, 1, TypedValue.COMPLEX_UNIT_SP)
+                        setAutoSizeTextTypeUniformWithConfiguration(stx(18f).toInt().coerceAtLeast(1), stx(31f).toInt().coerceAtLeast(1), 1, TypedValue.COMPLEX_UNIT_SP)
                     }
                 }
                 val l = TextView(context).apply {
-                    text = m.label; textSize = 6.8f
+                    text = m.label; textSize = stx(6.8f)
                     setTextColor(Color.parseColor("#8A8A99")); setTypeface(Typeface.DEFAULT_BOLD)
-                    gravity = Gravity.CENTER; setPadding(0, dp(3), 0, 0)
+                    gravity = Gravity.CENTER; setPadding(0, sdp(3), 0, 0)
                     maxLines = 1
                 }
                 tile.addView(n); tile.addView(l)
@@ -460,7 +509,7 @@ class FlashCard(private val context: Context) {
 
             val div = FrameLayout(context).apply {
                 layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1)).apply {
-                    topMargin = dp(9); bottomMargin = dp(7)
+                    topMargin = sdp(9); bottomMargin = sdp(7)
                 }
                 setBackgroundColor(Color.parseColor("#1FFFFFFF"))
             }
@@ -478,23 +527,23 @@ class FlashCard(private val context: Context) {
         val isUber = platform == "UBER"
         val logoBadge = TextView(context).apply {
             text = if (isUber) "UBER" else "99"
-            textSize = if (isUber) 9.5f else 10f
+            textSize = stx(if (isUber) 9.5f else 10f)
             setTypeface(Typeface.DEFAULT_BOLD)
             setTextColor(if (isUber) Color.WHITE else Color.parseColor("#111111"))
-            setPadding(dp(7), dp(3), dp(7), dp(3))
+            setPadding(sdp(7), sdp(3), sdp(7), sdp(3))
             background = GradientDrawable().apply {
-                cornerRadius = dpf(5)
+                cornerRadius = sdpf(5)
                 setColor(if (isUber) Color.BLACK else Color.parseColor("#FFC800"))
                 if (isUber) { setStroke(dp(1), Color.parseColor("#333333")) }
             }
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { marginEnd = dp(8) }
+            ).apply { marginEnd = sdp(8) }
         }
         bottomRow.addView(logoBadge)
 
         val tTime = TextView(context).apply {
-            text = fmtMin(totalMin); textSize = 15.75f
+            text = fmtMin(totalMin); textSize = stx(15.75f)
             setTextColor(Color.WHITE); setTypeface(Typeface.DEFAULT_BOLD)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
@@ -507,11 +556,11 @@ class FlashCard(private val context: Context) {
         // Endereço" às vezes não cabe no espaço entre o tempo e o km.
         if (!declineReason.isNullOrBlank()) {
             val tReason = TextView(context).apply {
-                text = declineReason; textSize = 15.75f
+                text = declineReason; textSize = stx(15.75f)
                 setTextColor(Color.parseColor("#EF4444")); setTypeface(Typeface.DEFAULT_BOLD)
                 gravity = Gravity.CENTER
                 maxLines = 1
-                setPadding(dp(4), 0, dp(4), 0)
+                setPadding(sdp(4), 0, sdp(4), 0)
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.4f)
                 // PEDIDO (17/07/2026): mesmo tamanho de "14m"/"4,4 km" — antes
                 // era 9.5sp e ficava pequeno demais pra ler de relance
@@ -521,14 +570,14 @@ class FlashCard(private val context: Context) {
                 // reduz até caber, nunca corta, igual já acontece nos números
                 // dos KPIs.
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    setAutoSizeTextTypeUniformWithConfiguration(8, 16, 1, TypedValue.COMPLEX_UNIT_SP)
+                    setAutoSizeTextTypeUniformWithConfiguration(stx(8f).toInt().coerceAtLeast(1), stx(16f).toInt().coerceAtLeast(1), 1, TypedValue.COMPLEX_UNIT_SP)
                 }
             }
             bottomRow.addView(tReason)
         }
 
         val tKm = TextView(context).apply {
-            text = "%.1f km".format(totalKm); textSize = 15.75f
+            text = "%.1f km".format(totalKm); textSize = stx(15.75f)
             setTextColor(Color.WHITE); setTypeface(Typeface.DEFAULT_BOLD)
             gravity = Gravity.END
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
@@ -537,10 +586,33 @@ class FlashCard(private val context: Context) {
         content.addView(bottomRow)
 
         row.addView(content)
-        row.addView(sideBar(dp(8), FrameLayout.LayoutParams.MATCH_PARENT, gradeColor, roundRight = true))
+        if (bs == "sides") row.addView(sideBar(sdp(8), FrameLayout.LayoutParams.MATCH_PARENT, gradeColor, roundRight = true))
 
-        root.addView(row)
+        if (bs == "top_bottom") {
+            outer.addView(row)
+            outer.addView(hBar(sdp(6), gradeColor, roundBottom = true))
+            root.addView(outer)
+        } else {
+            root.addView(row)
+        }
         return root
+    }
+
+    // Barra horizontal (topo ou base) usada no estilo de borda "em cima/
+    // embaixo" — mesma ideia da sideBar, só que deitada.
+    private fun hBar(h: Int, color: Int, roundTop: Boolean = false, roundBottom: Boolean = false): android.view.View {
+        return android.view.View(context).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, h)
+            background = GradientDrawable().apply {
+                setColor(color)
+                val r = sdpf(16)
+                cornerRadii = if (roundTop)
+                    floatArrayOf(r, r, r, r, 0f, 0f, 0f, 0f)
+                else if (roundBottom)
+                    floatArrayOf(0f, 0f, 0f, 0f, r, r, r, r)
+                else floatArrayOf(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
+            }
+        }
     }
 
     private fun sideBar(w: Int, h: Int, color: Int, roundLeft: Boolean = false, roundRight: Boolean = false): android.view.View {
@@ -565,7 +637,7 @@ class FlashCard(private val context: Context) {
     private fun vDivider(): android.view.View {
         return android.view.View(context).apply {
             layoutParams = LinearLayout.LayoutParams(dp(1), LinearLayout.LayoutParams.MATCH_PARENT).apply {
-                topMargin = dp(3); bottomMargin = dp(3)
+                topMargin = sdp(3); bottomMargin = sdp(3)
             }
             setBackgroundColor(Color.parseColor("#26FFFFFF"))
         }
