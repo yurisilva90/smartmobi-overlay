@@ -1,6 +1,7 @@
 package io.github.yurisilva90.smartmobi
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -91,7 +92,13 @@ object ProactiveAlert {
     private val checkRunnable = object : Runnable {
         override fun run() {
             val state = TripReaderService.confirmedTripSubState
-            if (GpsService.isRunning && !GpsService.isPaused && (state == "online" || state == "corrida") && !busy) {
+            // PEDIDO (12/09/2026, Yuri): MōB Insight ("parado esperando
+            // corrida", "horário de pico") também dispara durante "buscar" —
+            // por isso o estado não trava mais a entrada em runCheck aqui.
+            // Os cards colaborativos (fiscalização/lotação/confirmação)
+            // continuam restritos a online/corrida, verificado DENTRO de
+            // runCheck, já que insight tem prioridade e retorna antes deles.
+            if (GpsService.isRunning && !GpsService.isPaused && !busy) {
                 thread(isDaemon = true) { runCheck(state) }
             }
             handler.postDelayed(this, CHECK_INTERVAL_MS)
@@ -147,6 +154,18 @@ object ProactiveAlert {
             val prefs = appCtx?.getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE) ?: return
             val userId = prefs.getString(GpsService.KEY_USER_ID, null) ?: return
             val authToken = prefs.getString(GpsService.KEY_ACCESS_TOKEN, null) ?: TripReaderService.SUPABASE_ANON
+
+            val insight = findMobInsight(authToken, userId)
+            if (insight != null) {
+                handler.post { showMobInsightCard(insight, authToken) }
+                return
+            }
+
+            // Cards colaborativos (fiscalização/lotação/confirmação) seguem
+            // nunca aparecendo durante "buscar" — só o MōB Insight acima
+            // ganhou essa liberação.
+            if (state != "online" && state != "corrida") return
+
             val lat = GpsService.lastLat
             val lng = GpsService.lastLng
             if (lat == 0.0 && lng == 0.0) return
@@ -205,6 +224,52 @@ object ProactiveAlert {
         val address: String?,
         val minutesAgo: Int
     )
+
+    private data class MobInsight(
+        val id: String,
+        val type: String,
+        val title: String,
+        val message: String,
+        val payload: JSONObject?
+    )
+
+    private val INSIGHT_COLOR = mapOf(
+        "baixa_media" to "#DC2626",
+        "ponto_sugerido" to "#0D3A7D",
+        "pico_espera" to "#16A34A"
+    )
+
+    // Só busca insight aqui (não fica esperando resposta em thread de rede
+    // isolada como os outros checks) porque essa consulta é simples e não
+    // depende de raio/localização — roda sempre que o loop chama runCheck,
+    // MESMO sem GPS ainda fixado, e tem prioridade sobre os cards colaborativos.
+    private fun findMobInsight(authToken: String, userId: String): MobInsight? {
+        val now = utcIso(System.currentTimeMillis())
+        val url = "${TripReaderService.SUPABASE_URL}/rest/v1/driver_insights?" +
+            "user_id=eq.$userId&dismissed_at=is.null&expires_at=gt.$now&" +
+            "select=id,type,title,message,payload&order=created_at.desc&limit=1"
+        val arr = getJson(authToken, url) as? JSONArray ?: return null
+        if (arr.length() == 0) return null
+        val o = arr.getJSONObject(0)
+        return MobInsight(o.getString("id"), o.getString("type"), o.getString("title"), o.getString("message"), o.optJSONObject("payload"))
+    }
+
+    private fun dismissMobInsight(authToken: String, id: String) {
+        thread(isDaemon = true) {
+            try {
+                val url = "${TripReaderService.SUPABASE_URL}/rest/v1/driver_insights?id=eq.$id"
+                val conn = URL(url).openConnection() as HttpURLConnection
+                conn.requestMethod = "PATCH"
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("apikey", TripReaderService.SUPABASE_ANON)
+                conn.setRequestProperty("Authorization", "Bearer $authToken")
+                val body = JSONObject().apply { put("dismissed_at", utcIso(System.currentTimeMillis())) }
+                conn.outputStream.use { it.write(body.toString().toByteArray()) }
+                conn.responseCode
+            } catch (_: Exception) {}
+        }
+    }
 
     private fun haversine(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
         val r = 6371000.0
@@ -763,5 +828,124 @@ object ProactiveAlert {
         mount(ctx, question, color, "Relatado há ${report.minutesAgo} min por outro motorista", report.address ?: "", SIMPLE_SECONDS, content) {
             markPromptOutcome(authToken, userId, reportId = report.id, outcome = it)
         }
+    }
+
+    private fun statBox(ctx: Context, value: String, label: String, variant: String): LinearLayout {
+        val bg = when (variant) { "bad" -> "#FEF2F2"; "good" -> "#F0FDF4"; else -> "#F1F5F9" }
+        val fg = when (variant) { "bad" -> "#DC2626"; "good" -> "#16A34A"; else -> "#0F172A" }
+        val fgLabel = when (variant) { "bad" -> "#F87171"; "good" -> "#4ADE80"; else -> "#64748B" }
+        return LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                cornerRadius = dpf(10)
+                setColor(Color.parseColor(bg))
+            }
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { marginEnd = dp(4) }
+            addView(TextView(ctx).apply { text = value; textSize = 13f; setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER; setTextColor(Color.parseColor(fg)) })
+            addView(TextView(ctx).apply { text = label; textSize = 8.5f; gravity = Gravity.CENTER; setTextColor(Color.parseColor(fgLabel)) })
+        }
+    }
+
+    private fun showMobInsightCard(insight: MobInsight, authToken: String) {
+        val ctx = appCtx ?: return
+        val color = INSIGHT_COLOR[insight.type] ?: "#0D3A7D"
+        val content = LinearLayout(ctx).apply { orientation = LinearLayout.VERTICAL }
+        content.addView(TextView(ctx).apply {
+            text = insight.message
+            textSize = 12.5f
+            setTextColor(Color.parseColor("#334155"))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        })
+        val todayRpkm = insight.payload?.optDouble("today_rpkm", Double.NaN) ?: Double.NaN
+        val baseRpkm = insight.payload?.optDouble("base_rpkm", Double.NaN) ?: Double.NaN
+        val bucketRpkm = insight.payload?.optDouble("bucket_rpkm", Double.NaN) ?: Double.NaN
+        val bucketRphr = insight.payload?.optDouble("bucket_rphr", Double.NaN) ?: Double.NaN
+        if (insight.type == "baixa_media" && !todayRpkm.isNaN() && !baseRpkm.isNaN()) {
+            val row = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(9) }
+            }
+            row.addView(statBox(ctx, "R$ %.2f/km".format(Locale("pt","BR"), todayRpkm), "HOJE", "bad"))
+            row.addView(statBox(ctx, "R$ %.2f/km".format(Locale("pt","BR"), baseRpkm), "MÉDIA", "good"))
+            content.addView(row)
+        } else if (insight.type == "pico_espera" && !bucketRpkm.isNaN() && !bucketRphr.isNaN()) {
+            val row = LinearLayout(ctx).apply {
+                orientation = LinearLayout.HORIZONTAL
+                layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(9) }
+            }
+            row.addView(statBox(ctx, "R$ %.2f/km".format(Locale("pt","BR"), bucketRpkm), "KM", "good"))
+            row.addView(statBox(ctx, "R$ %.2f/h".format(Locale("pt","BR"), bucketRphr), "HORA", "good"))
+            content.addView(row)
+        } else if (insight.type == "ponto_sugerido") {
+            val venues = insight.payload?.optJSONArray("venues")
+            if (venues != null) {
+                for (i in 0 until venues.length()) {
+                    val v = venues.optJSONObject(i) ?: continue
+                    content.addView(venueRow(ctx, v, authToken, insight.id))
+                }
+            }
+        }
+        mount(ctx, insight.title, color, "Copiloto", "", SIMPLE_SECONDS, content) {
+            dismissMobInsight(authToken, insight.id)
+        }
+    }
+
+    private val VENUE_CAT_COLOR = mapOf(
+        "shopping" to "#B45309",
+        "terminal_rodoviario" to "#6366F1",
+        "aeroporto" to "#0A2F6B"
+    )
+
+    private fun venueRow(ctx: Context, v: JSONObject, authToken: String, insightId: String): LinearLayout {
+        val name = v.optString("name", "")
+        val category = v.optString("category", "shopping")
+        val km = v.optDouble("km", 0.0)
+        val hot = v.optBoolean("hot", false)
+        val color = VENUE_CAT_COLOR[category] ?: "#B45309"
+        val kmTxt = if (km < 1) "${(km*1000).toInt()} m" else "%.1f km".format(Locale("pt","BR"), km)
+
+        val row = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = GradientDrawable().apply { cornerRadius = dpf(11); setColor(Color.parseColor("#F8FAFC")) }
+            setPadding(dp(9), dp(8), dp(9), dp(8))
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) }
+            isClickable = true
+        }
+        row.addView(FrameLayout(ctx).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(26), dp(26)).apply { rightMargin = dp(9) }
+            background = GradientDrawable().apply { cornerRadius = dpf(8); setColor(Color.parseColor(color)) }
+        })
+        val txt = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        txt.addView(TextView(ctx).apply { text = name; textSize = 11.5f; setTypeface(null, Typeface.BOLD); setTextColor(Color.parseColor("#0F172A")) })
+        txt.addView(TextView(ctx).apply { text = kmTxt; textSize = 9.5f; setTextColor(Color.parseColor("#94A3B8")) })
+        row.addView(txt)
+        if (hot) {
+            row.addView(TextView(ctx).apply {
+                text = "DEMANDA ALTA"
+                textSize = 7.5f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.parseColor("#B45309"))
+                background = GradientDrawable().apply { cornerRadius = dpf(99); setColor(Color.parseColor("#FEF3C7")) }
+                setPadding(dp(6), dp(3), dp(6), dp(3))
+            })
+        }
+        row.setOnClickListener {
+            dismissMobInsight(authToken, insightId)
+            forceHide()
+            val ctx2 = appCtx ?: return@setOnClickListener
+            val intent = Intent(ctx2, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                putExtra("open_venue_name", name)
+                putExtra("open_venue_category", category)
+            }
+            ctx2.startActivity(intent)
+        }
+        return row
     }
 }

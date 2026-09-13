@@ -49,6 +49,13 @@ class MainActivity : AppCompatActivity() {
     private var splashDone = false
     private var webReady   = false
     private var pendingScreen: String? = null
+    // Deep link genérico pra abrir uma tela/local específico assim que o
+    // WebView terminar de carregar — mesmo padrão do pendingScreen, mas
+    // carregando um par nome+categoria (hoje usado pro Copiloto abrir a
+    // tela de local dos Informes; dá pra reaproveitar pra outras telas
+    // que precisem de um parâmetro no futuro).
+    private var pendingVenueName: String? = null
+    private var pendingVenueCategory: String? = null
 
     companion object {
         const val URL      = "https://yurisilva90.github.io/mob/"
@@ -64,6 +71,8 @@ class MainActivity : AppCompatActivity() {
         instance = this
         JourneyStatusTracker.restore(this)
         pendingScreen = intent.getStringExtra("open_screen")
+        pendingVenueName = intent.getStringExtra("open_venue_name")
+        pendingVenueCategory = intent.getStringExtra("open_venue_category")
         // Vigia do OCR: se o app estava fechado e o motorista tocou na
         // notificação de "leitura de tela parou", o extra chega no onCreate
         // (não no onNewIntent) — pede a captura assim que a tela montar.
@@ -116,6 +125,12 @@ class MainActivity : AppCompatActivity() {
             pendingScreen = screen
             maybeOpenPendingScreen()
         }
+        val venueName = intent.getStringExtra("open_venue_name")
+        if (venueName != null) {
+            pendingVenueName = venueName
+            pendingVenueCategory = intent.getStringExtra("open_venue_category")
+            maybeOpenPendingVenue()
+        }
         if (intent.getBooleanExtra("re_request_capture", false)) {
             launchScreenCaptureRequest()
         }
@@ -147,6 +162,28 @@ class MainActivity : AppCompatActivity() {
             webView.evaluateJavascript(
                 "if(typeof navTo==='function') navTo('$screen');", null)
             pendingScreen = null
+        }
+    }
+
+    // Mesma correspondência categoria→tipoKey usada no card do Copiloto no
+    // app web (MOB_VENUE_CAT em index.html) — mantenha as duas em sincronia.
+    private fun venueTipoKey(category: String?): String = when (category) {
+        "terminal_rodoviario" -> "term"
+        "aeroporto" -> "aero"
+        else -> "shop"
+    }
+
+    private fun maybeOpenPendingVenue() {
+        val name = pendingVenueName
+        if (name != null && webReady) {
+            val tipoKey = venueTipoKey(pendingVenueCategory)
+            webView.evaluateJavascript(
+                "if(typeof navTo==='function'&&typeof infAbrirLocal==='function'){" +
+                "navTo('informes');setTimeout(function(){infAbrirLocal(null,${JSONObject.quote(name)},${JSONObject.quote(tipoKey)});},50);}",
+                null
+            )
+            pendingVenueName = null
+            pendingVenueCategory = null
         }
     }
 
@@ -536,7 +573,7 @@ class MainActivity : AppCompatActivity() {
                 refreshNativePermissionUi()
                 // Pequeno atraso pra dar tempo do login assincrono (Supabase) resolver
                 // antes de navegar — senão a navegacao pode disparar ainda na tela de login.
-                Handler(Looper.getMainLooper()).postDelayed({ maybeOpenPendingScreen() }, 900)
+                Handler(Looper.getMainLooper()).postDelayed({ maybeOpenPendingScreen(); maybeOpenPendingVenue() }, 900)
             }
         }
     }
@@ -589,6 +626,7 @@ class MainActivity : AppCompatActivity() {
         instance = this
         webView.onResume()
         maybeOpenPendingScreen()
+        maybeOpenPendingVenue()
         refreshNativePermissionUi()
         // Sincroniza KM nativo com o web app ao voltar ao foreground
         if (GpsService.isRunning) {
