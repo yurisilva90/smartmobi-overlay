@@ -671,6 +671,22 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onPause()   { webView.onPause(); super.onPause() }
+    // CORRIGIDO (14/09/2026, caso real do Yuri: bolinha com km/tempo certos
+    // mas Ganho/R$-hora sempre R$ 0,00 assim que ele saía do MōB pra usar
+    // Uber/99 — exatamente o momento em que a bolinha importa). Km/tempo
+    // vêm 100% do GpsService nativo (serviço em foreground, independente da
+    // Activity), mas o Ganho só existe no lado JS (é quem tem acesso às
+    // corridas do dia) e é empurrado pro nativo por um timer da WebView.
+    // webView.onPause() pausa TODOS os timers/JS da WebView (documentado no
+    // Android) — com uma jornada ativa isso congelava o ganho pra sempre no
+    // valor que estava (ou em R$ 0,00, se nunca tinha sido empurrado ainda).
+    // Com jornada ativa, mantém o JS rodando em segundo plano — só assim o
+    // ganho continua atualizando na bolinha enquanto o motorista está
+    // noutro app. Sem jornada ativa, comportamento de sempre (economiza
+    // bateria pausando a WebView).
+    override fun onPause() {
+        if (!GpsService.isRunning) webView.onPause()
+        super.onPause()
+    }
     override fun onDestroy() { instance = null; webView.destroy(); super.onDestroy() }
 }
