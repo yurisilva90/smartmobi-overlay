@@ -983,7 +983,18 @@ class TripReaderService : AccessibilityService() {
                 if (tid.isBlank() || usedIds.contains(tid)) continue
                 if ((t.optString("platform").lowercase(Locale.US)) != plat) continue
                 val tValue = if (t.isNull("offer_value")) Double.NaN else t.optDouble("offer_value", Double.NaN)
-                if (tValue.isNaN() || sValue.isNaN() || Math.abs(tValue - sValue) >= 20.0) continue
+                if (sValue.isNaN()) continue
+                // CORRIGIDO (14/09/2026, dado real confirmado: corrida da Uber
+                // com status/tempo certos mas offer_value nulo —
+                // data_quality_flag "captura_incompleta", a tela de oferta não
+                // deu tempo de ser lida). Antes, tValue.isNaN() sempre pulava
+                // essa corrida aqui: nunca casava com a leitura do Histórico,
+                // ficava pra sempre sem valor E ainda virava um "conferencia"
+                // duplicado da mesma corrida na próxima leitura. Sem valor
+                // nenhum pra comparar, casa só por plataforma+horário (mesma
+                // janela de 3min abaixo) — não tem contra o que comparar, então
+                // aceita o valor oficial do Histórico como o certo.
+                if (!tValue.isNaN() && Math.abs(tValue - sValue) >= 20.0) continue
                 val tStarted = t.optString("trip_started_at")
                 if (tStarted.isBlank() || sMinOfDay == null) continue
                 val tMinOfDay = isoUtcToLocalMinOfDay(tStarted) ?: continue
@@ -1014,14 +1025,22 @@ class TripReaderService : AccessibilityService() {
                         }
                     }
                     else -> {
-                        val corrected = !tValue.isNaN() && !valueMatches
-                        if (corrected) nCorrected++ else nConfirmed++
+                        val hadNoValue = tValue.isNaN()
+                        val corrected = !hadNoValue && !valueMatches
+                        if (corrected || hadNoValue) nCorrected++ else nConfirmed++
                         JSONObject().apply {
                             put("status", "confirmada")
                             put("value_needs_review", false)
                             put("data_quality_flag", JSONObject.NULL)
                             put("platform_history_at", s.optString("seen_at"))
-                            if (corrected) {
+                            if (hadNoValue) {
+                                // Captura ao vivo não conseguiu ler o valor da
+                                // oferta (captura_incompleta) — não tem valor
+                                // antigo pra comparar/"ajustar", só preenche
+                                // com o oficial do Histórico agora.
+                                put("offer_value", sValue)
+                                put("observation", "Valor preenchido pela leitura do Histórico/Ganhos — a captura ao vivo não conseguiu ler o valor da oferta desta corrida.")
+                            } else if (corrected) {
                                 put("offer_value", sValue)
                                 put("observation", "Confirmada pela leitura do Histórico/Ganhos — valor ajustado de R$ ${fmtBr(tValue)} para R$ ${fmtBr(sValue)} (oficial da plataforma).")
                             } else {
