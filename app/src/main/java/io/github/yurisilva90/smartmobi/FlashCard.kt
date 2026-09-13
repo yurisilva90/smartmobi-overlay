@@ -256,10 +256,12 @@ class FlashCard(private val context: Context) {
 
     fun show(platform: String, overallGrade: String, metrics: List<Metric>, totalMin: Int, totalKm: Double, declineReason: String? = null, declineReasonShort: String? = null, declineReasonSpoken: String? = null, offerToken: String? = null, autoHideMs: Long = 20000L) {
         // Prioridade ABSOLUTA (16/08/2026, pedido do Yuri): se um alerta
-        // proativo (Fiscalização/Lotação) estiver na tela, cai na hora,
-        // sem exceção — oferta chegando nunca pode competir com isso pela
-        // mesma janela de overlay.
-        ProactiveAlert.forceHide()
+        // proativo (Fiscalização/Lotação) estiver na tela, cai na hora por
+        // padrão — oferta chegando não devia competir com isso pela atenção
+        // do motorista. CONFIGURÁVEL (13/09/2026, pedido do Yuri) em "Mais >
+        // Notificações > Some assim que chega uma oferta" — notifyOfferShown()
+        // só chama forceHide() de fato se essa opção estiver ligada (padrão: sim).
+        ProactiveAlert.notifyOfferShown()
         // Antes exigia pelo menos 1 métrica pra mostrar o card. Com o grupo
         // "Recusas" (17/07/2026), uma oferta pode ser recusada mesmo com
         // todos os Indicadores desligados — nesse caso o card mostra só a

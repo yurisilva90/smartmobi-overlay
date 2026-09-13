@@ -383,6 +383,15 @@ class MainActivity : AppCompatActivity() {
             @JavascriptInterface fun updateFloating(km: Double) {
                 floatingWidget?.updateKm(km)
             }
+            // Ganho da Jornada/Hora/Km (13/09/2026) — o nativo não tem acesso
+            // às corridas realizadas (isso mora no lado JS), então o JS
+            // calcula e empurra pra cá no mesmo ritmo que updateFloating(km)
+            // já é chamado (a cada fix de GPS). ganhoHoraGrade/rpKmGrade já
+            // vêm prontos ('g'/'a'/'r'), reaproveitando rateColorClass — mesmo
+            // limiar configurado nos Indicadores do Card de Oferta.
+            @JavascriptInterface fun updateFloatingEarnings(ganhoTotal: Double, ganhoHora: Double, ganhoHoraGrade: String, rpKm: Double, rpKmGrade: String) {
+                floatingWidget?.updateEarnings(ganhoTotal, ganhoHora, ganhoHoraGrade, rpKm, rpKmGrade)
+            }
             @JavascriptInterface fun updateFloatingStatus(status: String) {
                 floatingWidget?.updateStatus(status)
             }
@@ -541,6 +550,20 @@ class MainActivity : AppCompatActivity() {
                 getSharedPreferences(GpsService.PREFS_NAME, android.content.Context.MODE_PRIVATE).edit()
                     .putString(FloatingWidget.KEY_WIDGET_CONFIG_JSON, configJson)
                     .apply()
+            }
+
+            // Salva a configuração de Notificações do Copiloto (lida pelo
+            // ProactiveAlert a cada ciclo de verificação). configJson vem
+            // pronto do JS: {"posicionamento":{...},"duracaoSeg":..,"tipos":{...}}
+            @JavascriptInterface fun saveNotifConfig(configJson: String) {
+                getSharedPreferences(GpsService.PREFS_NAME, android.content.Context.MODE_PRIVATE).edit()
+                    .putString(ProactiveAlert.KEY_NOTIF_CONFIG_JSON, configJson)
+                    .apply()
+            }
+            // Toca uma prévia do som escolhido na tela de config, sem esperar
+            // um alerta de verdade aparecer.
+            @JavascriptInterface fun previewAlertSound(key: String) {
+                ProactiveAlert.previewSound(key)
             }
 
             // Captura de tela pro OCR do MōB Flash (a oferta da 99 é imagem)

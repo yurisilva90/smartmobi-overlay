@@ -22,15 +22,60 @@ class FloatingWidget(private val context: Context) {
     }
 
     // ── Aparência configurável (13/09/2026, pedido do Yuri): tamanho da
-    // bolinha e quais das 3 informações (status/tempo/km) ela mostra.
-    // Configurado em "Mais > Bolinha flutuante" (index.html) e sincronizado
-    // via KEY_WIDGET_CONFIG_JSON. Lido de novo a cada show() — uma mudança
-    // de config vale a partir da próxima vez que a bolinha aparecer.
+    // bolinha e quais informações ela mostra. Configurado em "Mais > Painel
+    // (Bolinha)" (index.html) e sincronizado via KEY_WIDGET_CONFIG_JSON.
+    // Lido de novo a cada show() — uma mudança de config vale a partir da
+    // próxima vez que a bolinha aparecer.
     private var sizeScale: Int = 100
     private var showStatus: Boolean = true
     private var showTime: Boolean = true
     private var showKm: Boolean = true
+    // PEDIDO (13/09/2026): 3 informações financeiras novas — Ganho da
+    // Jornada (destaque em branco) e Ganho por Hora/Km (cor de meta, mesmo
+    // limiar vermelho/verde configurado nos Indicadores do Card de Oferta).
+    private var showGanhoTotal: Boolean = false
+    private var showGanhoHora: Boolean = false
+    private var showRpKm: Boolean = false
+    // Ordem dos campos abaixo do Status — o motorista arrasta pra reordenar
+    // na tela de config; Status em si nunca entra aqui, fica sempre fixo
+    // no topo quando ativo.
+    private var fieldOrder: List<String> = listOf("tempo", "ganhoTotal", "ganhoHora", "rpkm", "km")
+    // Cor de cada status, escolhida pelo motorista num seletor de cor
+    // (antes era fixo: Online amarelo, Buscar laranja, Corrida verde).
+    private var statusColors: Map<String, Int> = mapOf(
+        "online" to Color.parseColor("#FACC15"),
+        "buscar" to Color.parseColor("#F97316"),
+        "corrida" to Color.parseColor("#22C55E")
+    )
     private fun scaleF() = sizeScale.coerceIn(80, 130) / 100f
+    private fun gradeColor(g: String) = when (g) {
+        "g" -> Color.parseColor("#4ADE80")
+        "a" -> Color.parseColor("#FBBF24")
+        else -> Color.parseColor("#F87171")
+    }
+
+    // Valores ao vivo de ganho — empurrados pelo JS (que tem acesso às
+    // corridas realizadas) via updateEarnings(), chamado no mesmo ritmo que
+    // updateKm() já é (a cada fix de GPS). Grade ('g'/'a'/'r') já vem
+    // calculada do lado JS, reaproveitando rateColorClass (mesmo limiar dos
+    // Indicadores do Card de Oferta) — o nativo só pinta com a cor certa.
+    private var ganhoTotalVal = 0.0
+    private var ganhoHoraVal = 0.0
+    private var ganhoHoraGrade = "g"
+    private var rpKmVal = 0.0
+    private var rpKmGrade = "g"
+    private var tvGanhoTotal: TextView? = null
+    private var tvGanhoHora: TextView? = null
+    private var tvRpKm: TextView? = null
+
+    fun updateEarnings(ganhoTotal: Double, ganhoHora: Double, ganhoHoraGrade: String, rpKm: Double, rpKmGrade: String) {
+        this.ganhoTotalVal = ganhoTotal
+        this.ganhoHoraVal = ganhoHora
+        this.ganhoHoraGrade = ganhoHoraGrade
+        this.rpKmVal = rpKm
+        this.rpKmGrade = rpKmGrade
+        updateDisplay()
+    }
 
     private fun loadConfig() {
         try {
@@ -41,6 +86,56 @@ class FloatingWidget(private val context: Context) {
             showStatus = cfg.optBoolean("showStatus", true)
             showTime = cfg.optBoolean("showTime", true)
             showKm = cfg.optBoolean("showKm", true)
+            showGanhoTotal = cfg.optBoolean("showGanhoTotal", false)
+            showGanhoHora = cfg.optBoolean("showGanhoHora", false)
+            showRpKm = cfg.optBoolean("showRpKm", false)
+
+            val orderArr = cfg.optJSONArray("order")
+            if (orderArr != null) {
+                val known = setOf("tempo", "ganhoTotal", "ganhoHora", "rpkm", "km")
+                val parsed = LinkedHashSet<String>()
+                for (i in 0 until orderArr.length()) {
+                    val k = orderArr.optString(i)
+                    if (k in known) parsed.add(k)
+                }
+                // Qualquer campo conhecido que não veio na lista (config antiga/
+                // incompleta) entra no final — nunca some silenciosamente.
+                known.forEach { if (it !in parsed) parsed.add(it) }
+                fieldOrder = parsed.toList()
+            }
+
+            val colorsObj = cfg.optJSONObject("statusColors")
+            if (colorsObj != null) {
+                val parsedColors = HashMap<String, Int>()
+                for (key in listOf("online", "buscar", "corrida")) {
+                    val hex = colorsObj.optString(key, "")
+                    parsedColors[key] = try {
+                        if (hex.isNotEmpty()) Color.parseColor(hex) else statusColors[key]!!
+                    } catch (_: Exception) { statusColors[key]!! }
+                }
+                statusColors = parsedColors
+            }
+
+            // Teto de 4 informações ativas (contando Status) — reforçado aqui
+            // por segurança, mesmo a UI já impedindo isso na origem.
+            var active = if (showStatus) 1 else 0
+            for (key in fieldOrder) {
+                val isOn = when (key) {
+                    "tempo" -> showTime; "ganhoTotal" -> showGanhoTotal
+                    "ganhoHora" -> showGanhoHora; "rpkm" -> showRpKm; "km" -> showKm
+                    else -> false
+                }
+                if (!isOn) continue
+                if (active >= 4) {
+                    when (key) {
+                        "tempo" -> showTime = false
+                        "ganhoTotal" -> showGanhoTotal = false
+                        "ganhoHora" -> showGanhoHora = false
+                        "rpkm" -> showRpKm = false
+                        "km" -> showKm = false
+                    }
+                } else active++
+            }
         } catch (_: Exception) {}
     }
 
@@ -99,25 +194,24 @@ class FloatingWidget(private val context: Context) {
     // quando a jornada está de fato "running" (não pausada/parada) — nesses
     // casos o card continua mostrando Pausado/Offline normalmente.
     // Cores: Online=verde (igual sempre foi), Buscar=laranja, Corrida=azul.
+    // Cor do status — antes fixa (Online amarelo/Buscar laranja/Corrida
+    // verde), agora escolhida pelo motorista num seletor de cor por status.
+    private fun colorFor(key: String): Int = statusColors[key] ?: statusColors["online"]!!
+
     fun updateTripState(subStatus: String) {
         lastTripSubStatus = subStatus
         handler.post {
             if (!GpsService.isRunning || GpsService.isPaused) return@post
-            // CORRIGIDO (11/09/2026, pedido do Yuri): azul do Corrida tinha
-            // pouco contraste no overlay. Verde (que era do Online) passou
-            // pro Corrida; Online virou amarelo — mesmo trio que Buscar já
-            // usava (laranja), só reorganizado.
-            val (label, colorHex) = when (subStatus) {
-                "buscar"  -> "Buscar" to "#F97316"
-                "corrida" -> "Corrida" to "#22C55E"
-                else      -> "Online" to "#FACC15"
+            val (label, key) = when (subStatus) {
+                "buscar"  -> "Buscar" to "buscar"
+                "corrida" -> "Corrida" to "corrida"
+                else      -> "Online" to "online"
             }
-            val c = Color.parseColor(colorHex)
+            val c = colorFor(key)
             container?.findViewWithTag<TextView>("status_tv")?.apply { text = label; setTextColor(c) }
             container?.findViewWithTag<FrameLayout>("status_dot")?.apply {
                 background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(c) }
             }
-            tvKm?.setTextColor(c)
             container?.background = borderDrawable(c)
         }
     }
@@ -150,14 +244,11 @@ class FloatingWidget(private val context: Context) {
             // chama hide() antes de qualquer status renderizar (stopFloating
             // no MainActivity). Só sobra "running" (Online); qualquer outro
             // valor cai no mesmo tratamento — menos estado morto pra manter.
-            val color = "#FACC15"
-            val label = "Online"
-            val c = Color.parseColor(color)
-            container?.findViewWithTag<TextView>("status_tv")?.apply { text = label; setTextColor(c) }
+            val c = colorFor("online")
+            container?.findViewWithTag<TextView>("status_tv")?.apply { text = "Online"; setTextColor(c) }
             container?.findViewWithTag<FrameLayout>("status_dot")?.apply {
                 background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(c) }
             }
-            tvKm?.setTextColor(c)
             container?.background = borderDrawable(c)
             updateDisplay()
         }
@@ -171,6 +262,8 @@ class FloatingWidget(private val context: Context) {
         }
     }
 
+    private fun fmtBr(v: Double): String = String.format(java.util.Locale.US, "%.2f", v).replace(".", ",")
+
     private fun updateDisplay() {
         // ── FONTE AUTORITATIVA: lê sempre do GpsService companion ──────────
         // Nunca usa cópias locais — assim a bolinha nunca fica dessincronizada
@@ -180,7 +273,13 @@ class FloatingWidget(private val context: Context) {
         val gIsPaused   = GpsService.isPaused
         val gPauseStart = GpsService.pauseStartMs
 
-        if (gStart <= 0L) { tvTime?.text = "00:00"; tvKm?.text = "0.0 km"; return }
+        if (gStart <= 0L) {
+            tvTime?.text = "00:00"; tvKm?.text = "0.0 km"
+            tvGanhoTotal?.text = "R$ 0,00"
+            tvGanhoHora?.text = "R$ 0,00/h"
+            tvRpKm?.text = "R$ 0,00/km"
+            return
+        }
 
         // Tempo total acumulado em pausa (inclui a pausa atual se ainda ativa)
         val pausedTotal = gPausedMs + (if (gIsPaused) System.currentTimeMillis() - gPauseStart else 0L)
@@ -197,6 +296,13 @@ class FloatingWidget(private val context: Context) {
 
         tvTime?.text = "%02d:%02d".format(h, m)
         tvKm?.text   = "%.1f km".format(km)
+        // Ganho da Jornada/Hora/Km — valores empurrados do JS via
+        // updateEarnings() (dado financeiro só existe no lado JS, que tem
+        // acesso às corridas realizadas). Ganho por Hora/Km pintam pela
+        // mesma cor de meta (verde/amarelo/vermelho) já calculada lá.
+        tvGanhoTotal?.text = "R$ ${fmtBr(ganhoTotalVal)}"
+        tvGanhoHora?.apply { text = "R$ ${fmtBr(ganhoHoraVal)}/h"; setTextColor(gradeColor(ganhoHoraGrade)) }
+        tvRpKm?.apply { text = "R$ ${fmtBr(rpKmVal)}/km"; setTextColor(gradeColor(rpKmGrade)) }
     }
 
     private fun buildWidget(): LinearLayout {
@@ -206,43 +312,76 @@ class FloatingWidget(private val context: Context) {
 
         val card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            background = borderDrawable(Color.parseColor("#FACC15"))
+            background = borderDrawable(colorFor("online"))
             setPadding(dp(12), dp(10), dp(12), dp(10))
             elevation = dp(8).toFloat()
         }
 
-        // Cada uma das 3 informações (status/tempo/km) só entra na bolinha se
-        // estiver ligada na config — igual "Indicadores" já funciona no Flash.
+        // Status sempre fixo no topo quando ativo — não faz parte de
+        // fieldOrder (o motorista não pode reordenar essa linha).
         if (showStatus) {
             val header = LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
             }
             val statusDot = FrameLayout(context).apply {
                 layoutParams = LinearLayout.LayoutParams(dp(7), dp(7)).apply { rightMargin = dp(5) }
-                background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.parseColor("#FACC15")) }
+                background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(colorFor("online")) }
                 tag = "status_dot"
             }
             header.addView(statusDot)
             val statusTv = TextView(context).apply {
                 text = "Online"; textSize = tx(10f)
-                setTextColor(Color.parseColor("#FACC15"))
+                setTextColor(colorFor("online"))
                 setTypeface(null, Typeface.BOLD); tag = "status_tv"
             }
             header.addView(statusTv)
             card.addView(header)
         }
 
-        tvTime = TextView(context).apply {
-            text = "00:00"; textSize = tx(20f)
-            setTextColor(Color.WHITE); setTypeface(null, Typeface.BOLD)
+        // Os demais campos entram na ordem escolhida pelo motorista
+        // (fieldOrder), arrastada na tela de config — cada um só se ativo.
+        tvTime = null; tvKm = null; tvGanhoTotal = null; tvGanhoHora = null; tvRpKm = null
+        fieldOrder.forEach { key ->
+            when (key) {
+                "tempo" -> if (showTime) {
+                    tvTime = TextView(context).apply {
+                        text = "00:00"; textSize = tx(20f)
+                        setTextColor(Color.WHITE); setTypeface(null, Typeface.BOLD)
+                    }
+                    card.addView(tvTime)
+                }
+                "ganhoTotal" -> if (showGanhoTotal) {
+                    // Destaque em branco (pedido 13/09/2026) — mesmo peso
+                    // visual do Tempo, é o número que mais importa achar rápido.
+                    tvGanhoTotal = TextView(context).apply {
+                        text = "R$ 0,00"; textSize = tx(15f)
+                        setTextColor(Color.WHITE); setTypeface(null, Typeface.BOLD)
+                    }
+                    card.addView(tvGanhoTotal)
+                }
+                "ganhoHora" -> if (showGanhoHora) {
+                    tvGanhoHora = TextView(context).apply {
+                        text = "R$ 0,00/h"; textSize = tx(13f)
+                        setTextColor(gradeColor(ganhoHoraGrade)); setTypeface(null, Typeface.BOLD)
+                    }
+                    card.addView(tvGanhoHora)
+                }
+                "rpkm" -> if (showRpKm) {
+                    tvRpKm = TextView(context).apply {
+                        text = "R$ 0,00/km"; textSize = tx(13f)
+                        setTextColor(gradeColor(rpKmGrade)); setTypeface(null, Typeface.BOLD)
+                    }
+                    card.addView(tvRpKm)
+                }
+                "km" -> if (showKm) {
+                    tvKm = TextView(context).apply {
+                        text = "0.0 km"; textSize = tx(13f)
+                        setTextColor(Color.parseColor("#FACC15")); setTypeface(null, Typeface.BOLD)
+                    }
+                    card.addView(tvKm)
+                }
+            }
         }
-        if (showTime) card.addView(tvTime)
-
-        tvKm = TextView(context).apply {
-            text = "0.0 km"; textSize = tx(13f)
-            setTextColor(Color.parseColor("#FACC15")); setTypeface(null, Typeface.BOLD)
-        }
-        if (showKm) card.addView(tvKm)
 
         // Touch: arrastar + tap para abrir app
         var dX = 0f; var dY = 0f; var moved = false

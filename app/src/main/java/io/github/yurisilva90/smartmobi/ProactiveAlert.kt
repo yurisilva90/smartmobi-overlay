@@ -74,10 +74,77 @@ private class CountdownRing(ctx: Context) : View(ctx) {
 
 object ProactiveAlert {
 
-    private const val CHECK_INTERVAL_MS = 2 * 60 * 1000L
     private const val RADIUS_M = 100.0
-    private const val SIMPLE_SECONDS = 15
-    private const val COMBO_SECONDS = 20
+    const val KEY_NOTIF_CONFIG_JSON = "notif_config_json"
+
+    // ── Notificações (13/09/2026, pedido do Yuri): o que era fixo no código
+    // (intervalo de verificação, duração na tela, quais assuntos aparecem em
+    // qual status) virou configurável em "Mais > Notificações" (index.html),
+    // lido de volta aqui via KEY_NOTIF_CONFIG_JSON. Valores abaixo são os
+    // defaults — mesmos que já rodavam antes desta mudança, exceto onde
+    // o próprio Yuri pediu para mudar (ver loadNotifConfig).
+    private var checkIntervalMs = 5 * 60 * 1000L
+    private var posicionamentoEnabled = true
+    private var alertGapMs = 5 * 60 * 1000L
+    private var durationSeconds = 20
+    private var hideOnOfferEnabled = true
+    private var soundKey = "padrao"
+    // (buscando, corrida) por tipo — Online sempre permitido, não guardado.
+    private var tiposConfig: Map<String, Pair<Boolean, Boolean>> = mapOf(
+        "fiscalizacao" to (false to true),
+        "lotacao" to (false to true),
+        "risco" to (false to true),
+        "transito" to (false to false),
+        "eventos" to (false to false),
+        "grupos" to (false to false)
+    )
+    // Timestamp da última vez que uma oferta foi de fato ACEITA (virou
+    // "corrida") — usado pela "Frequência de alertas": só sugere
+    // posicionamento depois de X minutos sem aceitar nada, não só "sem
+    // oferta aparecer" (podem estar tocando só ofertas ruins).
+    @Volatile private var lastAcceptedOfferMs = 0L
+    fun markOfferAccepted() { lastAcceptedOfferMs = System.currentTimeMillis() }
+
+    private fun loadNotifConfig() {
+        try {
+            val ctx = appCtx ?: return
+            val prefs = ctx.getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
+            val raw = prefs.getString(KEY_NOTIF_CONFIG_JSON, null) ?: return
+            val cfg = JSONObject(raw)
+            val posic = cfg.optJSONObject("posicionamento")
+            posicionamentoEnabled = posic?.optBoolean("enabled", true) ?: true
+            checkIntervalMs = (posic?.optInt("checkFreqMin", 5) ?: 5).coerceIn(1, 120) * 60 * 1000L
+            alertGapMs = (posic?.optInt("alertGapMin", 5) ?: 5).coerceIn(1, 180) * 60 * 1000L
+            durationSeconds = cfg.optInt("duracaoSeg", 20).coerceIn(5, 120)
+            hideOnOfferEnabled = cfg.optBoolean("esconderAoChegarOferta", true)
+            soundKey = cfg.optString("som", "padrao")
+            val tipos = cfg.optJSONObject("tipos")
+            if (tipos != null) {
+                val parsed = HashMap<String, Pair<Boolean, Boolean>>()
+                for (key in listOf("fiscalizacao", "lotacao", "risco", "transito", "eventos", "grupos")) {
+                    val t = tipos.optJSONObject(key)
+                    parsed[key] = (t?.optBoolean("buscando", false) ?: false) to (t?.optBoolean("corrida", true) ?: true)
+                }
+                tiposConfig = parsed
+            }
+        } catch (_: Exception) {}
+    }
+
+    // Online sempre vale. "Buscando" hoje só é fisicamente alcançável pelo
+    // MōB Insight (Posicionamento) — os cards colaborativos (fiscalização/
+    // lotação/confirmação) continuam presos ao gate online/corrida logo
+    // abaixo em runCheck, então um "Buscando" ligado pra esses tipos ainda
+    // não tem efeito (documentado na própria tela de config).
+    private fun typeAllowed(typeKey: String, state: String): Boolean {
+        if (state == "online") return true
+        if (state != "corrida") return false
+        return tiposConfig[typeKey]?.second ?: true
+    }
+
+    private fun offerAcceptGapOk(): Boolean {
+        val last = lastAcceptedOfferMs
+        return last == 0L || (System.currentTimeMillis() - last) >= alertGapMs
+    }
 
     private val handler = Handler(Looper.getMainLooper())
     private val wm by lazy { appCtx?.getSystemService(Context.WINDOW_SERVICE) as? WindowManager }
@@ -91,22 +158,24 @@ object ProactiveAlert {
 
     private val checkRunnable = object : Runnable {
         override fun run() {
+            loadNotifConfig()
             val state = TripReaderService.confirmedTripSubState
-            // PEDIDO (12/09/2026, Yuri): MōB Insight ("parado esperando
-            // corrida", "horário de pico") também dispara durante "buscar" —
-            // por isso o estado não trava mais a entrada em runCheck aqui.
+            // CORRIGIDO (13/09/2026, pedido do Yuri): MōB Insight
+            // (Posicionamento) chegou a disparar durante "buscar"/"corrida"
+            // também (12/09/2026); voltou a ser só "online" — dentro de
+            // runCheck, junto com o liga/desliga e a folga de aceitar oferta.
             // Os cards colaborativos (fiscalização/lotação/confirmação)
-            // continuam restritos a online/corrida, verificado DENTRO de
-            // runCheck, já que insight tem prioridade e retorna antes deles.
+            // continuam restritos a online/corrida.
             if (GpsService.isRunning && !GpsService.isPaused && !busy) {
                 thread(isDaemon = true) { runCheck(state) }
             }
-            handler.postDelayed(this, CHECK_INTERVAL_MS)
+            handler.postDelayed(this, checkIntervalMs)
         }
     }
 
     fun startLoop(ctx: Context) {
         appCtx = ctx.applicationContext
+        loadNotifConfig()
         handler.removeCallbacks(checkRunnable)
         handler.postDelayed(checkRunnable, 30_000L)
     }
@@ -155,15 +224,20 @@ object ProactiveAlert {
             val userId = prefs.getString(GpsService.KEY_USER_ID, null) ?: return
             val authToken = prefs.getString(GpsService.KEY_ACCESS_TOKEN, null) ?: TripReaderService.SUPABASE_ANON
 
-            val insight = findMobInsight(authToken, userId)
-            if (insight != null) {
-                handler.post { showMobInsightCard(insight, authToken) }
-                return
+            // PEDIDO (13/09/2026, Yuri): Posicionamento agora só roda com
+            // você Online (nunca buscando/corrida), respeitando o liga/
+            // desliga e a "Frequência de alertas" (folga desde a última
+            // oferta ACEITA — não desde a última oferta que só apareceu).
+            if (posicionamentoEnabled && state == "online" && offerAcceptGapOk()) {
+                val insight = findMobInsight(authToken, userId)
+                if (insight != null) {
+                    handler.post { showMobInsightCard(insight, authToken) }
+                    return
+                }
             }
 
             // Cards colaborativos (fiscalização/lotação/confirmação) seguem
-            // nunca aparecendo durante "buscar" — só o MōB Insight acima
-            // ganhou essa liberação.
+            // nunca aparecendo durante "buscar".
             if (state != "online" && state != "corrida") return
 
             val lat = GpsService.lastLat
@@ -177,9 +251,14 @@ object ProactiveAlert {
 
             val nearbyReport = findNearbyActiveReport(authToken, lat, lng)
             if (nearbyReport != null && canPromptReport(authToken, userId, nearbyReport.id)) {
-                logPrompt(authToken, userId, null, nearbyReport.id, "confirmacao", state)
-                handler.post { showConfirmacaoCard(nearbyReport, userId, authToken) }
-                return
+                val typeKey = if (nearbyReport.type == "risco") "risco" else "fiscalizacao"
+                if (typeAllowed(typeKey, state)) {
+                    logPrompt(authToken, userId, null, nearbyReport.id, "confirmacao", state)
+                    handler.post { showConfirmacaoCard(nearbyReport, userId, authToken) }
+                    return
+                }
+                // Tipo desligado pra esse status — não mostra, mas segue
+                // avaliando local/venue abaixo em vez de não fazer nada.
             }
 
             val venue = findNearestVenue(authToken, lat, lng) ?: return
@@ -194,6 +273,7 @@ object ProactiveAlert {
             // de trajeto.
             if (!isTripEndpointAtVenue(venue)) return
             if (!canPromptVenue(authToken, userId, venue.id)) return
+            if (!typeAllowed("lotacao", state)) return
 
             val promptType = if (venue.category in COMBO_CATEGORIES) "combo" else "lotacao"
             logPrompt(authToken, userId, venue.id, null, promptType, state)
@@ -543,6 +623,36 @@ object ProactiveAlert {
     private fun dp(v: Int) = (v * (appCtx?.resources?.displayMetrics?.density ?: 2.5f)).toInt()
     private fun dpf(v: Int) = v * (appCtx?.resources?.displayMetrics?.density ?: 2.5f)
 
+    // PEDIDO (13/09/2026, Yuri): "esconder ao chegar oferta" configurável —
+    // antes o FlashCard chamava forceHide() direto e incondicional. Chamado
+    // pelo FlashCard.show() no lugar da chamada direta.
+    fun notifyOfferShown() {
+        if (hideOnOfferEnabled) forceHide()
+    }
+
+    // ── Som do alerta (13/09/2026, pedido do Yuri): 3 tons sintetizados via
+    // ToneGenerator — sem precisar empacotar arquivo de áudio no APK. Toca
+    // sozinho toda vez que um card do Copiloto aparece (mount()); previewSound()
+    // é chamado pela tela de config pra a pessoa ouvir antes de escolher.
+    private fun toneFor(key: String): Pair<Int, Int>? = when (key) {
+        "suave" -> android.media.ToneGenerator.TONE_PROP_BEEP to 150
+        "alerta" -> android.media.ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD to 400
+        "padrao" -> android.media.ToneGenerator.TONE_PROP_BEEP2 to 200
+        else -> null // "nenhum"
+    }
+
+    private fun playTone(key: String) {
+        val (tone, durationMs) = toneFor(key) ?: return
+        try {
+            val tg = android.media.ToneGenerator(android.media.AudioManager.STREAM_NOTIFICATION, android.media.ToneGenerator.MAX_VOLUME)
+            tg.startTone(tone, durationMs)
+            handler.postDelayed({ try { tg.release() } catch (_: Exception) {} }, durationMs + 150L)
+        } catch (_: Exception) {}
+    }
+
+    private fun playAlertSound() = playTone(soundKey)
+    fun previewSound(key: String) = playTone(key)
+
     private fun baseParams() = WindowManager.LayoutParams(
         WindowManager.LayoutParams.MATCH_PARENT,
         WindowManager.LayoutParams.WRAP_CONTENT,
@@ -653,6 +763,7 @@ object ProactiveAlert {
         container = FrameLayout(ctx).apply { addView(card) }
         try { w.addView(container, baseParams()) }
         catch (_: Exception) { currentDismissCallback = null; return }
+        playAlertSound()
 
         val started = System.currentTimeMillis()
         val duration = seconds * 1000L
@@ -745,7 +856,7 @@ object ProactiveAlert {
             Triple("Posicionado", "", { acao = "Posicionado"; tryPublish() })
         ), 3))
 
-        mount(ctx, "Fiscalização por aqui?", "#2563EB", venue.name, CAT_LABEL[venue.category] ?: "", COMBO_SECONDS, content) {
+        mount(ctx, "Fiscalização por aqui?", "#2563EB", venue.name, CAT_LABEL[venue.category] ?: "", durationSeconds, content) {
             markPromptOutcome(authToken, userId, venueId = venue.id, outcome = it)
         }
     }
@@ -767,7 +878,7 @@ object ProactiveAlert {
                 forceHide()
             })
         }, 5))
-        mount(ctx, "Como está ${venue.name}?", "#7C3AED", venue.name, CAT_LABEL[venue.category] ?: "", SIMPLE_SECONDS, content) {
+        mount(ctx, "Como está ${venue.name}?", "#7C3AED", venue.name, CAT_LABEL[venue.category] ?: "", durationSeconds, content) {
             markPromptOutcome(authToken, userId, venueId = venue.id, outcome = it)
         }
     }
@@ -789,7 +900,7 @@ object ProactiveAlert {
                 showFiscalizacaoToggle(venue, userId, authToken)
             })
         }, 5))
-        mount(ctx, "Como está ${venue.name}?", "#7C3AED", venue.name, CAT_LABEL[venue.category] ?: "", COMBO_SECONDS, content) {
+        mount(ctx, "Como está ${venue.name}?", "#7C3AED", venue.name, CAT_LABEL[venue.category] ?: "", durationSeconds, content) {
             markPromptOutcome(authToken, userId, venueId = venue.id, outcome = it)
         }
     }
@@ -801,7 +912,7 @@ object ProactiveAlert {
             Triple("Sim, tem fiscalização", "#DC2626", { showFiscalizacaoCard(venue, userId, authToken) }),
             Triple("Não", "#16A34A", { forceHide() })
         ), 2))
-        mount(ctx, "Tem fiscalização aqui?", "#2563EB", venue.name, CAT_LABEL[venue.category] ?: "", COMBO_SECONDS, content)
+        mount(ctx, "Tem fiscalização aqui?", "#2563EB", venue.name, CAT_LABEL[venue.category] ?: "", durationSeconds, content)
     }
 
     private fun showConfirmacaoCard(report: NearbyReport, userId: String, authToken: String) {
@@ -825,7 +936,7 @@ object ProactiveAlert {
                 forceHide()
             })
         ), 2))
-        mount(ctx, question, color, "Relatado há ${report.minutesAgo} min por outro motorista", report.address ?: "", SIMPLE_SECONDS, content) {
+        mount(ctx, question, color, "Relatado há ${report.minutesAgo} min por outro motorista", report.address ?: "", durationSeconds, content) {
             markPromptOutcome(authToken, userId, reportId = report.id, outcome = it)
         }
     }
@@ -887,7 +998,7 @@ object ProactiveAlert {
                 }
             }
         }
-        mount(ctx, insight.title, color, "Copiloto", "", SIMPLE_SECONDS, content) {
+        mount(ctx, insight.title, color, "Copiloto", "", durationSeconds, content) {
             dismissMobInsight(authToken, insight.id)
         }
     }

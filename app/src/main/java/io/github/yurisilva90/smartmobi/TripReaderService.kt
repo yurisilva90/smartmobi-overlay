@@ -2895,6 +2895,13 @@ class TripReaderService : AccessibilityService() {
             // preservando início/meio/fim independentes para Uber e 99.
             AutoTripCapture.onStateTransition(this, plat, prev, best.key)
             JourneyStatusTracker.onStateTransition(this, plat, prev, best.key)
+
+            // PEDIDO (13/09/2026): "Frequência de alertas" do Copiloto precisa
+            // saber há quanto tempo o motorista aceitou uma oferta de verdade
+            // (não só "sem oferta aparecer" — pode estar recusando tudo).
+            // Virar "corrida" é o sinal mais confiável disso, já que o app não
+            // controla o botão de aceitar do Uber/99, só lê a tela.
+            if (best.key == "corrida" && prev != "corrida") ProactiveAlert.markOfferAccepted()
         }
     }
 
