@@ -617,6 +617,7 @@ object AutoTripCapture {
             try {
                 val prefs = ctx.getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
                 val userId = prefs.getString(GpsService.KEY_USER_ID, null) ?: return@thread
+                val authToken = prefs.getString(GpsService.KEY_ACCESS_TOKEN, null) ?: TripReaderService.SUPABASE_ANON
 
                 val realKmPickup = (b.tripStartKm - b.pickupStartKm).coerceAtLeast(0.0)
                 val realKmTrip = (b.tripEndKm - b.tripStartKm).coerceAtLeast(0.0)
@@ -664,6 +665,7 @@ object AutoTripCapture {
                     .apply { timeZone = TimeZone.getTimeZone("UTC") }
                 fun iso(ms: Long): Any = if (ms > 0) sdf.format(Date(ms)) else JSONObject.NULL
 
+                val pendingId = "${userId}_${b.platform}_${b.acceptedAt}"
                 val body = JSONObject().apply {
                     put("user_id", userId)
                     put("platform", if (b.platform == "UBER") "uber" else "99")
@@ -698,22 +700,121 @@ object AutoTripCapture {
                     put("data_quality_flag", if (captureComplete) JSONObject.NULL else "captura_incompleta")
                 }
 
-                val url = URL("${TripReaderService.SUPABASE_URL}/rest/v1/auto_trips")
-                val conn = url.openConnection() as HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.doOutput = true
-                conn.connectTimeout = 8000; conn.readTimeout = 8000
-                conn.setRequestProperty("Content-Type", "application/json")
-                conn.setRequestProperty("apikey", TripReaderService.SUPABASE_ANON)
-                val authToken = prefs.getString(GpsService.KEY_ACCESS_TOKEN, null) ?: TripReaderService.SUPABASE_ANON
-                conn.setRequestProperty("Authorization", "Bearer $authToken")
-                conn.setRequestProperty("Prefer", "return=minimal")
-                conn.outputStream.use { it.write(body.toString().toByteArray()) }
-                conn.responseCode
-                conn.disconnect()
+                // CORRIGIDO (13/09/2026, caso real do Yuri: corrida da Uber
+                // rodada e finalizada com o status se comportando perfeitamente,
+                // mas sem nenhum registro criado — provável falha de rede/token
+                // bem no instante da troca de app pra aceitar a próxima corrida
+                // da 99). Antes, esse POST não checava o código de resposta e
+                // qualquer exceção era engolida em silêncio: uma falha aqui
+                // (sem internet, token expirado, timeout do Supabase) perdia a
+                // corrida inteira pra sempre, sem log nenhum pra investigar
+                // depois. Agora grava o corpo pronto em disco ANTES de tentar
+                // a rede — se a tentativa falhar, o registro fica pendente e
+                // retryPendingPushes() tenta de novo a cada 15s até confirmar
+                // sucesso (2xx), então uma corrida real nunca some por causa
+                // de rede — só demora um pouco mais pra aparecer.
+                savePending(ctx, pendingId, body)
+                try {
+                    val url = URL("${TripReaderService.SUPABASE_URL}/rest/v1/auto_trips")
+                    val conn = url.openConnection() as HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.doOutput = true
+                    conn.connectTimeout = 8000; conn.readTimeout = 8000
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.setRequestProperty("apikey", TripReaderService.SUPABASE_ANON)
+                    conn.setRequestProperty("Authorization", "Bearer $authToken")
+                    conn.setRequestProperty("Prefer", "return=minimal")
+                    conn.outputStream.use { it.write(body.toString().toByteArray()) }
+                    val code = conn.responseCode
+                    conn.disconnect()
+                    if (code in 200..299) {
+                        clearPending(ctx, pendingId)
+                    } else {
+                        logCaptureFailure(ctx, userId, authToken, "POST auto_trips falhou (http=$code) plat=${b.platform} valor=${b.offerValue} — mantido pendente, retryPendingPushes tenta de novo")
+                    }
+                } catch (e: Exception) {
+                    logCaptureFailure(ctx, userId, authToken, "POST auto_trips com exceção (${e.message}) plat=${b.platform} valor=${b.offerValue} — mantido pendente, retryPendingPushes tenta de novo")
+                }
             } catch (_: Exception) {
-                // sem rede/erro — a corrida real não é perdida (o motorista já a
-                // fez), só não vira registro automático desta vez.
+                // erro fora do bloco de rede (ex: geocodificação) — se já tinha
+                // chegado a montar e salvar o body pendente acima, o retry
+                // ainda consegue recuperar; aqui só evita que o app trave.
+            }
+        }
+    }
+
+    private const val PENDING_PREFS_NAME = "pending_auto_trips"
+
+    private fun pendingPrefs(ctx: Context) = ctx.getSharedPreferences(PENDING_PREFS_NAME, Context.MODE_PRIVATE)
+
+    private fun savePending(ctx: Context, id: String, body: JSONObject) {
+        try { pendingPrefs(ctx).edit().putString(id, body.toString()).apply() } catch (_: Exception) {}
+    }
+
+    private fun clearPending(ctx: Context, id: String) {
+        try { pendingPrefs(ctx).edit().remove(id).apply() } catch (_: Exception) {}
+    }
+
+    private fun logCaptureFailure(ctx: Context, userId: String, authToken: String, detail: String) {
+        try {
+            val logBody = JSONObject().apply {
+                put("user_id", userId)
+                put("platform", "AUTO_CAPTURE")
+                put("package", "auto_trip_capture")
+                put("screen_class", "PUSH_FAIL")
+                put("texts", JSONObject().apply {
+                    put("state", detail); put("money", org.json.JSONArray()); put("km", JSONObject.NULL)
+                    put("min", JSONObject.NULL); put("raw", org.json.JSONArray())
+                })
+            }
+            val url = URL("${TripReaderService.SUPABASE_URL}/rest/v1/trip_reader_log")
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.doOutput = true
+            conn.connectTimeout = 8000; conn.readTimeout = 8000
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.setRequestProperty("apikey", TripReaderService.SUPABASE_ANON)
+            conn.setRequestProperty("Authorization", "Bearer $authToken")
+            conn.setRequestProperty("Prefer", "return=minimal")
+            conn.outputStream.use { it.write(logBody.toString().toByteArray()) }
+            conn.responseCode
+            conn.disconnect()
+        } catch (_: Exception) {}
+    }
+
+    // Roda periodicamente (TripReaderService, a cada 15s junto de
+    // flushStaleOffers) — reenvia qualquer corrida que ficou pendente porque
+    // o POST original falhou (rede, token, timeout do Supabase). O corpo já
+    // vem pronto (montado e salvo em push()), então o retry é só reenviar,
+    // sem precisar refazer geocodificação nem depender do buffer em memória
+    // (que já foi descartado). Só remove do disco quando o Supabase confirma
+    // sucesso (2xx) — enquanto isso, a corrida nunca é dada como perdida.
+    fun retryPendingPushes(ctx: Context) {
+        val prefs = pendingPrefs(ctx)
+        val all = try { HashMap(prefs.all) } catch (_: Exception) { return }
+        if (all.isEmpty()) return
+        val authPrefs = ctx.getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
+        val authToken = authPrefs.getString(GpsService.KEY_ACCESS_TOKEN, null) ?: TripReaderService.SUPABASE_ANON
+        thread(isDaemon = true) {
+            for ((id, raw) in all) {
+                val bodyStr = raw as? String ?: continue
+                try {
+                    val url = URL("${TripReaderService.SUPABASE_URL}/rest/v1/auto_trips")
+                    val conn = url.openConnection() as HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.doOutput = true
+                    conn.connectTimeout = 8000; conn.readTimeout = 8000
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.setRequestProperty("apikey", TripReaderService.SUPABASE_ANON)
+                    conn.setRequestProperty("Authorization", "Bearer $authToken")
+                    conn.setRequestProperty("Prefer", "return=minimal")
+                    conn.outputStream.use { it.write(bodyStr.toByteArray()) }
+                    val code = conn.responseCode
+                    conn.disconnect()
+                    if (code in 200..299) clearPending(ctx, id)
+                } catch (_: Exception) {
+                    // ainda sem rede/sucesso — tenta de novo no próximo ciclo de 15s
+                }
             }
         }
     }

@@ -302,6 +302,13 @@ class TripReaderService : AccessibilityService() {
         main.post(object : Runnable {
             override fun run() {
                 try { AutoTripCapture.flushStaleOffers(this@TripReaderService) } catch (_: Exception) {}
+                // PEDIDO (13/09/2026, Yuri): corrida da Uber finalizada
+                // normalmente mas nunca cadastrada — push() original não
+                // sobrevivia a uma falha de rede/token bem na hora da troca de
+                // app pra aceitar a próxima corrida. Agora reenvia qualquer
+                // corrida que ficou pendente (ver AutoTripCapture.push/
+                // retryPendingPushes) até confirmar que o Supabase recebeu.
+                try { AutoTripCapture.retryPendingPushes(this@TripReaderService) } catch (_: Exception) {}
                 main.postDelayed(this, 15 * 1000L)
             }
         })
