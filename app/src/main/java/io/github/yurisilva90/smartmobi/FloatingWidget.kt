@@ -115,27 +115,15 @@ class FloatingWidget(private val context: Context) {
                 }
                 statusColors = parsedColors
             }
-
-            // Teto de 4 informações ativas (contando Status) — reforçado aqui
-            // por segurança, mesmo a UI já impedindo isso na origem.
-            var active = if (showStatus) 1 else 0
-            for (key in fieldOrder) {
-                val isOn = when (key) {
-                    "tempo" -> showTime; "ganhoTotal" -> showGanhoTotal
-                    "ganhoHora" -> showGanhoHora; "rpkm" -> showRpKm; "km" -> showKm
-                    else -> false
-                }
-                if (!isOn) continue
-                if (active >= 4) {
-                    when (key) {
-                        "tempo" -> showTime = false
-                        "ganhoTotal" -> showGanhoTotal = false
-                        "ganhoHora" -> showGanhoHora = false
-                        "rpkm" -> showRpKm = false
-                        "km" -> showKm = false
-                    }
-                } else active++
-            }
+            // CORRIGIDO (14/09/2026, pedido do Yuri): o teto de 4 informações
+            // ativas foi removido na origem (tela de config, index.html) —
+            // esse reforço aqui embaixo ficou esquecido e continuava
+            // desativando silenciosamente qualquer campo além do 4º (mesmo
+            // com o motorista tendo ligado tudo na tela), sem nenhum aviso.
+            // Sintoma real: bolinha "travada" no mesmo tamanho mesmo com mais
+            // indicadores ligados, e Ganho/R$-km sumidos mesmo a corrida
+            // estando certa no card da Jornada. Removido — agora mostra
+            // exatamente o que foi configurado, sem limite.
         } catch (_: Exception) {}
     }
 

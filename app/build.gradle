@@ -2,10 +2,11 @@ plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
 }
-// 1.3.56: tira o limite de 4 informações ativas na bolinha (agora dá pra
-// ligar todas ao mesmo tempo) e muda a posição inicial dela pro lado
-// esquerdo, exatamente onde o Card de Oferta aparece — os dois nunca
-// aparecem juntos, então dividir o mesmo canto aproveita melhor a tela.
+// 1.3.57: tira uma SEGUNDA trava de 4 informações ativas na bolinha, essa
+// no lado nativo (loadConfig) — reforçava o mesmo limite já removido na
+// 1.3.56 do lado do site, desativando em silêncio qualquer indicador além
+// do 4º mesmo com tudo ligado na tela. Era a causa real de "a bolinha não
+// cresce" e de Ganho/R$-km sumidos mesmo com a corrida certa no card.
 android {
     namespace 'io.github.yurisilva90.smartmobi'
     compileSdk 34
@@ -13,8 +14,8 @@ android {
         applicationId "io.github.yurisilva90.smartmobi"
         minSdk 24
         targetSdk 34
-        versionCode 268
-        versionName "1.3.56"
+        versionCode 269
+        versionName "1.3.57"
     }
     buildFeatures { buildConfig true }
     buildTypes {
