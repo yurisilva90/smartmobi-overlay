@@ -162,7 +162,18 @@ class FloatingWidget(private val context: Context) {
         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
         PixelFormat.TRANSLUCENT
-    ).apply { gravity = Gravity.TOP or Gravity.END; x = 16; y = 180 }
+    ).apply {
+        // PEDIDO (14/09/2026, Yuri): iniciar do lado esquerdo, na mesma
+        // posição do Card de Oferta (FlashCard: Gravity.TOP|START, x=12dp,
+        // y=58dp) — os dois nunca aparecem ao mesmo tempo (bolinha é a
+        // jornada, card é a oferta chegando), então ocupar o mesmo canto
+        // aproveita melhor o espaço da tela em vez de espalhar em dois
+        // cantos diferentes.
+        val density = context.resources.displayMetrics.density
+        gravity = Gravity.TOP or Gravity.START
+        x = (12 * density).toInt()
+        y = (58 * density).toInt()
+    }
 
     // Tick a cada segundo — para automaticamente quando pausado
     private val tickRunnable = object : Runnable {
