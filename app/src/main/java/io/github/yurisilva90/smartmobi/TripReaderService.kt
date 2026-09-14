@@ -2274,8 +2274,21 @@ class TripReaderService : AccessibilityService() {
         val kpisCfg = cfg.optJSONObject("kpis") ?: JSONObject()
 
         val rkm = offer.rkmDirect ?: (valor / km)
-        val rhora = if (min != null && min > 0) valor / (min / 60.0) else null
-        val rmin = if (min != null && min > 0) valor / min else null
+        // BLINDAGEM (14/09/2026, caso real do Yuri: card mostrando R$900,60/hora
+        // numa corrida de R$15 — número absurdo, mas mostrado grande e verde,
+        // exatamente o que mais chama atenção pra decidir aceitar ou não).
+        // Causa: quando o parser só consegue ler UMA perna da oferta (só o
+        // "chegar em Xmin", não o "Xmin de corrida" — falha de OCR/formatação
+        // de tela, não é raro), "min" fica com só o tempo de chegada até o
+        // passageiro, não o tempo da corrida. Dividir o valor por um tempo tão
+        // pequeno explode o resultado pra um número sem relação nenhuma com a
+        // realidade. Abaixo de 2 minutos o tempo lido não é confiável o
+        // bastante pra virar R$/hora ou R$/min — melhor não mostrar do que
+        // mostrar um número inventado que pode levar a aceitar uma corrida
+        // achando que ela paga muito mais do que realmente paga.
+        val minConfiavelParaTaxa = min != null && min >= 2
+        val rhora = if (minConfiavelParaTaxa) valor / (min!! / 60.0) else null
+        val rmin = if (minConfiavelParaTaxa) valor / min!! else null
         val custoConfigurado = custoPorKm > 0.0
         val lucro = if (custoConfigurado) valor - custoPorKm * km else null
         val margemPct = if (custoConfigurado && valor > 0) (lucro!! / valor) * 100.0 else null
