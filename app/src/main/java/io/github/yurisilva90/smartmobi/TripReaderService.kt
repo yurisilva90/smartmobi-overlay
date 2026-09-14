@@ -1952,8 +1952,25 @@ class TripReaderService : AccessibilityService() {
         // — segundo o usuário, esse é o formato mais comum). Sem palavra de
         // ação pra ancorar, então detecta pela estrutura inteira da tela:
         // valor + R$/km explícito + nota-com-corridas + pelo menos 1 perna.
+        //
+        // CORRIGIDO (14/09/2026, caso real do Yuri, confirmado por ele ao
+        // vivo): a segunda condição aceitava "corrid" (de \bcorrid) SOZINHO, sem nada na frente — ou seja,
+        // a palavra "corrida"/"corridas" aparecendo em QUALQUER lugar da
+        // tela já bastava. Isso incluía a tela de uma CORRIDA JÁ EM
+        // ANDAMENTO (chegando no destino pra deixar o passageiro), que
+        // naturalmente mostra a palavra "corrida" em algum canto da
+        // interface do app da 99 — e, se por perto tinha algum "R$/km" e um
+        // tempo de poucos minutos (o ETA até o destino, não até um
+        // passageiro novo), a tela inteira virava "oferta nova" por engano,
+        // com valor/km da própria corrida em andamento lidos como se fossem
+        // de uma oferta. O sinal de verdade que esse "ou" tentava capturar é
+        // bem mais específico: o número de corridas do PASSAGEIRO ao lado da
+        // nota dele (ex: "234 corridas"), que sempre vem com um número
+        // colado na frente — nunca a palavra solta. Agora exige esse número
+        // junto, o que uma tela de corrida em andamento não tem motivo pra
+        // mostrar.
         if (Regex("""r\$\s*[\d.]+,\d{2}\s*/\s*km""").containsMatchIn(low) &&
-            Regex("""[1-5][.,]\d{2}\s*[·(]|\bcorrid""").containsMatchIn(low) &&
+            Regex("""[1-5][.,]\d{2}\s*[·(]|\d\s*(?:mil\s*)?corrid""").containsMatchIn(low) &&
             Regex("""\d{1,3}\s*min""").containsMatchIn(low)) return true
         // Uber tipo B: botão "Aceitar" sozinho (sem "por R$", sem R$/km
         // visível na tela) — âncora na nota com contagem entre parênteses,
@@ -2274,21 +2291,19 @@ class TripReaderService : AccessibilityService() {
         val kpisCfg = cfg.optJSONObject("kpis") ?: JSONObject()
 
         val rkm = offer.rkmDirect ?: (valor / km)
-        // BLINDAGEM (14/09/2026, caso real do Yuri: card mostrando R$900,60/hora
-        // numa corrida de R$15 — número absurdo, mas mostrado grande e verde,
-        // exatamente o que mais chama atenção pra decidir aceitar ou não).
-        // Causa: quando o parser só consegue ler UMA perna da oferta (só o
-        // "chegar em Xmin", não o "Xmin de corrida" — falha de OCR/formatação
-        // de tela, não é raro), "min" fica com só o tempo de chegada até o
-        // passageiro, não o tempo da corrida. Dividir o valor por um tempo tão
-        // pequeno explode o resultado pra um número sem relação nenhuma com a
-        // realidade. Abaixo de 2 minutos o tempo lido não é confiável o
-        // bastante pra virar R$/hora ou R$/min — melhor não mostrar do que
-        // mostrar um número inventado que pode levar a aceitar uma corrida
-        // achando que ela paga muito mais do que realmente paga.
-        val minConfiavelParaTaxa = min != null && min >= 2
-        val rhora = if (minConfiavelParaTaxa) valor / (min!! / 60.0) else null
-        val rmin = if (minConfiavelParaTaxa) valor / min!! else null
+        // REVERTIDO (14/09/2026, correção do Yuri): tinha posto um piso de 2
+        // minutos aqui pra não deixar R$/hora explodir com "min" pequeno —
+        // mas o Yuri confirmou AO VIVO que o R$900,60/hora daquele caso não
+        // veio de uma oferta de pickup curto de verdade (que existe, é
+        // normal — passageiro a 2min é comum, principalmente em dia de
+        // chuva ou lugar de acesso ruim). Veio de uma tela de CORRIDA JÁ EM
+        // ANDAMENTO (chegando no destino pra deixar o passageiro) sendo
+        // classificada por engano como se fosse uma oferta nova — ver
+        // isOfferScreen() logo abaixo, onde está a causa raiz de verdade.
+        // Um piso de minutos aqui só escondia o sintoma nesse UM caso e, de
+        // quebra, ia esconder R$/hora de ofertas de pickup curto genuínas.
+        val rhora = if (min != null && min > 0) valor / (min / 60.0) else null
+        val rmin = if (min != null && min > 0) valor / min else null
         val custoConfigurado = custoPorKm > 0.0
         val lucro = if (custoConfigurado) valor - custoPorKm * km else null
         val margemPct = if (custoConfigurado && valor > 0) (lucro!! / valor) * 100.0 else null
