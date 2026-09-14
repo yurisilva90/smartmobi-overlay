@@ -2,6 +2,16 @@ plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
 }
+// 1.3.63: sem mudança de comportamento — só diagnóstico. O Yuri mostrou um
+// NOVO caso do card abrindo com número estranho (355,07 R$/hora), mas dessa
+// vez confirmou, olhando o próprio celular, que a tela da 99 minimizada
+// (atrás do Waze) NÃO tinha a palavra "corrida" visível — o que descarta a
+// causa que eu tinha apontado no 1.3.62 para ESTE caso específico. Sem o
+// texto bruto que o OCR leu naquele instante, eu só consigo chutar de novo.
+// Em vez de arriscar outro palpite errado, esta versão só passa a enviar o
+// texto cru nas leituras da 99 classificadas como oferta (sem mudar nenhuma
+// regra de detecção) — na próxima vez que acontecer, dá pra ver exatamente
+// o que a tela mostrava e corrigir com certeza, não achismo.
 // 1.3.62: correção da causa raiz do 1.3.61 (o próprio Yuri identificou o
 // erro): o R$900,60/hora não veio de uma oferta de pickup curto — veio de
 // uma tela de CORRIDA JÁ EM ANDAMENTO (chegando no destino) sendo
@@ -58,8 +68,8 @@ android {
         applicationId "io.github.yurisilva90.smartmobi"
         minSdk 24
         targetSdk 34
-        versionCode 274
-        versionName "1.3.62"
+        versionCode 275
+        versionName "1.3.63"
     }
     buildFeatures { buildConfig true }
     buildTypes {

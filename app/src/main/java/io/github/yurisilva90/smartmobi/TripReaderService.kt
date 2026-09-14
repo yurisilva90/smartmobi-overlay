@@ -3590,9 +3590,26 @@ class TripReaderService : AccessibilityService() {
                         put("min", min ?: JSONObject.NULL)
                         // pkg "nota-debug" precisa do texto bruto pra
                         // servir de diagnóstico da checagem de nota baixa.
+                        //
+                        // TEMPORÁRIO (14/09/2026, caso real do Yuri): card de
+                        // oferta abrindo com números estranhos numa tela que,
+                        // pelo relato dele, olhando o celular na hora, não
+                        // tinha nem a palavra "corrida" visível (99
+                        // minimizada atrás do Waze). Sem o texto bruto que
+                        // OCR/parser leram NAQUELE instante, eu só consigo
+                        // chutar qual regra bateu — e já chutei errado uma
+                        // vez nesta mesma conversa. Manda o texto cru só
+                        // pras leituras da 99 classificadas como oferta
+                        // (linha "OCR_OFERTA" e "OFERTA_DETECTADA"), que é
+                        // exatamente o ponto em construir a decisão errada,
+                        // sem aumentar o log das leituras normais. Tirar
+                        // assim que a causa real for confirmada com dado de
+                        // verdade — ver TripReaderService.kt topo do arquivo,
+                        // comentário do DEBUG_SEND_RAW_TEXT, mesmo espírito.
                         val sendRaw = DEBUG_SEND_RAW_TEXT ||
                             (plat == "UBER" && pkg == "accessibility-raw" && state == "OFERTA_RAW") ||
-                            pkg == "nota-debug"
+                            pkg == "nota-debug" ||
+                            (plat == "99" && (state == "OFERTA_OCR" || state == "OFERTA"))
                         put("raw", if (sendRaw) JSONArray(texts) else JSONArray())
                     })
                 }
