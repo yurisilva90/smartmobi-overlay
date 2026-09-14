@@ -1294,7 +1294,24 @@ class TripReaderService : AccessibilityService() {
             }
             processRealOffer(eventOfferPlat, eventOfferTexts)
         } else if (realPlat == null) {
-            hideFlashIfActive()
+            // CORRIGIDO (14/09/2026, caso real do Yuri: card de oferta "travando"
+            // e reaparecendo toda vez que ele reabria o app da 99, no meio de uma
+            // corrida). Antes chamava hideFlashIfActive() aqui — que ALÉM de
+            // esconder o card, apaga a memória de qual oferta já foi mostrada
+            // (visualOfferState, lastOfferValorByPlat, etc). Só que este ramo
+            // dispara sempre que NENHUMA janela de Uber/99 está entre as
+            // capturadas neste tick — o que acontece toda vez que o motorista
+            // troca de app por um instante (olha o mapa, olha a bolinha, uma
+            // notificação abre por cima), mesmo com a MESMA oferta ainda intacta
+            // na tela da 99 por baixo. Resultado: ao voltar pro app da
+            // plataforma, a oferta que já tinha sido vista era tratada como
+            // OFERTA NOVA de novo — reabria o card, e podia repetir o áudio —
+            // hora após hora, mesma oferta. Agora só ESCONDE o card (não deve
+            // ficar flutuando sobre um app que não é Uber/99); a memória de
+            // "essa oferta eu já mostrei" só é apagada quando a oferta
+            // realmente sai da tela (fluxo normal de hideFlashIfActive, mais
+            // abaixo) ou a jornada é encerrada.
+            main.post { flashCard.hide() }
         }
 
         // ── Status Online/Buscar/Corrida no widget flutuante ────────────────
