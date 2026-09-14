@@ -124,6 +124,19 @@ object RuleEngine {
         val prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val lastFetch = prefs.getLong(KEY_LAST_FETCH_MS, 0L)
         if (!force && System.currentTimeMillis() - lastFetch < REFRESH_INTERVAL_MS) return
+        // CORRIGIDO (14/09/2026, incidente real: banco de dados fora do ar
+        // por mais de 1h — confirmado nos logs que essa chamada (vinda de
+        // detectAndApplyTripSubState/detectAndApply99TripSubState, a cada
+        // ~600ms de leitura de tela) sozinha gerou ~4000 requisições em 15
+        // minutos pro mesmo endpoint. Causa: KEY_LAST_FETCH_MS só era
+        // gravado quando o fetch tinha SUCESSO — então, com o banco fora
+        // do ar (toda tentativa falhando), o intervalo de 10min nunca
+        // valia, e CADA leitura de tela tentava buscar de novo, virando
+        // uma negação de serviço contra o próprio banco do usuário bem no
+        // momento em que ele mais precisava se recuperar. Agora marca a
+        // TENTATIVA imediatamente (sucesso ou falha) — garante no máximo 1
+        // tentativa a cada 10min mesmo com falhas seguidas.
+        prefs.edit().putLong(KEY_LAST_FETCH_MS, System.currentTimeMillis()).apply()
         thread {
             try {
                 val rulesBody = httpGet(
@@ -131,7 +144,7 @@ object RuleEngine {
                         "?active=eq.true&select=key,platform,priority,pattern,result,set_reached_pickup," +
                         "only_if_not_reached_pickup,reset_known_addr,requires_addr_changed," +
                         "requires_currently_online&order=platform.asc,priority.asc"
-                ) ?: return@thread // sem rede/erro — mantém o que já está carregado, tenta de novo depois
+                ) ?: return@thread // sem rede/erro — mantém o que já está carregado, tenta de novo só daqui a 10min
 
                 val configBody = httpGet(
                     "${TripReaderService.SUPABASE_URL}/rest/v1/state_detection_config?select=key,value"
@@ -147,11 +160,11 @@ object RuleEngine {
                 prefs.edit()
                     .putString(KEY_RULES_JSON, rulesBody)
                     .putString(KEY_CONFIG_JSON, configBody)
-                    .putLong(KEY_LAST_FETCH_MS, System.currentTimeMillis())
                     .apply()
             } catch (_: Exception) {
                 // sem internet, timeout, JSON malformado etc — nunca derruba
-                // o app, só mantém o cache/default local até a próxima tentativa.
+                // o app, só mantém o cache/default local até a próxima tentativa
+                // (já marcada acima, não retenta antes de 10min).
             }
         }
     }
