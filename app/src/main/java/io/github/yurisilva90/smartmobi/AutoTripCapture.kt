@@ -667,6 +667,15 @@ object AutoTripCapture {
 
                 val pendingId = "${userId}_${b.platform}_${b.acceptedAt}"
                 val body = JSONObject().apply {
+                    // Identificador da corrida calculado AQUI, no celular, a
+                    // partir de quem é o motorista + plataforma + instante do
+                    // aceite. É sempre o mesmo pra mesma corrida, então se o
+                    // POST chegou ao banco mas a resposta se perdeu no caminho
+                    // (timeout, rede caindo no meio), o reenvio bate na chave
+                    // primária e é recusado em vez de criar uma corrida
+                    // duplicada. Sem isso, o retry podia dobrar uma corrida —
+                    // e corrida duplicada estraga o ganho do dia.
+                    put("id", java.util.UUID.nameUUIDFromBytes(pendingId.toByteArray()).toString())
                     put("user_id", userId)
                     put("platform", if (b.platform == "UBER") "uber" else "99")
                     put("passenger_name", b.passengerName ?: JSONObject.NULL)
@@ -727,7 +736,11 @@ object AutoTripCapture {
                     conn.outputStream.use { it.write(body.toString().toByteArray()) }
                     val code = conn.responseCode
                     conn.disconnect()
-                    if (code in 200..299) {
+                    // 409 = a chave primária já existe, ou seja a corrida JÁ
+                    // está no banco (tentativa anterior chegou lá). Tratar como
+                    // sucesso é o que impede o retry de ficar batendo pra
+                    // sempre numa corrida que já foi registrada.
+                    if (code in 200..299 || code == 409) {
                         clearPending(ctx, pendingId)
                     } else {
                         logCaptureFailure(ctx, userId, authToken, "POST auto_trips falhou (http=$code) plat=${b.platform} valor=${b.offerValue} — mantido pendente, retryPendingPushes tenta de novo")
@@ -752,7 +765,7 @@ object AutoTripCapture {
     }
 
     private fun clearPending(ctx: Context, id: String) {
-        try { pendingPrefs(ctx).edit().remove(id).apply() } catch (_: Exception) {}
+        try { pendingPrefs(ctx).edit().remove(id).remove("att:$id").remove("next:$id").apply() } catch (_: Exception) {}
     }
 
     private fun logCaptureFailure(ctx: Context, userId: String, authToken: String, detail: String) {
@@ -789,33 +802,90 @@ object AutoTripCapture {
     // sem precisar refazer geocodificação nem depender do buffer em memória
     // (que já foi descartado). Só remove do disco quando o Supabase confirma
     // sucesso (2xx) — enquanto isso, a corrida nunca é dada como perdida.
+    // Espera crescente entre tentativas: 30s, 1min, 2min, 4min… até um teto de
+    // 30min. ANTES daqui o retry era fixo a cada 15s: quando o problema era o
+    // próprio banco estar sobrecarregado (foi o que aconteceu em 13/09), cada
+    // celular ficava batendo 4 vezes por minuto, para sempre, empurrando o
+    // banco mais pra baixo justo quando ele precisava de folga pra voltar.
+    private const val RETRY_BASE_MS = 30_000L
+    private const val RETRY_MAX_MS = 30 * 60_000L
+    // No máximo 5 corridas pendentes por rodada — se por algum motivo houver
+    // uma fila grande, ela é drenada aos poucos em vez de virar uma rajada.
+    private const val RETRY_BATCH = 5
+    // Sentinela: corpo recusado definitivamente pelo banco (erro de dado, não
+    // de rede). Para de tentar, mas o corpo NÃO é apagado do disco — fica lá
+    // pra poder ser investigado e recuperado à mão. Corrida real nunca é
+    // descartada sozinha.
+    private const val ATTEMPTS_DEAD = -1
+    @Volatile private var retryRunning = false
+
     fun retryPendingPushes(ctx: Context) {
+        if (retryRunning) return
         val prefs = pendingPrefs(ctx)
         val all = try { HashMap(prefs.all) } catch (_: Exception) { return }
         if (all.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val due = all.entries
+            .filter { !it.key.startsWith("att:") && !it.key.startsWith("next:") && it.value is String }
+            .filter { prefs.getInt("att:${it.key}", 0) != ATTEMPTS_DEAD }
+            .filter { prefs.getLong("next:${it.key}", 0L) <= now }
+            .take(RETRY_BATCH)
+        if (due.isEmpty()) return
         val authPrefs = ctx.getSharedPreferences(GpsService.PREFS_NAME, Context.MODE_PRIVATE)
         val authToken = authPrefs.getString(GpsService.KEY_ACCESS_TOKEN, null) ?: TripReaderService.SUPABASE_ANON
+        val userId = authPrefs.getString(GpsService.KEY_USER_ID, null) ?: ""
+        retryRunning = true
         thread(isDaemon = true) {
-            for ((id, raw) in all) {
-                val bodyStr = raw as? String ?: continue
-                try {
-                    val url = URL("${TripReaderService.SUPABASE_URL}/rest/v1/auto_trips")
-                    val conn = url.openConnection() as HttpURLConnection
-                    conn.requestMethod = "POST"
-                    conn.doOutput = true
-                    conn.connectTimeout = 8000; conn.readTimeout = 8000
-                    conn.setRequestProperty("Content-Type", "application/json")
-                    conn.setRequestProperty("apikey", TripReaderService.SUPABASE_ANON)
-                    conn.setRequestProperty("Authorization", "Bearer $authToken")
-                    conn.setRequestProperty("Prefer", "return=minimal")
-                    conn.outputStream.use { it.write(bodyStr.toByteArray()) }
-                    val code = conn.responseCode
-                    conn.disconnect()
-                    if (code in 200..299) clearPending(ctx, id)
-                } catch (_: Exception) {
-                    // ainda sem rede/sucesso — tenta de novo no próximo ciclo de 15s
+            try {
+                for (entry in due) {
+                    val id = entry.key
+                    val bodyStr = entry.value as? String ?: continue
+                    // Marca a tentativa ANTES de ir na rede. Marcar só depois
+                    // (ou só no sucesso) é o erro que gerou a tempestade de
+                    // requisições de 13/09.
+                    val attempts = prefs.getInt("att:$id", 0) + 1
+                    val backoff = minOf(RETRY_BASE_MS shl minOf(attempts - 1, 10), RETRY_MAX_MS)
+                    try {
+                        prefs.edit().putInt("att:$id", attempts)
+                            .putLong("next:$id", System.currentTimeMillis() + backoff).apply()
+                    } catch (_: Exception) {}
+                    var code = -1
+                    try {
+                        val url = URL("${TripReaderService.SUPABASE_URL}/rest/v1/auto_trips")
+                        val conn = url.openConnection() as HttpURLConnection
+                        conn.requestMethod = "POST"
+                        conn.doOutput = true
+                        conn.connectTimeout = 8000; conn.readTimeout = 8000
+                        conn.setRequestProperty("Content-Type", "application/json")
+                        conn.setRequestProperty("apikey", TripReaderService.SUPABASE_ANON)
+                        conn.setRequestProperty("Authorization", "Bearer $authToken")
+                        conn.setRequestProperty("Prefer", "return=minimal")
+                        conn.outputStream.use { it.write(bodyStr.toByteArray()) }
+                        code = conn.responseCode
+                        conn.disconnect()
+                    } catch (_: Exception) {
+                        // sem rede — o backoff já está marcado, tenta mais tarde
+                    }
+                    when {
+                        // 409 = já está no banco (uma tentativa anterior chegou
+                        // lá, só a resposta se perdeu). Corrida registrada.
+                        code in 200..299 || code == 409 -> clearPending(ctx, id)
+                        // 4xx que não é fila/tempo esgotado: o banco recusou o
+                        // DADO, reenviar não resolve nunca. Para de tentar e
+                        // registra o motivo pra dar pra investigar.
+                        code in 400..499 && code != 408 && code != 429 -> {
+                            try { prefs.edit().putInt("att:$id", ATTEMPTS_DEAD).apply() } catch (_: Exception) {}
+                            logCaptureFailure(ctx, userId, authToken,
+                                "retryPendingPushes: banco recusou definitivamente (http=$code) pendente=$id — parei de tentar, corpo mantido em disco pra recuperação manual")
+                        }
+                        // 5xx, 408, 429 ou falha de rede: problema temporário,
+                        // tenta de novo depois do backoff. Avisa só em marcos
+                        // pra não inundar o log de diagnóstico.
+                        attempts == 5 || attempts == 20 -> logCaptureFailure(ctx, userId, authToken,
+                            "retryPendingPushes: corrida pendente há $attempts tentativas (http=$code) pendente=$id — continuo tentando a cada ${backoff / 60000}min")
+                    }
                 }
-            }
+            } finally { retryRunning = false }
         }
     }
 

@@ -292,7 +292,10 @@ class TripReaderService : AccessibilityService() {
         main.post(object : Runnable {
             override fun run() {
                 reportClientVersion()
-                main.postDelayed(this, 3 * 60 * 1000L)
+                // Era a cada 3 minutos (20 escritas por hora, por celular,
+                // pra reportar um número que só muda quando o app é
+                // atualizado). 1 hora dá o mesmo resultado prático.
+                main.postDelayed(this, 60 * 60 * 1000L)
             }
         })
         // Ofertas vistas mas nunca aceitas nem substituídas por outra —
@@ -337,7 +340,13 @@ class TripReaderService : AccessibilityService() {
                 conn.doOutput = true
                 conn.setRequestProperty("Content-Type", "application/json")
                 conn.setRequestProperty("apikey", SUPABASE_ANON)
-                conn.setRequestProperty("Authorization", "Bearer $SUPABASE_ANON")
+                // Manda o token do próprio motorista, não a chave pública. A
+                // tabela client_versions agora só aceita a linha do usuário
+                // logado (antes, a chave pública permitia que qualquer um de
+                // fora escrevesse ou sobrescrevesse a versão de qualquer
+                // motorista). Sem o token, este relatório passaria a falhar.
+                val authToken = prefs.getString(GpsService.KEY_ACCESS_TOKEN, null) ?: SUPABASE_ANON
+                conn.setRequestProperty("Authorization", "Bearer $authToken")
                 conn.setRequestProperty("Prefer", "resolution=merge-duplicates,return=minimal")
                 conn.outputStream.use { it.write(body.toString().toByteArray()) }
                 conn.responseCode
@@ -3473,6 +3482,14 @@ class TripReaderService : AccessibilityService() {
     // dropar linhas aqui não afeta a jornada, só reduz o quanto sobra pra
     // investigar depois. 1 a cada 3s é generoso pra diagnóstico.
     private var lastCloudLogMs = 0L
+    // Deduplicação de linha repetida. A trava de 3s acima limita a FREQUÊNCIA,
+    // mas não o desperdício: durante uma jornada a mesma tela fica parada por
+    // minutos e a MESMA linha era gravada ~1.200 vezes por hora sem nenhuma
+    // informação nova. Aqui, se nada mudou (plataforma, tela, estado, valores),
+    // grava só uma vez por minuto. Qualquer MUDANÇA de estado passa na hora —
+    // que é justamente o que serve pra diagnóstico.
+    private var lastCloudSig = ""
+    private var lastCloudSigMs = 0L
     private fun sendToCloud(
         plat: String, pkg: String, screenClass: String,
         state: String, money: List<String>, km: String?, min: String?,
@@ -3480,6 +3497,10 @@ class TripReaderService : AccessibilityService() {
     ) {
         val nowGuard = System.currentTimeMillis()
         if (nowGuard - lastCloudLogMs < 3000L) return
+        val sig = "$plat|$pkg|$screenClass|$state|${money.joinToString(",")}|$km|$min"
+        if (sig == lastCloudSig && nowGuard - lastCloudSigMs < 60000L) return
+        lastCloudSig = sig
+        lastCloudSigMs = nowGuard
         lastCloudLogMs = nowGuard
         postToCloud(plat, pkg, screenClass, state, money, km, min, texts)
     }
